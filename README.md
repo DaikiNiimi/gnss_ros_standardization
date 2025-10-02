@@ -1,7 +1,7 @@
-# GNSS_ROS_Standardization
+# gnss_ros_standardization
 
 ## Overview
-**GNSS_ROS_Standardization** is an open-source project to **standardize GNSS raw data handling** in the context of robotics and autonomous systems.  
+**gnss_ros_standardization** is an open-source project to **standardize GNSS raw data handling** in the context of robotics and autonomous systems.  
 The goal is to make GNSS raw data more accessible and usable in real-time experiments, particularly for **tight coupling GNSS/IMU methods** and **multi-sensor fusion frameworks**.  
 
 By providing standardized ROS/RTKLIB-based tools, this project enables developers and researchers to:
@@ -71,16 +71,14 @@ By providing standardized ROS/RTKLIB-based tools, this project enables developer
 ## Installation
 ```bash
 # Clone repository with submodules
-git clone --recursive https://github.com/your-org/GNSS_ROS_Standardization.git](https://github.com/DaikiNiimi/gnss_ros_standardization.git
+git clone --recursive https://github.com/DaikiNiimi/gnss_ros_standardization.git
 cd gnss_ros_standardization
 
 # Build with colcon
 colcon build
 source install/setup.bash
 
----
-
-## usage
+# usage
 ```bash
 # ROS 2 Node for Publishing RTCM3 MSM7 Data from NTRIP to Topics
 ros2 run gnss_ros_standardization rtcm_decoder_node --ros-args -p stream_path:="ntrip://user:password@ip:port/mountpoint"
