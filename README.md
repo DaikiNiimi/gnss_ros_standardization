@@ -85,7 +85,6 @@ colcon build
 source install/setup.bash
 
 # usage
-```bash
 # ROS 2 Node for Publishing RTCM3 MSM7 Data from NTRIP to Topics
 ros2 run gnss_ros_standardization rtcm_decoder_node --ros-args -p stream_path:="ntrip://user:password@ip:port/mountpoint"
 
