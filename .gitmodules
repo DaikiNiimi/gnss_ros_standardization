@@ -1,0 +1,3 @@
+[submodule "MALIB"]
+	path = MALIB
+	url = https://github.com/JAXA-SNU/MALIB.git
