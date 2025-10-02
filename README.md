@@ -18,6 +18,12 @@ By providing standardized ROS/RTKLIB-based tools, this project enables developer
 - Provide tools to support **real-time, reproducible experiments**  
 
 ---
+## Now
+- Publish RTCM3 MSM7 data to ROS topics from NTRIP, TCP/IP, or serial inputs
+- Convert ROS 2 bag files to RINEX (OBS and NAV)
+
+Convert ROS 2 bag files to RINEX (OBS and NAV)
+---
 
 ## Roadmap / To Do
 - **Survey Existing Implementations**
