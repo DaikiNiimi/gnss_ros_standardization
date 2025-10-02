@@ -71,9 +71,12 @@ By providing standardized ROS/RTKLIB-based tools, this project enables developer
 ## Installation
 ```bash
 # Clone repository with submodules
-git clone --recursive https://github.com/your-org/GNSS_ROS_Standardization.git
-cd GNSS_ROS_Standardization
+git clone --recursive https://github.com/your-org/GNSS_ROS_Standardization.git](https://github.com/DaikiNiimi/gnss_ros_standardization.git
+cd gnss_ros_standardization
 
 # Build with colcon
 colcon build
 source install/setup.bash
+
+# usage
+
