@@ -20,10 +20,14 @@ By providing standardized ROS/RTKLIB-based tools, this project enables developer
 ---
 
 ## Roadmap / To Do
-- **Survey Existing Implementations**  
-  - [GICI-LIB](https://github.com/tomojitakasu/GICI-LIB)  
-  - [ublox_driver](https://github.com/KumarRobotics/ublox)  
-  - [gnss_comm](https://github.com/ethz-asl/gnss_comm)  
+- **Survey Existing Implementations**
+  - [ublox](https://github.com/KumarRobotics/ublox)
+  - [septentrio_gnss_driver](https://github.com/septentrio-gnss/septentrio_gnss_driver)
+  - [novatel_oem7_driver](https://github.com/novatel/novatel_oem7_driver)
+  - [novatel_gps_driver](https://github.com/swri-robotics/novatel_gps_driver)
+  - [GICI-LIB](https://github.com/chichengcn/gici-open)  
+  - [ublox_driver](https://github.com/HKUST-Aerial-Robotics/ublox_driver)
+  - [gnss_comm](https://github.com/HKUST-Aerial-Robotics/gnss_comm)  
 
 - **Repository & Management**  
   - Manage with Git (submodules, similar to MatRTKLIB structure)  
