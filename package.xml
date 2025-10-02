@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>GNSS_ROS_Standardization</name>
+  <version>0.1.0</version>
+  <description>
+    Standardization of GNSS raw data handling for ROS2 with MALIB core.
+    Provides message definitions and tools (RTCM decoder, ROS bag -> RINEX converter).
+  </description>
+  <maintainer email="200447061@ccmailg.meijo-u.ac.jp">daiki</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Messages -->
+  <build_depend>rosidl_default_generators</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>builtin_interfaces</build_depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <!-- Nodes / tools -->
+  <depend>rclcpp</depend>
+  <depend>rcutils</depend>
+  <depend>rosbag2_cpp</depend>
+  <depend>rosbag2_storage</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
+
