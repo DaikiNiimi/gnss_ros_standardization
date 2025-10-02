@@ -10,11 +10,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include "gnss_interface/msg/gnss_observation.hpp"
-#include "gnss_interface/msg/gnss_observations.hpp"
-#include "gnss_interface/msg/gnss_ephemeris.hpp"
-#include "gnss_interface/msg/glonass_ephemeris.hpp"
-#include "gnss_interface/msg/gnss_ephemerides.hpp"
+#include "gnss_ros_standardization/msg/gnss_observation.hpp"
+#include "gnss_ros_standardization/msg/gnss_observations.hpp"
+#include "gnss_ros_standardization/msg/gnss_ephemeris.hpp"
+#include "gnss_ros_standardization/msg/glonass_ephemeris.hpp"
+#include "gnss_ros_standardization/msg/gnss_ephemerides.hpp"
 
 extern "C" {
   #include "rtklib.h"
@@ -37,8 +37,8 @@ public:
     declare_parameter<std::string>("stream_path", "tcpcli://127.0.0.1:28003");
     declare_parameter<int>("assemble_delay_ms", 200);  // reserved
 
-    obs_pub_ = create_publisher<gnss_interface::msg::GnssObservations>("/gnss/observation", 10);
-    nav_pub_ = create_publisher<gnss_interface::msg::GnssEphemerides>("/gnss/ephemeris", 10);
+    obs_pub_ = create_publisher<gnss_ros_standardization::msg::GnssObservations>("/gnss/observation", 10);
+    nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>("/gnss/ephemeris", 10);
 
     if (init_rtcm(&rtcm_) != 1) {
       RCLCPP_ERROR(get_logger(), "init_rtcm failed");
@@ -173,7 +173,7 @@ private:
     }
   };
   struct EpochBuffer {
-    std::vector<gnss_interface::msg::GnssObservation> observations;
+    std::vector<gnss_ros_standardization::msg::GnssObservation> observations;
     int cnt_G=0,cnt_R=0,cnt_E=0,cnt_J=0,cnt_C=0,cnt_S=0,cnt_U=0;
     int    week{0};
     double tow{0.0};
@@ -205,7 +205,7 @@ private:
                            (o->D[kf] == 0.0) && (o->SNR[kf] == 0);
         if (empty) continue;
 
-        gnss_interface::msg::GnssObservation obs;
+        gnss_ros_standardization::msg::GnssObservation obs;
         obs.system = syscode;
         obs.prn    = prn;
         obs.satid  = satId(o->sat);
@@ -240,7 +240,7 @@ private:
     for (auto it = epochs_.begin(); it != epochs_.end(); ) {
       auto& epoch = it->second;
 
-      gnss_interface::msg::GnssObservations msg;
+      gnss_ros_standardization::msg::GnssObservations msg;
       msg.header.stamp = stamp;
       msg.header.frame_id = "gnss_receiver";
       msg.week = static_cast<uint16_t>(epoch.week);
@@ -291,7 +291,7 @@ private:
       }
     }
 
-    std::vector<gnss_interface::msg::GnssEphemeris> kmsgs;
+    std::vector<gnss_ros_standardization::msg::GnssEphemeris> kmsgs;
     kmsgs.reserve(rtcm_.nav.n);
     
     for (int i = 0; i < rtcm_.nav.n; ++i) {
@@ -324,7 +324,7 @@ private:
       }
     }
 
-    std::vector<gnss_interface::msg::GlonassEphemeris> rmsgs;
+    std::vector<gnss_ros_standardization::msg::GlonassEphemeris> rmsgs;
     rmsgs.reserve(best_glo.size());
     for (auto& kv : best_glo) {
       const geph_t& g = rtcm_.nav.geph[kv.second];
@@ -340,7 +340,7 @@ private:
     if (!changed && !first) return;
     first = false;
 
-    gnss_interface::msg::GnssEphemerides out;
+    gnss_ros_standardization::msg::GnssEphemerides out;
     out.header.stamp      = now();
     out.gnss_ephemeris    = std::move(kmsgs);
     out.glonass_ephemeris = std::move(rmsgs);
@@ -352,8 +352,8 @@ private:
   }
 
   // ---- builders ------------------------------------------------------------
-  static gnss_interface::msg::GnssEphemeris toKeplerMsg(const eph_t& e) {
-    gnss_interface::msg::GnssEphemeris m;
+  static gnss_ros_standardization::msg::GnssEphemeris toKeplerMsg(const eph_t& e) {
+    gnss_ros_standardization::msg::GnssEphemeris m;
 
     int prn = 0;
     const int sys = satsys(e.sat, &prn);
@@ -382,8 +382,8 @@ private:
     return m;
   }
 
-  static gnss_interface::msg::GlonassEphemeris toGlonassMsg(const geph_t& g) {
-    gnss_interface::msg::GlonassEphemeris m;
+  static gnss_ros_standardization::msg::GlonassEphemeris toGlonassMsg(const geph_t& g) {
+    gnss_ros_standardization::msg::GlonassEphemeris m;
     m.system = "R";
 
     int prn = 0; (void)satsys(g.sat, &prn);
@@ -407,8 +407,8 @@ private:
 
 private:
   // pubs/timer
-  rclcpp::Publisher<gnss_interface::msg::GnssObservations>::SharedPtr  obs_pub_;
-  rclcpp::Publisher<gnss_interface::msg::GnssEphemerides>::SharedPtr   nav_pub_;
+  rclcpp::Publisher<gnss_ros_standardization::msg::GnssObservations>::SharedPtr  obs_pub_;
+  rclcpp::Publisher<gnss_ros_standardization::msg::GnssEphemerides>::SharedPtr   nav_pub_;
   rclcpp::TimerBase::SharedPtr                                         timer_;
 
   // stream/decoder
