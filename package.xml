@@ -27,6 +27,7 @@
   <depend>rcutils</depend>
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
+  <depend>sensor_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

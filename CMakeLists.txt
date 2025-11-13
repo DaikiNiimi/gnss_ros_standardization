@@ -138,6 +138,24 @@ if(BUILD_RINEX_WRITER_TOOL)
   endif()
 endif()
 
+# single point positioning
+option(BUILD_SPP_EXAMPLE "Build single point positioning example (pntpos)" ON)
+
+if(BUILD_SPP_EXAMPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/single_point_positioning.cpp")
+  add_executable(single_point_positioning src/positioning/single_point_positioning.cpp)
+  target_include_directories(single_point_positioning PUBLIC ${_gen_include})
+  ament_target_dependencies(single_point_positioning rclcpp std_msgs builtin_interfaces)
+  target_link_libraries(single_point_positioning
+    rtkcore_lib
+    rtkcore_config
+    ${cpp_typesupport_target}
+    Threads::Threads)
+  add_dependencies(single_point_positioning ${_rosidl_deps})
+  install(TARGETS single_point_positioning DESTINATION lib/${PROJECT_NAME})
+elseif(BUILD_SPP_EXAMPLE)
+  message(WARNING "BUILD_SPP_EXAMPLE=ON ですが src/positioning/single_point_positioning.cpp が見つかりません。")
+endif()
+
 # Export
 ament_export_dependencies(rosidl_default_runtime std_msgs builtin_interfaces)
 ament_package()
