@@ -10,15 +10,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "gnss_ros_standardization/msg/gnss_observation.hpp"
-#include "gnss_ros_standardization/msg/gnss_observations.hpp"
-#include "gnss_ros_standardization/msg/gnss_ephemeris.hpp"
-#include "gnss_ros_standardization/msg/glonass_ephemeris.hpp"
-#include "gnss_ros_standardization/msg/gnss_ephemerides.hpp"
+#include "gnss_utils.hpp"
 
-extern "C" {
-  #include "rtklib.h"
-}
 
 using namespace std::chrono_literals;
 
@@ -57,23 +50,7 @@ public:
 
 private:
   // ---- small utilities -----------------------------------------------------
-  static std::string systemCode(int sys) {
-    switch (sys) {
-      case SYS_GPS: return "G";
-      case SYS_GLO: return "R";
-      case SYS_GAL: return "E";
-      case SYS_QZS: return "J";
-      case SYS_CMP: return "C";
-      case SYS_SBS: return "S";
-      default:      return "U";
-    }
-  }
 
-  static std::string satId(int sat) {
-    char id[8] = {0};
-    satno2id(sat, id);
-    return std::string(id);
-  }
 
   static uint32_t crc24q(const uint8_t* p, size_t len) {
     uint32_t crc = 0;
@@ -198,27 +175,14 @@ private:
 
       int prn = 0;
       const int sys = satsys(o->sat, &prn);
-      const std::string syscode = systemCode(sys);
+      const std::string syscode = gnss_utils::systemCode(sys);
 
       for (int kf = 0; kf < NFREQ + NEXOBS; ++kf) {
         const bool empty = (o->P[kf] == 0.0) && (o->L[kf] == 0.0) &&
                            (o->D[kf] == 0.0) && (o->SNR[kf] == 0);
         if (empty) continue;
 
-        gnss_ros_standardization::msg::GnssObservation obs;
-        obs.system = syscode;
-        obs.prn    = prn;
-        obs.satid  = satId(o->sat);
-
-        if (o->code[kf]) {
-          if (const char* sig = code2obs(o->code[kf]); sig) obs.code = sig;
-        }
-
-        obs.pseudorange   = o->P[kf];
-        obs.carrier_phase = o->L[kf];
-        obs.doppler       = o->D[kf];
-        obs.snr           = static_cast<float>(o->SNR[kf]) * 0.001f; // dB-Hz -> *1000 -> float
-        obs.lli           = o->LLI[kf];
+        gnss_ros_standardization::msg::GnssObservation obs = gnss_utils::obsToMsg(*o, kf);
 
         epoch.observations.push_back(std::move(obs));
       }
@@ -284,9 +248,6 @@ private:
         const eph_t& prev = rtcm_.nav.eph[it->second];
         int wp = 0; const double toe_p = time2gpst(prev.toe, &wp);
         bool better = (toe > toe_p + TOE_EQ_EPS);
-        if (!better && std::fabs(toe - toe_p) <= TOE_EQ_EPS && satsys(e.sat, &prn) == SYS_GAL) {
-          better = (e.code > prev.code);
-        }
         if (better) best_kepler[e.sat] = i;
       }
     }
@@ -302,7 +263,7 @@ private:
     
       KKey k{e.sat, (int)e.iode, (int)e.iodc, (int)e.code};
       if (seen_kepler_.insert(k).second) {
-        kmsgs.push_back(toKeplerMsg(e));
+        kmsgs.push_back(gnss_utils::ephToMsg(e));
         changed = true;
       }
     }
@@ -333,7 +294,7 @@ private:
         last_glo_iode_[g.sat] = (int)g.iode;
         changed = true;
       }
-      rmsgs.push_back(toGlonassMsg(g));
+      rmsgs.push_back(gnss_utils::gephToMsg(g));
     }
 
     static bool first = true;
@@ -352,58 +313,7 @@ private:
   }
 
   // ---- builders ------------------------------------------------------------
-  static gnss_ros_standardization::msg::GnssEphemeris toKeplerMsg(const eph_t& e) {
-    gnss_ros_standardization::msg::GnssEphemeris m;
 
-    int prn = 0;
-    const int sys = satsys(e.sat, &prn);
-    m.system = systemCode(sys);
-    m.prn    = prn;
-    m.satid  = satId(e.sat);
-
-    int w = 0;
-    m.toe  = time2gpst(e.toe, &w);
-    m.week = static_cast<uint16_t>(w);
-
-    m.toc  = time2gpst(e.toc, &w);
-    m.ttr  = time2gpst(e.ttr, &w);
-    m.toes = e.toes;
-
-    m.a=e.A; m.e=e.e; m.i0=e.i0; m.omg0=e.OMG0; m.omg=e.omg; m.m0=e.M0;
-    m.deln=e.deln; m.omgd=e.OMGd; m.idot=e.idot;
-    m.crc=e.crc; m.crs=e.crs; m.cuc=e.cuc; m.cus=e.cus; m.cic=e.cic; m.cis=e.cis;
-    m.f0=e.f0; m.f1=e.f1; m.f2=e.f2;
-
-    m.tgd.clear();
-    m.tgd.push_back(e.tgd[0]);
-    m.tgd.push_back(e.tgd[1]);
-
-    m.iode=e.iode; m.iodc=e.iodc; m.svh=e.svh; m.sva=e.sva; m.code=e.code;
-    return m;
-  }
-
-  static gnss_ros_standardization::msg::GlonassEphemeris toGlonassMsg(const geph_t& g) {
-    gnss_ros_standardization::msg::GlonassEphemeris m;
-    m.system = "R";
-
-    int prn = 0; (void)satsys(g.sat, &prn);
-    m.prn = prn;
-    m.satid = satId(g.sat);
-    m.frq = g.frq;
-
-    int w = 0;
-    m.toe  = time2gpst(utc2gpst(g.toe), &w);
-    m.week = static_cast<uint16_t>(w);
-    m.tof = time2gpst(utc2gpst(g.tof), &w);
-
-    m.pos = { g.pos[0], g.pos[1], g.pos[2] };
-    m.vel = { g.vel[0], g.vel[1], g.vel[2] };
-    m.acc = { g.acc[0], g.acc[1], g.acc[2] };
-
-    m.iode = g.iode; m.svh = g.svh; m.age = g.age;
-    m.gamn = g.gamn; m.taun = g.taun; m.dtaun = g.dtaun;
-    return m;
-  }
 
 private:
   // pubs/timer

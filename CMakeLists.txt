@@ -103,39 +103,60 @@ set(_rosidl_deps
   ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
+# gnss_utils
+add_library(gnss_utils src/gnss_utils.cpp)
+target_include_directories(gnss_utils PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+  $<INSTALL_INTERFACE:include>
+)
+target_include_directories(gnss_utils PRIVATE "${MALIB_ROOT}/src")
+# We need rtkcore_lib for rtklib types used in gnss_utils
+target_link_libraries(gnss_utils rtkcore_lib rtkcore_config ${cpp_typesupport_target})
+ament_target_dependencies(gnss_utils rclcpp std_msgs builtin_interfaces)
+
 # rtcm_decoder_node
 if(BUILD_RTCM_DECODER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/rtcm_decoder_node.cpp")
   add_executable(rtcm_decoder_node src/rtcm_decoder_node.cpp)
   target_include_directories(rtcm_decoder_node PUBLIC ${_gen_include})
   ament_target_dependencies(rtcm_decoder_node rclcpp std_msgs builtin_interfaces)
-  target_link_libraries(rtcm_decoder_node rtkcore_lib Threads::Threads ${cpp_typesupport_target})
+  target_link_libraries(rtcm_decoder_node gnss_utils Threads::Threads)
   add_dependencies(rtcm_decoder_node ${_rosidl_deps})
   install(TARGETS rtcm_decoder_node DESTINATION lib/${PROJECT_NAME})
 elseif(BUILD_RTCM_DECODER_NODE)
   message(WARNING "BUILD_RTCM_DECODER_NODE=ON but src/rtcm_decoder_node.cpp not found.")
 endif()
 
-# ros2_rinex_writer
+# rosbag_to_rinex
 if(BUILD_RINEX_WRITER_TOOL)
   set(_writer_src "")
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/ros2_rinex_writer.cpp")
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/rosbag_to_rinex.cpp")
+    set(_writer_src src/converter/rosbag_to_rinex.cpp)
+  elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/ros2_rinex_writer.cpp")
+     # fallback or legacy
     set(_writer_src src/converter/ros2_rinex_writer.cpp)
-  elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/rtcm_decoder_node.cpp")
-    message(WARNING "Using src/converter/rtcm_decoder_node.cpp as ros2_rinex_writer (rename to ros2_rinex_writer.cpp).")
-    set(_writer_src src/converter/rtcm_decoder_node.cpp)
   endif()
 
   if(_writer_src)
-    add_executable(ros2_rinex_writer ${_writer_src})
-    target_include_directories(ros2_rinex_writer PUBLIC ${_gen_include})
-    ament_target_dependencies(ros2_rinex_writer rclcpp rcutils rosbag2_cpp rosbag2_storage std_msgs builtin_interfaces)
-    target_include_directories(ros2_rinex_writer PRIVATE "${MALIB_ROOT}/src")
-    target_link_libraries(ros2_rinex_writer rtkcore_lib rtkcore_config ${cpp_typesupport_target})
-    add_dependencies(ros2_rinex_writer ${_rosidl_deps})
-    install(TARGETS ros2_rinex_writer DESTINATION lib/${PROJECT_NAME})
+    add_executable(rosbag_to_rinex ${_writer_src})
+    target_include_directories(rosbag_to_rinex PUBLIC ${_gen_include})
+    ament_target_dependencies(rosbag_to_rinex rclcpp rcutils rosbag2_cpp rosbag2_storage std_msgs builtin_interfaces)
+    target_include_directories(rosbag_to_rinex PRIVATE "${MALIB_ROOT}/src")
+    target_link_libraries(rosbag_to_rinex gnss_utils)
+    add_dependencies(rosbag_to_rinex ${_rosidl_deps})
+    install(TARGETS rosbag_to_rinex DESTINATION lib/${PROJECT_NAME})
   else()
     message(WARNING "BUILD_RINEX_WRITER_TOOL=ON but no writer source found in src/converter/.")
   endif()
+endif()
+
+# rinex_to_rosbag
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/rinex_to_rosbag.cpp")
+  add_executable(rinex_to_rosbag src/converter/rinex_to_rosbag.cpp)
+  target_include_directories(rinex_to_rosbag PUBLIC ${_gen_include})
+  ament_target_dependencies(rinex_to_rosbag rclcpp rosbag2_cpp rosbag2_storage std_msgs builtin_interfaces)
+  target_link_libraries(rinex_to_rosbag gnss_utils)
+  add_dependencies(rinex_to_rosbag ${_rosidl_deps})
+  install(TARGETS rinex_to_rosbag DESTINATION lib/${PROJECT_NAME})
 endif()
 
 # single point positioning
@@ -146,9 +167,7 @@ if(BUILD_SPP_EXAMPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/sin
   target_include_directories(single_point_positioning PUBLIC ${_gen_include})
   ament_target_dependencies(single_point_positioning rclcpp std_msgs builtin_interfaces)
   target_link_libraries(single_point_positioning
-    rtkcore_lib
-    rtkcore_config
-    ${cpp_typesupport_target}
+    gnss_utils
     Threads::Threads)
   add_dependencies(single_point_positioning ${_rosidl_deps})
   install(TARGETS single_point_positioning DESTINATION lib/${PROJECT_NAME})

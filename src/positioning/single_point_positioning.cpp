@@ -13,11 +13,8 @@
 #include <arpa/inet.h> 
 #include <unistd.h>
 
-#include "gnss_ros_standardization/msg/gnss_observation.hpp"
-#include "gnss_ros_standardization/msg/gnss_observations.hpp"
-#include "gnss_ros_standardization/msg/gnss_ephemeris.hpp"
-#include "gnss_ros_standardization/msg/glonass_ephemeris.hpp"
-#include "gnss_ros_standardization/msg/gnss_ephemerides.hpp"
+#include "gnss_utils.hpp"
+
 
 extern "C" {
   #include "rtklib.h"
@@ -82,34 +79,7 @@ public:
 
 private:
   // (Helper functions toEph, toGeph, upsertEph, upsertGeph, solstatToString are unchanged)
-  static eph_t toEph(const grs::GnssEphemeris &m) {
-    eph_t e{}; e.sat = satid2no(m.satid.c_str());
-    int w = static_cast<int>(m.week);
-    e.toe = gpst2time(w, m.toe); e.toc = gpst2time(w, m.toc); e.ttr = gpst2time(w, m.ttr);
-    e.A=m.a; e.e=m.e; e.i0=m.i0; e.OMG0=m.omg0; e.omg=m.omg; e.M0=m.m0;
-    e.deln=m.deln; e.OMGd=m.omgd; e.idot=m.idot;
-    e.crc=m.crc; e.crs=m.crs; e.cuc=m.cuc; e.cus=m.cus; e.cic=m.cic; e.cis=m.cis;
-    e.f0=m.f0; e.f1=m.f1; e.f2=m.f2;
-    e.tgd[0] = (m.tgd.size()>0 ? m.tgd[0] : 0.0);
-    e.tgd[1] = (m.tgd.size()>1 ? m.tgd[1] : 0.0);
-    e.iode=static_cast<int>(m.iode); e.iodc=static_cast<int>(m.iodc);
-    e.svh=static_cast<int>(m.svh); e.sva=static_cast<int>(m.sva);
-    e.code=static_cast<int>(m.code); e.toes=m.toes;
-    return e;
-  }
-  static geph_t toGeph(const grs::GlonassEphemeris &m) {
-    geph_t g{}; g.sat = satid2no(m.satid.c_str());
-    int w = static_cast<int>(m.week);
-    g.toe = gpst2utc(gpst2time(w, m.toe));
-    g.tof = gpst2utc(gpst2time(w, m.tof));
-    g.frq = static_cast<signed char>(m.frq);
-    g.pos[0]=m.pos[0]; g.pos[1]=m.pos[1]; g.pos[2]=m.pos[2];
-    g.vel[0]=m.vel[0]; g.vel[1]=m.vel[1]; g.vel[2]=m.vel[2];
-    g.acc[0]=m.acc[0]; g.acc[1]=m.acc[1]; g.acc[2]=m.acc[2];
-    g.iode=static_cast<int>(m.iode); g.svh=static_cast<int>(m.svh); g.age=static_cast<int>(m.age);
-    g.gamn=m.gamn; g.taun=m.taun; g.dtaun=m.dtaun;
-    return g;
-  }
+
   void upsertEph(const eph_t &e) {
     if (e.sat <= 0 || e.sat > MAXSAT) return;
     for (int i = 0; i < nav_.n; i++) {
@@ -153,10 +123,10 @@ private:
   void onNav(const grs::GnssEphemerides::SharedPtr msg) {
     std::lock_guard<std::mutex> lk(nav_mtx_);
     for (const auto &e : msg->gnss_ephemeris) {
-      if (!e.satid.empty()) upsertEph(toEph(e));
+      if (!e.satid.empty()) upsertEph(gnss_utils::msgToEph(e));
     }
     for (const auto &g : msg->glonass_ephemeris) {
-      if (!g.satid.empty()) upsertGeph(toGeph(g));
+      if (!g.satid.empty()) upsertGeph(gnss_utils::msgToGeph(g));
     }
     RCLCPP_INFO_ONCE(get_logger(), "Ephemeris received. Ready for positioning.");
   }
