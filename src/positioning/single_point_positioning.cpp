@@ -13,7 +13,7 @@
 #include <arpa/inet.h> 
 #include <unistd.h>
 
-#include "gnss_utils.hpp"
+#include "gnss_ros_standardization/gnss_utils.hpp"
 
 
 extern "C" {
@@ -139,7 +139,11 @@ private:
     for (const auto &m : in->observations) {
       const int sat = satid2no(m.satid.c_str());
       if (sat <= 0 || sat > MAXSAT) continue;
-      const uint8_t code = obs2code(m.code.c_str());
+      // Use integer code directly if available, or fall back to string parsing?
+      // Since we populate both, we can use integer code directly for efficiency!
+      // const uint8_t code = obs2code(m.code_str.c_str());
+      // Actually let's use the efficient way:
+      const uint8_t code = m.code; 
       if (code == CODE_NONE) continue;
       int prn = 0; const int sys = satsys(sat, &prn);
       const int idx = code2idx(sys, code);
@@ -150,9 +154,10 @@ private:
         acc.inited = true;
       }
       acc.o.code[idx] = code;
-      if (m.pseudorange > 0.0) acc.o.P[idx] = m.pseudorange;
-      if (m.carrier_phase != 0.0) acc.o.L[idx] = m.carrier_phase;
-      if (m.doppler != 0.0) acc.o.D[idx] = static_cast<float>(m.doppler);
+      acc.o.code[idx] = code;
+      if (m.p > 0.0) acc.o.P[idx] = m.p;
+      if (m.l != 0.0) acc.o.L[idx] = m.l;
+      if (m.d != 0.0) acc.o.D[idx] = static_cast<float>(m.d);
       if (m.snr > 0.0) acc.o.SNR[idx] = static_cast<uint16_t>(std::lround(m.snr * 4.0));
       acc.o.LLI[idx] = static_cast<uint8_t>(m.lli);
     }

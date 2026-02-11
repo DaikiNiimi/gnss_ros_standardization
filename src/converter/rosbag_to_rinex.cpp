@@ -37,7 +37,7 @@ furnished to do so, subject to the following conditions:
 #include <queue>
 #include <cstdint>
 
-#include "gnss_utils.hpp"
+#include "gnss_ros_standardization/gnss_utils.hpp"
 
 using gnss_ros_standardization::msg::GnssObservation;
 using gnss_ros_standardization::msg::GnssObservations;
@@ -334,10 +334,10 @@ public:
         for (const auto &o : obs.observations) {
           if (o.system.size()!=1) continue;
           char sys = o.system[0];
-          if (o.pseudorange   != 0.0) addObsType(types, sys, "C"+o.code);
-          if (o.carrier_phase != 0.0) addObsType(types, sys, "L"+o.code);
-          if (o.doppler       != 0.0) addObsType(types, sys, "D"+o.code);
-          if (o.snr           >  0.0) addObsType(types, sys, "S"+o.code);
+          if (o.p != 0.0) addObsType(types, sys, "C"+o.code_str);
+          if (o.l != 0.0) addObsType(types, sys, "L"+o.code_str);
+          if (o.d != 0.0) addObsType(types, sys, "D"+o.code_str);
+          if (o.snr >  0.0) addObsType(types, sys, "S"+o.code_str);
         }
       }
       else if (msg->topic_name == opt_.topic_nav) {
@@ -603,17 +603,17 @@ class ObsWriter {
         auto it = satmap.find(sat);
         if (it == satmap.end()) it = satmap.emplace(sat, blankForSat(sat)).first;
   
-        int base    = baseSlotFromSigChar(o.code.empty() ? '\0' : o.code[0]);
-        int code_id = codeIdFromSig2(o.code);
+        int base    = baseSlotFromSigChar(o.code_str.empty() ? '\0' : o.code_str[0]);
+        int code_id = codeIdFromSig2(o.code_str);
         if (code_id == 0) continue;
   
         int k = chooseObsSlot(it->second, base, code_id);
         it->second.code[k] = code_id;
   
-        if (o.pseudorange   != 0.0) it->second.P[k]   = o.pseudorange;
-        if (o.carrier_phase != 0.0) it->second.L[k]   = o.carrier_phase;
-        if (o.doppler       != 0.0) it->second.D[k]   = o.doppler;
-        if (o.snr           >  0.0) it->second.SNR[k] = o.snr * 1000.0f;
+        if (o.p   != 0.0) it->second.P[k]   = o.p;
+        if (o.l   != 0.0) it->second.L[k]   = o.l;
+        if (o.d   != 0.0) it->second.D[k]   = o.d;
+        if (o.snr >  0.0) it->second.SNR[k] = o.snr * 1000.0f;
         it->second.LLI[k] = static_cast<unsigned char>(o.lli);
   
         it->second.time = t;

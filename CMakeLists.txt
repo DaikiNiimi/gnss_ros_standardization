@@ -72,6 +72,9 @@ endif()
 
 add_library(rtkcore_lib STATIC ${_core_sources})
 set_target_properties(rtkcore_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
+  target_compile_options(rtkcore_lib PRIVATE "-w")
+endif()
 target_include_directories(rtkcore_lib PUBLIC "${MALIB_ROOT}/src")
 
 add_library(rtkcore_config INTERFACE)
@@ -103,10 +106,12 @@ set(_rosidl_deps
   ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
+include_directories(include)
+
 # gnss_utils
 add_library(gnss_utils src/gnss_utils.cpp)
 target_include_directories(gnss_utils PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 target_include_directories(gnss_utils PRIVATE "${MALIB_ROOT}/src")
@@ -115,15 +120,67 @@ target_link_libraries(gnss_utils rtkcore_lib rtkcore_config ${cpp_typesupport_ta
 ament_target_dependencies(gnss_utils rclcpp std_msgs builtin_interfaces)
 
 # rtcm_decoder_node
-if(BUILD_RTCM_DECODER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/rtcm_decoder_node.cpp")
-  add_executable(rtcm_decoder_node src/rtcm_decoder_node.cpp)
+if(BUILD_RTCM_DECODER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/decoders/rtcm_decoder_node.cpp")
+  add_executable(rtcm_decoder_node src/decoders/rtcm_decoder_node.cpp)
   target_include_directories(rtcm_decoder_node PUBLIC ${_gen_include})
   ament_target_dependencies(rtcm_decoder_node rclcpp std_msgs builtin_interfaces)
   target_link_libraries(rtcm_decoder_node gnss_utils Threads::Threads)
   add_dependencies(rtcm_decoder_node ${_rosidl_deps})
   install(TARGETS rtcm_decoder_node DESTINATION lib/${PROJECT_NAME})
 elseif(BUILD_RTCM_DECODER_NODE)
-  message(WARNING "BUILD_RTCM_DECODER_NODE=ON but src/rtcm_decoder_node.cpp not found.")
+  message(WARNING "BUILD_RTCM_DECODER_NODE=ON but src/decoders/rtcm_decoder_node.cpp not found.")
+endif()
+
+# ubx_decoder_node
+option(BUILD_UBX_DECODER_NODE "Build ubx_decoder_node" ON)
+if(BUILD_UBX_DECODER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/decoders/ubx_decoder_node.cpp")
+  add_executable(ubx_decoder_node src/decoders/ubx_decoder_node.cpp)
+  target_include_directories(ubx_decoder_node PUBLIC ${_gen_include})
+  ament_target_dependencies(ubx_decoder_node rclcpp std_msgs builtin_interfaces)
+  target_link_libraries(ubx_decoder_node gnss_utils Threads::Threads)
+  add_dependencies(ubx_decoder_node ${_rosidl_deps})
+  install(TARGETS ubx_decoder_node DESTINATION lib/${PROJECT_NAME})
+elseif(BUILD_UBX_DECODER_NODE)
+  message(WARNING "BUILD_UBX_DECODER_NODE=ON but src/decoders/ubx_decoder_node.cpp not found.")
+endif()
+
+# ubx_driver_node (u-blox driver with configuration)
+option(BUILD_UBX_DRIVER_NODE "Build ubx_driver_node (u-blox driver)" ON)
+if(BUILD_UBX_DRIVER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/drivers/ubx_driver_node.cpp")
+  add_executable(ubx_driver_node src/drivers/ubx_driver_node.cpp)
+  target_include_directories(ubx_driver_node PUBLIC ${_gen_include})
+  ament_target_dependencies(ubx_driver_node rclcpp std_msgs builtin_interfaces)
+  target_link_libraries(ubx_driver_node gnss_utils Threads::Threads)
+  add_dependencies(ubx_driver_node ${_rosidl_deps})
+  install(TARGETS ubx_driver_node DESTINATION lib/${PROJECT_NAME})
+elseif(BUILD_UBX_DRIVER_NODE)
+  message(WARNING "BUILD_UBX_DRIVER_NODE=ON but src/drivers/ubx_driver_node.cpp not found.")
+endif()
+
+# sbf_decoder_node (Septentrio)
+option(BUILD_SBF_DECODER_NODE "Build sbf_decoder_node (Septentrio)" ON)
+if(BUILD_SBF_DECODER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/decoders/sbf_decoder_node.cpp")
+  add_executable(sbf_decoder_node src/decoders/sbf_decoder_node.cpp)
+  target_include_directories(sbf_decoder_node PUBLIC ${_gen_include})
+  ament_target_dependencies(sbf_decoder_node rclcpp std_msgs builtin_interfaces)
+  target_link_libraries(sbf_decoder_node gnss_utils Threads::Threads)
+  add_dependencies(sbf_decoder_node ${_rosidl_deps})
+  install(TARGETS sbf_decoder_node DESTINATION lib/${PROJECT_NAME})
+elseif(BUILD_SBF_DECODER_NODE)
+  message(WARNING "BUILD_SBF_DECODER_NODE=ON but src/decoders/sbf_decoder_node.cpp not found.")
+endif()
+
+# novatel_decoder_node (NovAtel OEM3/OEM4/OEM7)
+option(BUILD_NOVATEL_DECODER_NODE "Build novatel_decoder_node (NovAtel)" ON)
+if(BUILD_NOVATEL_DECODER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/decoders/novatel_decoder_node.cpp")
+  add_executable(novatel_decoder_node src/decoders/novatel_decoder_node.cpp)
+  target_include_directories(novatel_decoder_node PUBLIC ${_gen_include})
+  ament_target_dependencies(novatel_decoder_node rclcpp std_msgs builtin_interfaces)
+  target_link_libraries(novatel_decoder_node gnss_utils Threads::Threads)
+  add_dependencies(novatel_decoder_node ${_rosidl_deps})
+  install(TARGETS novatel_decoder_node DESTINATION lib/${PROJECT_NAME})
+elseif(BUILD_NOVATEL_DECODER_NODE)
+  message(WARNING "BUILD_NOVATEL_DECODER_NODE=ON but src/decoders/novatel_decoder_node.cpp not found.")
 endif()
 
 # rosbag_to_rinex

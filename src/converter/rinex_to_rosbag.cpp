@@ -2,7 +2,7 @@
 #include <rosbag2_cpp/writer.hpp>
 #include <rosbag2_storage/storage_options.hpp>
 
-#include "gnss_utils.hpp"
+#include "gnss_ros_standardization/gnss_utils.hpp"
 // gnss_utils.hpp includes rtklib.h internally
 
 #include <iostream>
@@ -96,9 +96,9 @@ int main(int argc, char** argv) {
   }
 
   // 1. Read OBS Data
-  obs_t obs = {0};
-  nav_t nav_tmp = {0};
-  sta_t sta = {0};
+  obs_t obs = {};
+  nav_t nav_tmp = {};
+  sta_t sta = {};
   
   if (readrnx(args.obs_path.c_str(), 1, "", &obs, &nav_tmp, &sta) == 0) {
       std::cerr << "Warning: No data read from OBS file.\n";
@@ -112,10 +112,10 @@ int main(int argc, char** argv) {
   }
 
   // 2. Read NAV Data
-  nav_t nav = {0};
+  nav_t nav = {};
   for (const auto& path : args.nav_paths) {
-      obs_t dummy_obs = {0};
-      sta_t dummy_sta = {0};
+      obs_t dummy_obs = {};
+      sta_t dummy_sta = {};
       readrnx(path.c_str(), 1, "", &dummy_obs, &nav, &dummy_sta);
       freeobs(&dummy_obs);
   }

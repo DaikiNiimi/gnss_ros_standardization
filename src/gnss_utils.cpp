@@ -1,4 +1,4 @@
-#include "gnss_utils.hpp"
+#include "gnss_ros_standardization/gnss_utils.hpp"
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -232,15 +232,17 @@ gnss_ros_standardization::msg::GnssObservation obsToMsg(const obsd_t& o, int kf)
   const int sys = satsys(o.sat, &prn);
   obs.system = systemCode(sys);
   obs.prn    = prn;
+  obs.sat    = o.sat;
   obs.satid  = satId(o.sat);
 
   if (o.code[kf]) {
-    if (const char* sig = code2obs(o.code[kf]); sig) obs.code = sig;
+    obs.code = o.code[kf];
+    if (const char* sig = code2obs(o.code[kf]); sig) obs.code_str = sig;
   }
 
-  obs.pseudorange   = o.P[kf];
-  obs.carrier_phase = o.L[kf];
-  obs.doppler       = o.D[kf];
+  obs.p             = o.P[kf];
+  obs.l             = o.L[kf];
+  obs.d             = o.D[kf];
   obs.snr           = static_cast<float>(o.SNR[kf]) * 0.001f; 
   obs.lli           = o.LLI[kf];
 

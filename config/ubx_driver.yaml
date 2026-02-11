@@ -1,0 +1,83 @@
+# u-blox Driver Configuration
+# 
+# Usage:
+#   ros2 run gnss_ros_standardization ubx_driver_node --ros-args \
+#     --params-file config/ubx_driver.yaml
+
+ubx_driver_node:
+  ros__parameters:
+    # ==========================================================================
+    # Basic Settings
+    # ==========================================================================
+    
+    # Stream path (serial, tcp, ntrip, file)
+    # Examples:
+    #   serial:///dev/ttyACM0:115200
+    #   serial:///dev/ttyUSB0:921600
+    #   tcpcli://192.168.1.100:5000
+    stream_path: "serial:///dev/ttyACM2:115200"
+    
+    # Measurement rate in Hz (1-20)
+    rate_hz: 1
+    
+    # ROS settings
+    frame_id: "gnss_link"
+    
+    # Send configuration commands on startup
+    # Set to false to use the receiver's current configuration as-is
+    # (equivalent to using ubx_decoder_node for decode-only operation)
+    configure_on_startup: true
+    
+    # Dynamic platform model
+    # Options: portable, stationary, pedestrian, automotive, sea,
+    #          airborne_1g, airborne_2g, airborne_4g, watch
+    dynamic_model: "portable"
+    
+    # Receiver Generation
+    # Options: G9 (F9P/M8 etc.), G10 (X20P etc.)
+    # G9 uses legacy CFG commands, G10 uses CFG-VALSET
+    generation: "G9"
+    
+    # ==========================================================================
+    # Output Messages
+    # ==========================================================================
+    messages:
+      # Raw measurement data (required for RTK/PPP)
+      rawx: true
+      
+      # Subframe buffer data (navigation messages)
+      sfrbx: true
+      
+      # Position/Velocity/Time solution
+      nav_pvt: false
+      
+      # NMEA messages (disable to save bandwidth)
+      nmea_gga: false
+      nmea_rmc: false
+      nmea_gsa: false
+      nmea_gsv: false
+      
+      # NMEA High Precision mode
+      # Enables extra decimal places in lat/lon for GGA, RMC, GLL
+      nmea_high_precision: false
+    
+    # ==========================================================================
+    # GNSS Constellation Settings
+    # ==========================================================================
+    # All supported frequencies for each enabled constellation are configured
+    # automatically. No per-frequency selection is needed.
+    # Actual output depends on both hardware and MALIB decoder support.
+    #
+    # Frequencies per constellation (MALIB-patched):
+    #   GPS    : L1C/A, L2C, L5
+    #   Galileo: E1, E5a, E5b
+    #   BeiDou : B1I, B2I
+    #   QZSS   : L1C/A, L2C, L5
+    #   GLONASS: L1, L2 (X20P does NOT support GLONASS hardware)
+    gnss:
+      gps: true       # GPS (L1C/A, L2C, L5)
+      glonass: true   # GLONASS (L1C, L2C)
+      galileo: true   # Galileo (E1, E5a, E5b)
+      beidou: true    # BeiDou (B1I, B2I)
+      qzss: true      # QZSS (L1C/A, L2C, L5)
+      sbas: false     # SBAS (L1C/A)
