@@ -19,14 +19,6 @@ namespace gnss_ros_standardization {
 
 namespace {
 
-/// Supported stream type prefixes (using MALIB stream types)
-constexpr ubx::StreamTypeDef kStreamTypes[] = {
-    {"tcpcli://", STR_TCPCLI},
-    {"serial://", STR_SERIAL},
-    {"ntrip://", STR_NTRIPCLI},
-    {"file://", STR_FILE},
-};
-
 /// Timer interval for stream polling
 constexpr auto kTimerInterval = 10ms;
 
@@ -197,7 +189,7 @@ class UbxDriverNode : public rclcpp::Node {
     int stream_type = STR_SERIAL;
     std::string path = config_.stream_path;
 
-    for (const auto& st : kStreamTypes) {
+    for (const auto& st : ubx::kStreamTypes) {
       if (path.substr(0, st.prefix.size()) == st.prefix) {
         stream_type = st.type;
         path = path.substr(st.prefix.size());
@@ -231,6 +223,13 @@ class UbxDriverNode : public rclcpp::Node {
 
   void configureReceiver() {
     RCLCPP_INFO(get_logger(), "Configuring receiver (Gen: %s)...", config_.generation.c_str());
+    
+    // Step 0: Ping receiver to verify connection and baud rate
+    if (!pingReceiver()) {
+      RCLCPP_ERROR(get_logger(), "Failed to communicate with receiver. Check connection and baud rate.");
+      return; 
+    }
+
     std::this_thread::sleep_for(500ms);
 
     // Step 1: GNSS signal configuration
@@ -247,6 +246,49 @@ class UbxDriverNode : public rclcpp::Node {
 
     is_configured_ = true;
     RCLCPP_INFO(get_logger(), "Receiver configuration complete");
+  }
+
+  bool pingReceiver() {
+    // Send MON-VER (0x0A 0x04) with empty payload (Poll request)
+    std::vector<uint8_t> payload = {};
+    sendUbxRaw(ubx::CLASS_MON, ubx::ID_MON_VER, payload);
+    
+    return waitForResponse(ubx::CLASS_MON, ubx::ID_MON_VER);
+  }
+
+  bool waitForResponse(uint8_t msg_class, uint8_t msg_id) {
+    auto start = std::chrono::steady_clock::now();
+    uint8_t buffer[256];
+    
+    RCLCPP_INFO(get_logger(), "Pinging receiver (MON-VER poll)...");
+    
+    // Simple state machine for packet header detection
+    int state = 0;
+    
+    // Wait up to 2 seconds for a response
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(2000)) {
+        int n = strread(&stream_, buffer, sizeof(buffer));
+        for (int i=0; i<n; ++i) {
+             uint8_t b = buffer[i];
+             
+             // Keep the main decoder updated to avoid buffer overflow/loss
+             if (input_ubx(&raw_, &rtcm_, b)) {
+                 // decoded something (maybe not what we want, but keep engine running)
+             }
+             
+             // Check for target packet header: SYNC1 SYNC2 CLASS ID
+             switch (state) {
+                 case 0: if (b == ubx::SYNC1) state++; else state=0; break;
+                 case 1: if (b == ubx::SYNC2) state++; else state=0; break;
+                 case 2: if (b == msg_class)  state++; else state=0; break;
+                 case 3: if (b == msg_id)     return true; else state=0; break;
+             }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    RCLCPP_WARN(get_logger(), "Ping timeout (no response from receiver)");
+    return false;
   }
 
   // ============================================================================
@@ -683,12 +725,25 @@ class UbxDriverNode : public rclcpp::Node {
 
   void pollStream() {
     uint8_t buffer[ubx::READ_BUFFER_SIZE];
-    const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
+    
+    // Read loop to drain all available data from the stream
+    while (rclcpp::ok()) {
+      const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
+      
+      if (bytes_read <= 0) {
+        break; // No more data
+      }
 
-    for (int i = 0; i < bytes_read; ++i) {
-      const int result = input_ubx(&raw_, &rtcm_, buffer[i]);
-      if (result > 0) {
-        handleDecodeResult(result);
+      for (int i = 0; i < bytes_read; ++i) {
+        const int result = input_ubx(&raw_, &rtcm_, buffer[i]);
+        if (result > 0) {
+          handleDecodeResult(result);
+        }
+      }
+      
+      // If we read less than the full buffer, the stream is likely empty now
+      if (bytes_read < static_cast<int>(sizeof(buffer))) {
+        break;
       }
     }
   }

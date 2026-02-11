@@ -20,6 +20,7 @@ constexpr uint8_t CLASS_NAV = 0x01;
 constexpr uint8_t CLASS_RXM = 0x02;
 constexpr uint8_t CLASS_ACK = 0x05;
 constexpr uint8_t CLASS_CFG = 0x06;
+constexpr uint8_t CLASS_MON = 0x0A;
 
 // =============================================================================
 // UBX Message IDs
@@ -31,6 +32,9 @@ constexpr uint8_t ID_ACK_ACK = 0x01;
 
 // NAV
 constexpr uint8_t ID_NAV_PVT = 0x07;
+
+// MON
+constexpr uint8_t ID_MON_VER = 0x04;
 
 // RXM
 constexpr uint8_t ID_RXM_SFRBX = 0x13;
@@ -172,6 +176,14 @@ struct ValsetItem {
 struct StreamTypeDef {
   std::string_view prefix;
   int type;
+};
+
+/// Supported stream type prefixes (using MALIB stream types)
+constexpr StreamTypeDef kStreamTypes[] = {
+    {"tcpcli://", STR_TCPCLI},
+    {"serial://", STR_SERIAL},
+    {"ntrip://", STR_NTRIPCLI},
+    {"file://", STR_FILE},
 };
 
 // =============================================================================

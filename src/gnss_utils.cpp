@@ -244,7 +244,9 @@ gnss_ros_standardization::msg::GnssObservation obsToMsg(const obsd_t& o, int kf)
   obs.l             = o.L[kf];
   obs.d             = o.D[kf];
   obs.snr           = static_cast<float>(o.SNR[kf]) * 0.001f; 
-  obs.lli           = o.LLI[kf];
+  // Mask LLI to standard 2 bits (Cycle slip, Half cycle ambiguity)
+  // Ignore internal flags like 0x80 (Half cycle subtracted)
+  obs.lli           = o.LLI[kf] & 0x03;
 
   return obs;
 }

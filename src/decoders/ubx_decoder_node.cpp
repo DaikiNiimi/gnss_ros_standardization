@@ -8,29 +8,15 @@
 #include <vector>
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
+#include "gnss_ros_standardization/ubx_protocol.hpp"
 
 using namespace std::chrono_literals;
+
+namespace ubx = gnss_ros_standardization::ubx;
 
 namespace gnss_ros_standardization {
 
 namespace {
-
-/// Stream type definition for URI prefix matching
-struct StreamTypeDef {
-  std::string_view prefix;
-  int type;
-};
-
-/// Supported stream type prefixes
-constexpr StreamTypeDef kStreamTypes[] = {
-    {"tcpcli://", STR_TCPCLI},
-    {"serial://", STR_SERIAL},
-    {"ntrip://", STR_NTRIPCLI},
-    {"file://", STR_FILE},
-};
-
-/// Buffer size for stream reading
-constexpr size_t kReadBufferSize = 4096;
 
 /// Timer interval for stream polling
 constexpr auto kTimerInterval = 10ms;
@@ -106,7 +92,7 @@ class UbxDecoderNode : public rclcpp::Node {
     // Match stream type from URI prefix
     int stream_type = 0;
     bool matched = false;
-    for (const auto& def : kStreamTypes) {
+    for (const auto& def : ubx::kStreamTypes) {
       if (path.rfind(def.prefix, 0) == 0) {
         stream_type = def.type;
         path.erase(0, def.prefix.size());
@@ -127,7 +113,11 @@ class UbxDecoderNode : public rclcpp::Node {
       RCLCPP_DEBUG(get_logger(), "Adjusted serial path for MALIB: %s", path.c_str());
     }
 
-    if (!stropen(&stream_, stream_type, STR_MODE_R, path.c_str())) {
+    // Convert std::string to const char* for atropen
+    std::vector<char> path_buf(path.begin(), path.end());
+    path_buf.push_back('\0');
+
+    if (!stropen(&stream_, stream_type, STR_MODE_R, path_buf.data())) {
       RCLCPP_ERROR(get_logger(), "Failed to open stream: %s", stream_path.c_str());
       throw std::runtime_error("stropen failed");
     }
@@ -136,7 +126,7 @@ class UbxDecoderNode : public rclcpp::Node {
   }
 
   void pollStream() {
-    uint8_t buffer[kReadBufferSize];
+    uint8_t buffer[ubx::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
 
     for (int i = 0; i < bytes_read; ++i) {
@@ -194,9 +184,9 @@ class UbxDecoderNode : public rclcpp::Node {
 
     obs_pub_->publish(msg);
 
-    RCLCPP_DEBUG(
+    RCLCPP_INFO(
         get_logger(),
-        "Published observations: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/S/U)=(%d/%d/%d/%d/%d/%d/%d)",
+        "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/S/U)=(%d/%d/%d/%d/%d/%d/%d)",
         week, tow, msg.observations.size(), sat_count.gps, sat_count.glo, sat_count.gal,
         sat_count.qzs, sat_count.bds, sat_count.sbs, sat_count.unknown);
   }
