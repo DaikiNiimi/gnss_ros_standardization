@@ -8,29 +8,13 @@
 #include <vector>
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
+#include "gnss_ros_standardization/sbf_protocol.hpp"
 
 using namespace std::chrono_literals;
 
 namespace gnss_ros_standardization {
 
 namespace {
-
-/// Stream type definition for URI prefix matching
-struct StreamTypeDef {
-  std::string_view prefix;
-  int type;
-};
-
-/// Supported stream type prefixes
-constexpr StreamTypeDef kStreamTypes[] = {
-    {"tcpcli://", STR_TCPCLI},
-    {"serial://", STR_SERIAL},
-    {"ntrip://", STR_NTRIPCLI},
-    {"file://", STR_FILE},
-};
-
-/// Buffer size for stream reading
-constexpr size_t kReadBufferSize = 4096;
 
 /// Timer interval for stream polling
 constexpr auto kTimerInterval = 10ms;
@@ -103,7 +87,7 @@ class SbfDecoderNode : public rclcpp::Node {
     // Match stream type from URI prefix
     int stream_type = 0;
     bool matched = false;
-    for (const auto& def : kStreamTypes) {
+    for (const auto& def : sbf::kStreamTypes) {
       if (path.rfind(def.prefix, 0) == 0) {
         stream_type = def.type;
         path.erase(0, def.prefix.size());
@@ -132,7 +116,7 @@ class SbfDecoderNode : public rclcpp::Node {
   }
 
   void pollStream() {
-    uint8_t buffer[kReadBufferSize];
+    uint8_t buffer[sbf::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
 
     for (int i = 0; i < bytes_read; ++i) {

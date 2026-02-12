@@ -1,0 +1,62 @@
+# Septentrio Driver Configuration
+# 
+# Usage:
+#   ros2 run gnss_ros_standardization sbf_driver_node --ros-args \
+#     --params-file config/sbf_driver.yaml
+
+sbf_driver_node:
+  ros__parameters:
+    # ==========================================================================
+    # Basic Settings
+    # ==========================================================================
+    
+    # Stream path (serial, tcp, ntrip, file)
+    # Examples:
+    #   serial:///dev/ttyACM0:115200
+    #   tcpcli://192.168.1.100:5000
+    stream_path: "serial:///dev/ttyACM2:460800"
+    
+    # Measurement rate in Hz (1-100)
+    publish_rate: 10
+    
+    # ROS settings
+    frame_id: "gnss_link"
+    
+    # Send configuration commands on startup
+    # Set to false to use the receiver's current configuration as-is
+    configure_on_startup: true
+
+    # ==========================================================================
+    # Receiver Configuration
+    # ==========================================================================
+    
+    # Receiver output port
+    # Specifies which logical port on the receiver to configure for SBF output.
+    # Common values: USB1, USB2, COM1, COM2, IP10...
+    # Must match the physical connection used by stream_path.
+    receiver_port: "USB1"
+
+    # ==========================================================================
+    # Output Messages
+    # ==========================================================================
+    messages:
+      meas_epoch: true       # Raw observations (MeasEpoch)
+      gps_nav: true          # GPS Navigation data
+      glo_nav: true          # GLONASS Navigation data
+      gal_nav: true          # Galileo Navigation data
+      bds_nav: true          # BeiDou Navigation data
+      qzs_nav: true          # QZSS Navigation data
+      
+      # Position / Velocity / Time
+      pvt_geodetic: false    # PVT solution (geodetic)
+      pos_cov_geodetic: false # PVT covariance (geodetic)
+      pvt_cartesian: false   # PVT solution (cartesian)
+      pos_cov_cartesian: false # PVT covariance (cartesian)
+      
+      # Attitude
+      att_euler: false       # Attitude (Euler angles)
+      att_cov_euler: false   # Attitude covariance
+      
+      # Status
+      receiver_status: false # Receiver status
+      quality_ind: false     # Quality indicators
