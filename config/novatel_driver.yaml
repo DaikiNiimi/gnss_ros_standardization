@@ -10,7 +10,7 @@ novatel_driver_node:
     # ==========================================================================
     # Stream path: serial://<device>:<baud> or tcpcli://<host>:<port> or file://<path>
     # Common bauds: 9600, 115200, 230400, 460800, 921600
-    stream_path: "serial:///dev/ttyUSB1:230400"
+    stream_path: "serial:///dev/ttyUSB5:230400"
 
     # Receiver format: "oem4" (OEM4/6/7) or "oem3" (OEM3/Millennium)
     format: "oem4"
@@ -28,6 +28,10 @@ novatel_driver_node:
     # Whether to send configuration commands on startup
     configure_on_startup: true
 
+    # Topic Names
+    observation_topic: "/rover/gnss/observation"
+    ephemeris_topic: "/gnss/ephemeris"
+
     # ==========================================================================
     # Message Configuration
     # ==========================================================================
@@ -35,7 +39,7 @@ novatel_driver_node:
     messages:
       # Observation Data
       rangecmp: true        # RANGECMPB (Compressed Range) - Recommended
-      range: true          # RANGEB (Uncompressed Range)
+      range: false          # RANGEB (Uncompressed Range)
 
       # Position / Velocity
       bestpos: false        # BESTPOSB
@@ -43,10 +47,10 @@ novatel_driver_node:
 
       # Navigation Data (Ephemeris)
       gps_ephem: true       # GPSEPHEMB
-      glo_ephem: false       # GLOEPHEMERISB
-      gal_ephem: false       # GALEPHEMERISB / GALINAVEPHEMERISB
-      bds_ephem: false       # BDSEPHEMERISB
-      qzs_ephem: false       # QZSSEPHEMERISB
+      glo_ephem: true       # GLOEPHEMERISB
+      gal_ephem: true       # GALEPHEMERISB / GALINAVEPHEMERISB
+      bds_ephem: true       # BDSEPHEMERISB
+      qzs_ephem: true       # QZSSEPHEMERISB
       navic_ephem: false    # NAVICEPHEMERISB
 
-      ionutc: true          # IONUTCB/GALIONOB/QZSSIONUTCB
+      ionutc: false          # IONUTCB/GALIONOB/QZSSIONUTCB

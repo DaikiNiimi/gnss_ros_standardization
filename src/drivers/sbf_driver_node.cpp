@@ -51,6 +51,10 @@ struct SbfConfig {
   // Status
   bool enable_receiver_status{false};
   bool enable_quality_ind{false};
+
+  // Topics
+  std::string observation_topic{"/gnss/observation"};
+  std::string ephemeris_topic{"/gnss/ephemeris"};
 };
 
 /// @brief ROS 2 driver node for Septentrio GNSS receivers
@@ -110,6 +114,9 @@ class SbfDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.receiver_status", config_.enable_receiver_status);
     declare_parameter<bool>("messages.quality_ind", config_.enable_quality_ind);
 
+    declare_parameter<std::string>("observation_topic", config_.observation_topic);
+    declare_parameter<std::string>("ephemeris_topic", config_.ephemeris_topic);
+
     config_.stream_path = get_parameter("stream_path").as_string();
     config_.frame_id = get_parameter("frame_id").as_string();
     config_.publish_rate = get_parameter("publish_rate").as_int();
@@ -133,11 +140,14 @@ class SbfDriverNode : public rclcpp::Node {
     
     config_.enable_receiver_status = get_parameter("messages.receiver_status").as_bool();
     config_.enable_quality_ind = get_parameter("messages.quality_ind").as_bool();
+
+    config_.observation_topic = get_parameter("observation_topic").as_string();
+    config_.ephemeris_topic = get_parameter("ephemeris_topic").as_string();
   }
 
   void initializePublishers() {
-    obs_pub_ = create_publisher<msg::GnssObservations>("/gnss/observation", 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>("/gnss/ephemeris", 10);
+    obs_pub_ = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
+    eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, 10);
   }
 
   void initializeDecoder() {

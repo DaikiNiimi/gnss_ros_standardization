@@ -51,6 +51,10 @@ struct UbxConfig {
   bool enable_beidou{true};
   bool enable_qzss{true};
   bool enable_sbas{false};
+
+  // Topics
+  std::string observation_topic{"/gnss/observation"};
+  std::string ephemeris_topic{"/gnss/ephemeris"};
 };
 
 /// @brief ROS 2 driver node for u-blox GNSS receivers
@@ -115,6 +119,9 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<bool>("gnss.qzss", config_.enable_qzss);
     declare_parameter<bool>("gnss.sbas", config_.enable_sbas);
 
+    declare_parameter<std::string>("observation_topic", config_.observation_topic);
+    declare_parameter<std::string>("ephemeris_topic", config_.ephemeris_topic);
+
     // Read parameters
     config_.stream_path = get_parameter("stream_path").as_string();
     config_.rate_hz = get_parameter("rate_hz").as_int();
@@ -139,6 +146,9 @@ class UbxDriverNode : public rclcpp::Node {
     config_.enable_qzss = get_parameter("gnss.qzss").as_bool();
     config_.enable_sbas = get_parameter("gnss.sbas").as_bool();
 
+    config_.observation_topic = get_parameter("observation_topic").as_string();
+    config_.ephemeris_topic = get_parameter("ephemeris_topic").as_string();
+
     // Detect USB connection from path
     is_usb_connection_ = (config_.stream_path.find("ttyACM") != std::string::npos);
 
@@ -160,8 +170,8 @@ class UbxDriverNode : public rclcpp::Node {
   }
 
   void initializePublishers() {
-    obs_pub_ = create_publisher<msg::GnssObservations>("/gnss/observation", 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>("/gnss/ephemeris", 10);
+    obs_pub_ = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
+    eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, 10);
   }
 
   void initializeDecoder() {

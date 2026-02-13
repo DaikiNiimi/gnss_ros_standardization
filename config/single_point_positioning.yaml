@@ -10,7 +10,7 @@ spp_pntpos_node:
     # ==========================================================================
     
     # TCP port for RTKPLOT stream (providing NMEA output)
-    tcp_port: 8000
+    tcp_port: 8001
     
     # Input topics
     topics:
@@ -20,12 +20,23 @@ spp_pntpos_node:
     # ==========================================================================
     # Processing Options
     # ==========================================================================
+    
+    # Excluded Satellites (e.g. ["G01", "R03"])
+    excluded_satellites: [""]
 
     # Elevation mask in degrees
     elevation_mask_deg: 15.0
 
-    # SNR mask in dBHz
-    snr_mask_dbhz: 35.0
+    # SNR mask (dBHz) at 5, 15, 25, 35, 45, 55, 65, 75, 85 deg
+    # Set 'enable' to true to apply these masks.
+    snrmask:
+      enable: false
+      # L1/E1/B1
+      l1: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+      # L2/E5b/B2
+      l2: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+      # L5/E5a/B2a
+      l5: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
 
     # ==========================================================================
     # Navigation Systems

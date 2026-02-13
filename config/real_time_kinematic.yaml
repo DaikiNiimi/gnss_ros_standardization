@@ -1,0 +1,133 @@
+rtk_position_node:
+  ros__parameters:
+    # ==========================================================================
+    # Input / Output
+    # ==========================================================================
+    topics:
+      rover_observation: "/rover/gnss/observation"
+      base_observation: "/base/gnss/observation"
+      ephemeris: "/gnss/ephemeris"
+    
+    # TCP port for RTKPLOT stream (providing NMEA output)
+    tcp_port: 8002
+
+    # ==========================================================================
+    # Excluded Satellites (e.g. ["G01", "R03", "E12"])
+    # ==========================================================================
+    excluded_satellites: [""]
+
+    # ==========================================================================
+    # Station Positions
+    # ==========================================================================
+    ant2:
+      # Base station position type (ecef, llh, or rtcm)
+      postype: "llh"
+      # Base position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
+      pos: [35.134709472, 136.977574273, 104.7180]
+
+    # ==========================================================================
+    # Setting 1 (pos1)
+    # ==========================================================================
+    pos1:
+      # Positioning mode (2:kinematic, 1:static, 0:single) - Kinematic is default for this node
+      # posmode: 2 
+      
+      # Frequencies (1:l1, 2:l1+l2, 3:l1+l2+l5)
+      frequency: 2
+      # Elevation mask in degrees
+      elmask: 15.0
+      # Dynamics model (0:off, 1:on)
+      dynamics: 1
+      # Ionosphere option (0:off, 1:brdc, 2:sbas, 3:dual-freq, 4:est-stec)
+      ionoopt: 1
+      # Troposphere option (0:off, 1:saas, 2:sbas, 3:est-ztd, 4:est-ztdgrad)
+      tropopt: 1
+      # Satellite ephemeris/clock (0:brdc, 1:precise, 2:brdc+sbas)
+      sateph: 0
+      
+      # Navigation systems enabled
+      navsys:
+        gps: true
+        glo: false
+        gal: true
+        bds: true
+        qzs: true
+        
+      # SNR mask (dBHz) at 5, 15, 25, 35, 45, 55, 65, 75, 85 deg
+      # Set 'enable' to true to apply these masks.
+      snrmask:
+        enable: true
+        # L1/E1/B1
+        l1: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        # L2/E5b/B2
+        l2: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        # L5/E5a/B2a
+        l5: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+
+    # ==========================================================================
+    # Setting 2 (pos2)
+    # ==========================================================================
+    pos2:
+      # AR mode (0:off, 1:continuous, 2:instantaneous, 3:fix-and-hold)
+      armode: 2
+      # GLONASS AR mode (0:off, 1:on, 2:autocal)
+      gloarmode: 1
+      # BeiDou AR mode (0:off, 1:on)
+      bdsarmode: 1
+      # AR validation threshold (ratio)
+      arthres: 3.0
+      # Min lock count to fix ambiguity
+      arlockcnt: 0
+      # Elevation mask of AR for rising satellite (deg)
+      arelmask: 0.0
+      # Min fix count to hold ambiguity
+      arminfix: 10
+      # Max iteration to resolve ambiguity
+      armaxiter: 1
+      # Elevation mask to hold ambiguity (deg)
+      elmaskhold: 0.0
+      # Obs outage count to reset bias
+      aroutcnt: 5
+      # Max age of differential (s)
+      maxage: 30.0
+      # Solution sync mode (0:off, 1:on)
+      syncsol: 0
+      # Slip threshold of geometry-free phase (m)
+      slipthres: 0.05
+      # Reject threshold of innovation (m)
+      rejionno: 30.0
+      # Reject threshold of GDOP
+      rejgdop: 30.0
+      # Number of filter iteration
+      niter: 1
+
+    # ==========================================================================
+    # Statistics (stats)
+    # ==========================================================================
+    rtk_stats:
+      # Code/Phase error ratio
+      eratio1: 100.0
+      eratio2: 100.0
+      # Measurement error factor (phase) a/b (m)
+      errphase: 0.003
+      errphaseel: 0.003
+      # Doppler frequency error (Hz)
+      errdoppler: 1.0
+      # Initial-state STD [0]bias
+      stdbias: 30.0
+      # Initial-state STD [1]iono
+      stdiono: 0.03
+      # Initial-state STD [2]trop
+      stdtrop: 0.3
+      # Process-noise STD [3]acch
+      prnaccelh: 10.0
+      # Process-noise STD [4]accv
+      prnaccelv: 10.0
+      # Process-noise STD [0]bias
+      prnbias: 0.0001
+      # Process-noise STD [1]iono
+      prniono: 0.001
+      # Process-noise STD [2]trop
+      prntrop: 0.0001
+      # Process-noise STD [5]pos
+      prnpos: 0.0

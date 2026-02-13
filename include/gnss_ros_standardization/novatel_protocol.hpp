@@ -90,6 +90,7 @@ constexpr const char* LOG_OEM3_UTCB     = "UTCB"; // UTC Parameters
 // Command Constants
 // =============================================================================
 constexpr const char* CMD_UNLOGALL = "UNLOGALL";
+constexpr const char* CMD_UNLOG    = "UNLOG";
 constexpr const char* CMD_LOG = "LOG";
 constexpr const char* CMD_ONTIME = "ONTIME";
 constexpr const char* CMD_ONCHANGED = "ONCHANGED";

@@ -29,9 +29,11 @@ public:
   RtcmDecoderNode() : Node("rtcm_decoder_node") {
     declare_parameter<std::string>("stream_path", "tcpcli://127.0.0.1:28003");
     declare_parameter<int>("assemble_delay_ms", 200);  // reserved
+    declare_parameter<std::string>("observation_topic", "/gnss/observation");
+    declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
 
-    obs_pub_ = create_publisher<gnss_ros_standardization::msg::GnssObservations>("/gnss/observation", 10);
-    nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>("/gnss/ephemeris", 10);
+    obs_pub_ = create_publisher<gnss_ros_standardization::msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
+    nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), 10);
 
     if (init_rtcm(&rtcm_) != 1) {
       RCLCPP_ERROR(get_logger(), "init_rtcm failed");

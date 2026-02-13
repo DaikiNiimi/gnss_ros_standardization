@@ -46,6 +46,10 @@ struct NovatelConfig {
   bool enable_navic_ephem{false};
   
   bool enable_ionutc{true};
+
+  // Topics
+  std::string observation_topic{"/gnss/observation"};
+  std::string ephemeris_topic{"/gnss/ephemeris"};
 };
 
 /// @brief ROS 2 driver node for NovAtel GNSS receivers
@@ -101,6 +105,9 @@ class NovatelDriverNode : public rclcpp::Node {
     
     declare_parameter<bool>("messages.ionutc", config_.enable_ionutc);
 
+    declare_parameter<std::string>("observation_topic", config_.observation_topic);
+    declare_parameter<std::string>("ephemeris_topic", config_.ephemeris_topic);
+
     config_.stream_path = get_parameter("stream_path").as_string();
     config_.frame_id = get_parameter("frame_id").as_string();
     config_.publish_rate = get_parameter("publish_rate").as_int();
@@ -126,11 +133,14 @@ class NovatelDriverNode : public rclcpp::Node {
     config_.enable_navic_ephem = get_parameter("messages.navic_ephem").as_bool();
     
     config_.enable_ionutc = get_parameter("messages.ionutc").as_bool();
+
+    config_.observation_topic = get_parameter("observation_topic").as_string();
+    config_.ephemeris_topic = get_parameter("ephemeris_topic").as_string();
   }
 
   void initializePublishers() {
-    obs_pub_ = create_publisher<msg::GnssObservations>("/gnss/observation", 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>("/gnss/ephemeris", 10);
+    obs_pub_ = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
+    eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, 10);
   }
 
   void initializeDecoder() {
@@ -215,50 +225,79 @@ class NovatelDriverNode : public rclcpp::Node {
   void configureReceiverOem4(const std::string& port_prefix, const std::string& ontime_suffix, const std::string& onchanged_suffix) {
     if (config_.enable_rangecmp) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_RANGECMP + ontime_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_RANGECMP);
     }
     if (config_.enable_range) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_RANGE + ontime_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_RANGE);
     }
     if (config_.enable_bestpos) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_BESTPOS + ontime_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_BESTPOS);
     }
     if (config_.enable_bestvel) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_BESTVEL + ontime_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_BESTVEL);
     }
 
     if (config_.enable_gps_ephem) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_GPSEPHEM + onchanged_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_GPSEPHEM);
     }
     if (config_.enable_glo_ephem) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_GLOEPHEMERIS + onchanged_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_GLOEPHEMERIS);
     }
     if (config_.enable_gal_ephem) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_GALEPHEMERIS + onchanged_suffix);
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_GALINAVEPHEMERIS + onchanged_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_GALEPHEMERIS);
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_GALINAVEPHEMERIS);
     }
     if (config_.enable_bds_ephem) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_BDSEPHEMERIS + onchanged_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_BDSEPHEMERIS);
     }
     if (config_.enable_qzs_ephem) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_QZSSEPHEMERIS + onchanged_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_QZSSEPHEMERIS);
     }
     if (config_.enable_navic_ephem) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_NAVICEPHEMERIS + onchanged_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_NAVICEPHEMERIS);
     }
     
     if (config_.enable_ionutc) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_IONUTC + onchanged_suffix);
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_GALIONO + onchanged_suffix);
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_QZSSIONUTC + onchanged_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_IONUTC);
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_GALIONO);
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_QZSSIONUTC);
     }
   }
 
   void configureReceiverOem3(const std::string& port_prefix, const std::string& ontime_suffix, const std::string& onchanged_suffix) {
     if (config_.enable_rangecmp) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_OEM3_RGED + ontime_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_OEM3_RGED);
     }
     if (config_.enable_range) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_OEM3_RGEB + ontime_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_OEM3_RGEB);
     }
     // OEM3 doesn't support BESTPOS/BESTVEL in the same way or MALIB doesn't support it.
     // Logging warning if requested.
@@ -268,6 +307,8 @@ class NovatelDriverNode : public rclcpp::Node {
 
     if (config_.enable_gps_ephem) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_OEM3_REPB + onchanged_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_OEM3_REPB);
     }
     // OEM3 (Millennium) usually GPS only, maybe GLONASS? 
     // MALIB novatel.c seems to imply REPB is for GPS.
@@ -275,6 +316,9 @@ class NovatelDriverNode : public rclcpp::Node {
     if (config_.enable_ionutc) {
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_OEM3_IONB + onchanged_suffix);
         sendCommand(std::string(novatel::CMD_LOG) + " " + port_prefix + novatel::LOG_OEM3_UTCB + onchanged_suffix);
+    } else {
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_OEM3_IONB);
+        sendCommand(std::string(novatel::CMD_UNLOG) + " " + port_prefix + novatel::LOG_OEM3_UTCB);
     }
   }
 
@@ -282,7 +326,7 @@ class NovatelDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Configuring receiver...");
 
     // 1. Unlog all messages first
-    sendCommand(std::string(novatel::CMD_UNLOGALL) + " " + config_.receiver_port);
+        sendCommand(std::string(novatel::CMD_UNLOGALL) + " " + config_.receiver_port);
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     // 2. Configure messages
@@ -334,6 +378,11 @@ class NovatelDriverNode : public rclcpp::Node {
   // ============================================================================
 
   void publishObservations() {
+    // Software filtering: if neither range nor rangecmp is enabled, don't publish
+    if (!config_.enable_rangecmp && !config_.enable_range) {
+        return;
+    }
+
     if (raw_.obs.n <= 0) {
       return;
     }
@@ -394,7 +443,16 @@ class NovatelDriverNode : public rclcpp::Node {
       if (eph.sat == 0) continue;
 
       int prn = 0;
-      if (satsys(eph.sat, &prn) == SYS_GLO) continue;
+      int sys = satsys(eph.sat, &prn);
+      
+      // Filter based on configuration
+      if (sys == SYS_GPS && !config_.enable_gps_ephem) continue;
+      if (sys == SYS_GAL && !config_.enable_gal_ephem) continue;
+      if (sys == SYS_CMP && !config_.enable_bds_ephem) continue;
+      if (sys == SYS_QZS && !config_.enable_qzs_ephem) continue;
+      if (sys == SYS_IRN && !config_.enable_navic_ephem) continue;
+
+      if (sys == SYS_GLO) continue; // Handled below in geph
 
       EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
       if (seen_ephemeris_.insert(key).second) {
@@ -407,6 +465,8 @@ class NovatelDriverNode : public rclcpp::Node {
     for (int i = 0; i < raw_.nav.ng; ++i) {
       const geph_t& geph = raw_.nav.geph[i];
       if (geph.sat == 0) continue;
+      
+      if (!config_.enable_glo_ephem) continue; // Filter GLONASS
 
       auto it = last_glo_iode_.find(geph.sat);
       if (it == last_glo_iode_.end() || it->second != geph.iode) {

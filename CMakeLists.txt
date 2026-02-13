@@ -263,6 +263,21 @@ if(BUILD_SPP_EXAMPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/sin
 elseif(BUILD_SPP_EXAMPLE)
   message(WARNING "BUILD_SPP_EXAMPLE=ON ですが src/positioning/single_point_positioning.cpp が見つかりません。")
 endif()
+# real time kinematic
+option(BUILD_RTK_EXAMPLE "Build real time kinematic example (rtkpos)" ON)
+
+if(BUILD_RTK_EXAMPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/real_time_kinematic.cpp")
+  add_executable(real_time_kinematic src/positioning/real_time_kinematic.cpp)
+  target_include_directories(real_time_kinematic PUBLIC ${_gen_include})
+  ament_target_dependencies(real_time_kinematic rclcpp std_msgs builtin_interfaces)
+  target_link_libraries(real_time_kinematic
+    gnss_utils
+    Threads::Threads)
+  add_dependencies(real_time_kinematic ${_rosidl_deps})
+  install(TARGETS real_time_kinematic DESTINATION lib/${PROJECT_NAME})
+elseif(BUILD_RTK_EXAMPLE)
+  message(WARNING "BUILD_RTK_EXAMPLE=ON but src/positioning/real_time_kinematic.cpp not found.")
+endif()
 
 # Export
 ament_export_dependencies(rosidl_default_runtime std_msgs builtin_interfaces)

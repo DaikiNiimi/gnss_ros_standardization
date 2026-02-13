@@ -58,6 +58,8 @@ class NovatelDecoderNode : public rclcpp::Node {
   void initializeParameters() {
     declare_parameter<std::string>("stream_path", "serial:///dev/ttyUSB0:115200");
     declare_parameter<std::string>("format", "oem4");
+    declare_parameter<std::string>("observation_topic", "/gnss/observation");
+    declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
 
     format_ = get_parameter("format").as_string();
     if (format_ != "oem3" && format_ != "oem4") {
@@ -67,8 +69,8 @@ class NovatelDecoderNode : public rclcpp::Node {
   }
 
   void initializePublishers() {
-    obs_pub_ = create_publisher<msg::GnssObservations>("/gnss/observation", 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>("/gnss/ephemeris", 10);
+    obs_pub_ = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
+    eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), 10);
   }
 
   void initializeDecoder() {

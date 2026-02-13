@@ -59,11 +59,19 @@ public:
     // Configure Masks
     opt_.elmin = get_parameter("elevation_mask_deg").as_double() * D2R;
     
-    double snr_mask = get_parameter("snr_mask_dbhz").as_double();
-    // Set mask for L1/L2/L3... (simplified to all freq for now)
-    opt_.snrmask.ena[0] = 1; // Enable for rover
-    for (int i=0; i<NFREQ; ++i) {
-        opt_.snrmask.mask[0][i] = snr_mask;
+    
+    // Configure SNR Mask
+    if (get_parameter("snrmask.enable").as_bool()) {
+        opt_.snrmask.ena[0] = 1; // rover
+        auto l1 = get_parameter("snrmask.l1").as_double_array();
+        auto l2 = get_parameter("snrmask.l2").as_double_array();
+        auto l5 = get_parameter("snrmask.l5").as_double_array();
+        
+        for (int i=0; i<9; ++i) {
+            if (i < (int)l1.size()) opt_.snrmask.mask[0][i] = l1[i];
+            if (i < (int)l2.size()) opt_.snrmask.mask[1][i] = l2[i];
+            if (i < (int)l5.size()) opt_.snrmask.mask[2][i] = l5[i];
+        }
     }
 
     // Configure Frequencies
@@ -79,6 +87,15 @@ public:
         opt_.nf = 2;
     } else {
         opt_.nf = 1;
+    }
+    
+    // Configure Excluded Satellites
+    auto excluded = get_parameter("excluded_satellites").as_string_array();
+    for (const auto& satid : excluded) {
+        int sat = satid2no(satid.c_str());
+        if (sat > 0 && sat <= MAXSAT) {
+            opt_.exsats[sat-1] = 1; // 1: excluded
+        }
     }
     
     RCLCPP_INFO(get_logger(), "Frequency config: L1=%d L2=%d L5=%d -> nf=%d", 
@@ -124,7 +141,12 @@ private:
     declare_parameter<std::string>("topics.ephemeris", "/gnss/ephemeris");
     
     declare_parameter<double>("elevation_mask_deg", 15.0);
-    declare_parameter<double>("snr_mask_dbhz", 35.0);
+    
+    // SNR Mask
+    declare_parameter<bool>("snrmask.enable", false);
+    declare_parameter<std::vector<double>>("snrmask.l1", {0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0});
+    declare_parameter<std::vector<double>>("snrmask.l2", {0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0});
+    declare_parameter<std::vector<double>>("snrmask.l5", {0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0});
     
     declare_parameter<bool>("nav_systems.gps", true);
     declare_parameter<bool>("nav_systems.glo", true);
@@ -136,6 +158,8 @@ private:
     declare_parameter<bool>("frequencies.enable_l1", true);
     declare_parameter<bool>("frequencies.enable_l2", true);
     declare_parameter<bool>("frequencies.enable_l5", true);
+
+    declare_parameter<std::vector<std::string>>("excluded_satellites", std::vector<std::string>{});
   }
 
   // (Helper functions toEph, toGeph, upsertEph, upsertGeph, solstatToString are unchanged)

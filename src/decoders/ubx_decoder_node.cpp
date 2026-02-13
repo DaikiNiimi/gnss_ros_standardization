@@ -57,13 +57,15 @@ class UbxDecoderNode : public rclcpp::Node {
   void initializeParameters() {
     declare_parameter<std::string>("stream_path", "serial:///dev/ttyACM0:115200");
     declare_parameter<std::string>("frame_id", "gnss_link");
+    declare_parameter<std::string>("observation_topic", "/gnss/observation");
+    declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
     
     frame_id_ = get_parameter("frame_id").as_string();
   }
 
   void initializePublishers() {
-    obs_pub_ = create_publisher<msg::GnssObservations>("/gnss/observation", 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>("/gnss/ephemeris", 10);
+    obs_pub_ = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
+    eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), 10);
   }
 
   void initializeDecoder() {
