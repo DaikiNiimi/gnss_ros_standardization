@@ -1,0 +1,52 @@
+# Single Point Positioning (SPP) Node Configuration
+# 
+# Usage:
+#   ros2 run gnss_ros_standardization spp_pntpos_node --ros-args --params-file config/spp_node.yaml
+
+spp_pntpos_node:
+  ros__parameters:
+    # ==========================================================================
+    # Input / Output
+    # ==========================================================================
+    
+    # TCP port for RTKPLOT stream (providing NMEA output)
+    tcp_port: 8000
+    
+    # Input topics
+    topics:
+      observation: "/gnss/observation"
+      ephemeris: "/gnss/ephemeris"
+
+    # ==========================================================================
+    # Processing Options
+    # ==========================================================================
+
+    # Elevation mask in degrees
+    elevation_mask_deg: 15.0
+
+    # SNR mask in dBHz
+    snr_mask_dbhz: 35.0
+
+    # ==========================================================================
+    # Navigation Systems
+    # ==========================================================================
+    # Set to true to enable processing for specific systems
+    nav_systems:
+      gps: true
+      glo: true
+      gal: true
+      bds: true
+      qzs: true
+      sbs: false
+
+    # ==========================================================================
+    # Frequencies
+    # ==========================================================================
+    # Enable specific frequency bands
+    # L1: GPS L1, GLO G1, GAL E1, BDS B1, QZS L1
+    # L2: GPS L2, GLO G2, BDS B2
+    # L5: GPS L5, GAL E5a, BDS B2a, QZS L5
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false

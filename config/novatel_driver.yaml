@@ -1,0 +1,52 @@
+# NovAtel Driver Configuration
+# 
+# Usage:
+#   ros2 run gnss_ros_standardization novatel_driver_node --ros-args --params-file config/novatel_driver.yaml
+
+novatel_driver_node:
+  ros__parameters:
+    # ==========================================================================
+    # Connection Settings
+    # ==========================================================================
+    # Stream path: serial://<device>:<baud> or tcpcli://<host>:<port> or file://<path>
+    # Common bauds: 9600, 115200, 230400, 460800, 921600
+    stream_path: "serial:///dev/ttyUSB1:230400"
+
+    # Receiver format: "oem4" (OEM4/6/7) or "oem3" (OEM3/Millennium)
+    format: "oem4"
+
+    # Frame ID for checking TF
+    frame_id: "gnss_link"
+
+    # Publish rate in Hz (max dependent on receiver model and baud rate)
+    publish_rate: 1
+
+    # Receiver port to configure data output on (e.g., USB1, COM1, COM2)
+    # This is used in the LOG command: LOG [receiver_port] [message] ONTIME [interval]
+    receiver_port: "USB2"
+
+    # Whether to send configuration commands on startup
+    configure_on_startup: true
+
+    # ==========================================================================
+    # Message Configuration
+    # ==========================================================================
+    # Enable/Disable specific SBF blocks
+    messages:
+      # Observation Data
+      rangecmp: true        # RANGECMPB (Compressed Range) - Recommended
+      range: true          # RANGEB (Uncompressed Range)
+
+      # Position / Velocity
+      bestpos: false        # BESTPOSB
+      bestvel: false        # BESTVELB
+
+      # Navigation Data (Ephemeris)
+      gps_ephem: true       # GPSEPHEMB
+      glo_ephem: false       # GLOEPHEMERISB
+      gal_ephem: false       # GALEPHEMERISB / GALINAVEPHEMERISB
+      bds_ephem: false       # BDSEPHEMERISB
+      qzs_ephem: false       # QZSSEPHEMERISB
+      navic_ephem: false    # NAVICEPHEMERISB
+
+      ionutc: true          # IONUTCB/GALIONOB/QZSSIONUTCB

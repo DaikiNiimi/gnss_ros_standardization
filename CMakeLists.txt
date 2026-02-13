@@ -119,6 +119,12 @@ target_include_directories(gnss_utils PRIVATE "${MALIB_ROOT}/src")
 target_link_libraries(gnss_utils rtkcore_lib rtkcore_config ${cpp_typesupport_target})
 ament_target_dependencies(gnss_utils rclcpp std_msgs builtin_interfaces)
 
+install(TARGETS gnss_utils
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
 # rtcm_decoder_node
 if(BUILD_RTCM_DECODER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/decoders/rtcm_decoder_node.cpp")
   add_executable(rtcm_decoder_node src/decoders/rtcm_decoder_node.cpp)
@@ -194,6 +200,19 @@ if(BUILD_NOVATEL_DECODER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/decode
   install(TARGETS novatel_decoder_node DESTINATION lib/${PROJECT_NAME})
 elseif(BUILD_NOVATEL_DECODER_NODE)
   message(WARNING "BUILD_NOVATEL_DECODER_NODE=ON but src/decoders/novatel_decoder_node.cpp not found.")
+endif()
+
+# novatel_driver_node (NovAtel driver with configuration)
+option(BUILD_NOVATEL_DRIVER_NODE "Build novatel_driver_node (NovAtel driver)" ON)
+if(BUILD_NOVATEL_DRIVER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/drivers/novatel_driver_node.cpp")
+  add_executable(novatel_driver_node src/drivers/novatel_driver_node.cpp)
+  target_include_directories(novatel_driver_node PUBLIC ${_gen_include})
+  ament_target_dependencies(novatel_driver_node rclcpp std_msgs builtin_interfaces)
+  target_link_libraries(novatel_driver_node gnss_utils Threads::Threads)
+  add_dependencies(novatel_driver_node ${_rosidl_deps})
+  install(TARGETS novatel_driver_node DESTINATION lib/${PROJECT_NAME})
+elseif(BUILD_NOVATEL_DRIVER_NODE)
+  message(WARNING "BUILD_NOVATEL_DRIVER_NODE=ON but src/drivers/novatel_driver_node.cpp not found.")
 endif()
 
 # rosbag_to_rinex

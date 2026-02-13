@@ -25,31 +25,71 @@ namespace grs = gnss_ros_standardization::msg;
 class SppPntposNode : public rclcpp::Node {
 public:
   SppPntposNode() : Node("spp_pntpos_node") {
+    initializeParameters();
+
+    // Use configured topic names
+    const std::string obs_topic = get_parameter("topics.observation").as_string();
+    const std::string eph_topic = get_parameter("topics.ephemeris").as_string();
+
     obs_sub_ = create_subscription<grs::GnssObservations>(
-      "/gnss/observation", rclcpp::QoS(50),
+      obs_topic, rclcpp::QoS(50),
       std::bind(&SppPntposNode::onObs, this, std::placeholders::_1));
 
     nav_sub_ = create_subscription<grs::GnssEphemerides>(
-      "/gnss/ephemeris", rclcpp::QoS(10).reliable(),
+      eph_topic, rclcpp::QoS(10).reliable(),
       std::bind(&SppPntposNode::onNav, this, std::placeholders::_1));
 
     opt_ = prcopt_default;
     opt_.mode    = PMODE_SINGLE;
     opt_.nf      = 1;
-    opt_.navsys  = SYS_GPS | SYS_GLO | SYS_GAL | SYS_QZS | SYS_CMP;
+    
+    // Configure Nav Systems
+    opt_.navsys = 0;
+    if (get_parameter("nav_systems.gps").as_bool()) opt_.navsys |= SYS_GPS;
+    if (get_parameter("nav_systems.glo").as_bool()) opt_.navsys |= SYS_GLO;
+    if (get_parameter("nav_systems.gal").as_bool()) opt_.navsys |= SYS_GAL;
+    if (get_parameter("nav_systems.bds").as_bool()) opt_.navsys |= SYS_CMP;
+    if (get_parameter("nav_systems.qzs").as_bool()) opt_.navsys |= SYS_QZS;
+    if (get_parameter("nav_systems.sbs").as_bool()) opt_.navsys |= SYS_SBS;
+
     opt_.ionoopt = IONOOPT_BRDC;
     opt_.tropopt = TROPOPT_SAAS;
     opt_.sateph  = EPHOPT_BRDC;
-    opt_.elmin = 15.0 * D2R;
-    opt_.snrmask.ena[0] = 1;
-    opt_.snrmask.mask[0][0] = 35.0;
-    opt_.snrmask.mask[0][1] = 35.0;
-    opt_.snrmask.mask[0][2] = 35.0;
+    
+    // Configure Masks
+    opt_.elmin = get_parameter("elevation_mask_deg").as_double() * D2R;
+    
+    double snr_mask = get_parameter("snr_mask_dbhz").as_double();
+    // Set mask for L1/L2/L3... (simplified to all freq for now)
+    opt_.snrmask.ena[0] = 1; // Enable for rover
+    for (int i=0; i<NFREQ; ++i) {
+        opt_.snrmask.mask[0][i] = snr_mask;
+    }
+
+    // Configure Frequencies
+    enable_l1_ = get_parameter("frequencies.enable_l1").as_bool();
+    enable_l2_ = get_parameter("frequencies.enable_l2").as_bool();
+    enable_l5_ = get_parameter("frequencies.enable_l5").as_bool();
+
+    // Dynamically set number of frequencies (nf)
+    // RTKLIB uses frequencies up to nf. So if L5 is used, nf must be 3.
+    if (enable_l5_) {
+        opt_.nf = 3;
+    } else if (enable_l2_) {
+        opt_.nf = 2;
+    } else {
+        opt_.nf = 1;
+    }
+    
+    RCLCPP_INFO(get_logger(), "Frequency config: L1=%d L2=%d L5=%d -> nf=%d", 
+                enable_l1_, enable_l2_, enable_l5_, opt_.nf);
 
     std::memset(&nav_, 0, sizeof(nav_));
 
     // --- TCP Server Setup ---
-    setupTcpServer(8000); // Start TCP server on port 8000
+    // --- TCP Server Setup ---
+    int tcp_port = get_parameter("tcp_port").as_int();
+    setupTcpServer(tcp_port); // Start TCP server
 
     RCLCPP_INFO(get_logger(), "SPP Point-Positioning Node has been started. Waiting for GNSS data...");
   }
@@ -78,6 +118,26 @@ public:
   }
 
 private:
+  void initializeParameters() {
+    declare_parameter<int>("tcp_port", 8000);
+    declare_parameter<std::string>("topics.observation", "/gnss/observation");
+    declare_parameter<std::string>("topics.ephemeris", "/gnss/ephemeris");
+    
+    declare_parameter<double>("elevation_mask_deg", 15.0);
+    declare_parameter<double>("snr_mask_dbhz", 35.0);
+    
+    declare_parameter<bool>("nav_systems.gps", true);
+    declare_parameter<bool>("nav_systems.glo", true);
+    declare_parameter<bool>("nav_systems.gal", true);
+    declare_parameter<bool>("nav_systems.bds", true);
+    declare_parameter<bool>("nav_systems.qzs", true);
+    declare_parameter<bool>("nav_systems.sbs", false);
+
+    declare_parameter<bool>("frequencies.enable_l1", true);
+    declare_parameter<bool>("frequencies.enable_l2", true);
+    declare_parameter<bool>("frequencies.enable_l5", true);
+  }
+
   // (Helper functions toEph, toGeph, upsertEph, upsertGeph, solstatToString are unchanged)
 
   void upsertEph(const eph_t &e) {
@@ -148,6 +208,17 @@ private:
       int prn = 0; const int sys = satsys(sat, &prn);
       const int idx = code2idx(sys, code);
       if (idx < 0) continue;
+
+      // Filter by frequency
+      // RTKLIB index mapping (roughly):
+      // 0 -> L1/E1/B1
+      // 1 -> L2/E5b/B2
+      // 2 -> L5/E5a/B2a
+      if (idx == 0 && !enable_l1_) continue;
+      if (idx == 1 && !enable_l2_) continue;
+      if (idx == 2 && !enable_l5_) continue;
+      if (idx > 2) continue; // Skip unsupported frequencies for now
+
       auto &acc = satmap[sat];
       if (!acc.inited) {
         acc.o = {}; acc.o.time = t; acc.o.sat = (uint8_t)sat; acc.o.rcv = 1;
@@ -325,6 +396,11 @@ private:
   std::mutex client_sockets_mtx_;
   std::thread server_thread_;
   bool run_server_ = false;
+
+  // Frequency flags
+  bool enable_l1_ = true;
+  bool enable_l2_ = true;
+  bool enable_l5_ = true;
 };
 
 int main(int argc, char** argv) {

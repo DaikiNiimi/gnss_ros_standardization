@@ -17,7 +17,7 @@ sbf_driver_node:
     stream_path: "serial:///dev/ttyACM2:460800"
     
     # Measurement rate in Hz (1-100)
-    publish_rate: 10
+    publish_rate: 1
     
     # ROS settings
     frame_id: "gnss_link"

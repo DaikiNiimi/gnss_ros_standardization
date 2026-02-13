@@ -8,29 +8,13 @@
 #include <vector>
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
+#include "gnss_ros_standardization/novatel_protocol.hpp"
 
 using namespace std::chrono_literals;
 
 namespace gnss_ros_standardization {
 
 namespace {
-
-/// Stream type definition for URI prefix matching
-struct StreamTypeDef {
-  std::string_view prefix;
-  int type;
-};
-
-/// Supported stream type prefixes
-constexpr StreamTypeDef kStreamTypes[] = {
-    {"tcpcli://", STR_TCPCLI},
-    {"serial://", STR_SERIAL},
-    {"ntrip://", STR_NTRIPCLI},
-    {"file://", STR_FILE},
-};
-
-/// Buffer size for stream reading
-constexpr size_t kReadBufferSize = 4096;
 
 /// Timer interval for stream polling
 constexpr auto kTimerInterval = 10ms;
@@ -73,12 +57,12 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   void initializeParameters() {
     declare_parameter<std::string>("stream_path", "serial:///dev/ttyUSB0:115200");
-    declare_parameter<std::string>("format", "oem4");  // oem4 or oem3
+    declare_parameter<std::string>("format", "oem4");
 
     format_ = get_parameter("format").as_string();
-    if (format_ != "oem4" && format_ != "oem3") {
-      RCLCPP_WARN(get_logger(), "Unknown format '%s', defaulting to oem4", format_.c_str());
-      format_ = "oem4";
+    if (format_ != "oem3" && format_ != "oem4") {
+        RCLCPP_WARN(get_logger(), "Unknown format '%s', defaulting to oem4", format_.c_str());
+        format_ = "oem4";
     }
   }
 
@@ -88,7 +72,12 @@ class NovatelDecoderNode : public rclcpp::Node {
   }
 
   void initializeDecoder() {
-    const int strfmt = (format_ == "oem3") ? STRFMT_OEM3 : STRFMT_OEM4;
+    int strfmt = STRFMT_OEM4;
+    if (format_ == "oem3") {
+        strfmt = STRFMT_OEM3;
+    }
+    
+    // Default to OEM4 format (covers OEM4/OEM6/OEM7)
     if (init_raw(&raw_, strfmt) != 1) {
       RCLCPP_ERROR(get_logger(), "Failed to initialize raw decoder");
       throw std::runtime_error("init_raw failed");
@@ -110,7 +99,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     // Match stream type from URI prefix
     int stream_type = 0;
     bool matched = false;
-    for (const auto& def : kStreamTypes) {
+    for (const auto& def : novatel::kStreamTypes) {
       if (path.rfind(def.prefix, 0) == 0) {
         stream_type = def.type;
         path.erase(0, def.prefix.size());
@@ -139,7 +128,7 @@ class NovatelDecoderNode : public rclcpp::Node {
   }
 
   void pollStream() {
-    uint8_t buffer[kReadBufferSize];
+    uint8_t buffer[novatel::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
 
     for (int i = 0; i < bytes_read; ++i) {
@@ -329,7 +318,7 @@ class NovatelDecoderNode : public rclcpp::Node {
   // ============================================================================
 
   // Configuration
-  std::string format_;
+  std::string format_{"oem4"};
 
   // Publishers
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr obs_pub_;
