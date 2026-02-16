@@ -50,6 +50,7 @@ struct UbxConfig {
   bool enable_galileo{true};
   bool enable_beidou{true};
   bool enable_qzss{true};
+  bool enable_navic{false};
   bool enable_sbas{false};
 
   // Topics
@@ -117,6 +118,8 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<bool>("gnss.galileo", config_.enable_galileo);
     declare_parameter<bool>("gnss.beidou", config_.enable_beidou);
     declare_parameter<bool>("gnss.qzss", config_.enable_qzss);
+    declare_parameter<bool>("gnss.qzss", config_.enable_qzss);
+    declare_parameter<bool>("gnss.navic", config_.enable_navic);
     declare_parameter<bool>("gnss.sbas", config_.enable_sbas);
 
     declare_parameter<std::string>("observation_topic", config_.observation_topic);
@@ -144,6 +147,8 @@ class UbxDriverNode : public rclcpp::Node {
     config_.enable_galileo = get_parameter("gnss.galileo").as_bool();
     config_.enable_beidou = get_parameter("gnss.beidou").as_bool();
     config_.enable_qzss = get_parameter("gnss.qzss").as_bool();
+    config_.enable_qzss = get_parameter("gnss.qzss").as_bool();
+    config_.enable_navic = get_parameter("gnss.navic").as_bool();
     config_.enable_sbas = get_parameter("gnss.sbas").as_bool();
 
     config_.observation_topic = get_parameter("observation_topic").as_string();
@@ -164,9 +169,9 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "  Rate: %d Hz", config_.rate_hz);
     RCLCPP_INFO(get_logger(), "  Generation: %s", config_.generation.c_str());
     RCLCPP_INFO(get_logger(), "  Dynamic model: %s", config_.dynamic_model.c_str());
-    RCLCPP_INFO(get_logger(), "  GNSS: GPS=%d GLO=%d GAL=%d BDS=%d QZS=%d SBAS=%d",
+    RCLCPP_INFO(get_logger(), "  GNSS: GPS=%d GLO=%d GAL=%d BDS=%d QZS=%d IRN=%d SBAS=%d",
                 config_.enable_gps, config_.enable_glonass, config_.enable_galileo,
-                config_.enable_beidou, config_.enable_qzss, config_.enable_sbas);
+                config_.enable_beidou, config_.enable_qzss, config_.enable_navic, config_.enable_sbas);
   }
 
   void initializePublishers() {
@@ -309,9 +314,9 @@ class UbxDriverNode : public rclcpp::Node {
     if (isGen10()) {
       setupGnssSignalsG10();
     } else {
-      RCLCPP_INFO(get_logger(), "GNSS configuration: GPS=%d GLO=%d GAL=%d BDS=%d QZS=%d SBAS=%d",
+      RCLCPP_INFO(get_logger(), "GNSS configuration: GPS=%d GLO=%d GAL=%d BDS=%d QZS=%d IRN=%d SBAS=%d",
                   config_.enable_gps, config_.enable_glonass, config_.enable_galileo,
-                  config_.enable_beidou, config_.enable_qzss, config_.enable_sbas);
+                  config_.enable_beidou, config_.enable_qzss, config_.enable_navic, config_.enable_sbas);
       // Gen 9 CFG-GNSS is complex and receiver-specific. The receiver's defaults
       // are generally reasonable. Full CFG-GNSS support would require capability detection.
     }
@@ -358,10 +363,11 @@ class UbxDriverNode : public rclcpp::Node {
     sendSignal(ubx::CFG_SIGNAL_GLO_L1_ENA, config_.enable_glonass, "GLO L1");
     sendSignal(ubx::CFG_SIGNAL_GLO_L2_ENA, config_.enable_glonass, "GLO L2");
     
-    RCLCPP_INFO(get_logger(), "GNSS signals configured (GPS:%d GLO:%d GAL:%d BDS:%d QZS:%d SBAS:%d)",
+    RCLCPP_INFO(get_logger(), "GNSS signals configured (GPS:%d GLO:%d GAL:%d BDS:%d QZS:%d IRN:%d SBAS:%d)",
         config_.enable_gps ? 1 : 0, config_.enable_glonass ? 1 : 0,
         config_.enable_galileo ? 1 : 0,
         config_.enable_beidou ? 1 : 0, config_.enable_qzss ? 1 : 0,
+        config_.enable_navic ? 1 : 0,
         config_.enable_sbas ? 1 : 0);
 
     // Signal configuration changes require a GNSS reset to take effect.
@@ -799,9 +805,9 @@ class UbxDriverNode : public rclcpp::Node {
 
     RCLCPP_INFO(
         get_logger(),
-        "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/S/U)=(%d/%d/%d/%d/%d/%d/%d)",
+        "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
         week, tow, msg.observations.size(), sat_count.gps, sat_count.glo, sat_count.gal,
-        sat_count.qzs, sat_count.bds, sat_count.sbs, sat_count.unknown);
+        sat_count.qzs, sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
   void appendObservations(const obsd_t& obs, std::vector<msg::GnssObservation>& observations) {
@@ -867,7 +873,7 @@ class UbxDriverNode : public rclcpp::Node {
   // ============================================================================
 
   struct SatelliteCount {
-    int gps = 0, glo = 0, gal = 0, qzs = 0, bds = 0, sbs = 0, unknown = 0;
+    int gps = 0, glo = 0, gal = 0, qzs = 0, bds = 0, irn = 0, sbs = 0, unknown = 0;
   };
 
   static void countSatellite(int sat, SatelliteCount& count) {
@@ -878,6 +884,7 @@ class UbxDriverNode : public rclcpp::Node {
       case SYS_GAL: ++count.gal; break;
       case SYS_QZS: ++count.qzs; break;
       case SYS_CMP: ++count.bds; break;
+      case SYS_IRN: ++count.irn; break;
       case SYS_SBS: ++count.sbs; break;
       default: ++count.unknown; break;
     }

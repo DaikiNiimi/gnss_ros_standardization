@@ -37,6 +37,7 @@ struct SbfConfig {
   bool enable_gal_nav{true};
   bool enable_bds_nav{true};
   bool enable_qzs_nav{true};
+  bool enable_navic_nav{false};
   
   // PVT
   bool enable_pvt_geodetic{false};
@@ -102,6 +103,7 @@ class SbfDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.gal_nav", config_.enable_gal_nav);
     declare_parameter<bool>("messages.bds_nav", config_.enable_bds_nav);
     declare_parameter<bool>("messages.qzs_nav", config_.enable_qzs_nav);
+    declare_parameter<bool>("messages.navic_nav", config_.enable_navic_nav);
     
     declare_parameter<bool>("messages.pvt_geodetic", config_.enable_pvt_geodetic);
     declare_parameter<bool>("messages.pos_cov_geodetic", config_.enable_pos_cov_geodetic);
@@ -129,6 +131,7 @@ class SbfDriverNode : public rclcpp::Node {
     config_.enable_gal_nav = get_parameter("messages.gal_nav").as_bool();
     config_.enable_bds_nav = get_parameter("messages.bds_nav").as_bool();
     config_.enable_qzs_nav = get_parameter("messages.qzs_nav").as_bool();
+    config_.enable_navic_nav = get_parameter("messages.navic_nav").as_bool();
     
     config_.enable_pvt_geodetic = get_parameter("messages.pvt_geodetic").as_bool();
     config_.enable_pos_cov_geodetic = get_parameter("messages.pos_cov_geodetic").as_bool();
@@ -240,6 +243,7 @@ class SbfDriverNode : public rclcpp::Node {
     if (config_.enable_gal_nav) blocks.push_back(sbf::BLOCK_GALNAV);
     if (config_.enable_bds_nav) blocks.push_back(sbf::BLOCK_BDSNAV);
     if (config_.enable_qzs_nav) blocks.push_back(sbf::BLOCK_QZSNAV);
+    if (config_.enable_navic_nav) blocks.push_back(sbf::BLOCK_NAVICNAV);
     
     if (config_.enable_pvt_geodetic) blocks.push_back(sbf::BLOCK_PVTGEODETIC);
     if (config_.enable_pos_cov_geodetic) blocks.push_back(sbf::BLOCK_POSCOVGEODETIC);
@@ -268,6 +272,23 @@ class SbfDriverNode : public rclcpp::Node {
     std::string cmd = std::string(sbf::CMD_SET_SBF_OUTPUT) + ", Stream1, " + 
                       config_.receiver_port + ", " + messages + ", " + interval_str + "\r\n";
     
+    // --------------------------------------------------------------------------------
+    // Reset Stream First (Force strict configuration)
+    // Some receivers persist/merge previous configurations. To ensure strict adherence
+    // to the enabled messages, we disable the stream first.
+    // Command: sso, Stream1, <Port>, MeasEpoch, off
+    // --------------------------------------------------------------------------------
+    std::string reset_cmd = std::string(sbf::CMD_SET_SBF_OUTPUT) + ", Stream1, " +
+                              config_.receiver_port + ", " + sbf::BLOCK_MEASEPOCH + ", off\r\n";
+    
+    RCLCPP_INFO(get_logger(), "Resetting stream before configuration: %s", reset_cmd.c_str());
+    int reset_written = strwrite(&stream_, (uint8_t*)reset_cmd.c_str(), reset_cmd.size());
+    if (reset_written < 0 || (reset_written == 0 && !is_serial_connection_)) {
+       RCLCPP_WARN(get_logger(), "Failed to write reset command, proceeding anyway.");
+    }
+    // Small delay to ensure reset is processed
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
     RCLCPP_INFO(get_logger(), "Sending configuration command to receiver port %s: %s", 
                 config_.receiver_port.c_str(), cmd.c_str());
 
@@ -280,7 +301,32 @@ class SbfDriverNode : public rclcpp::Node {
     }
 
     // Wait for the command to be processed
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Read response (ASCII)
+    // SBF receiver usually replies with "$R; sso, ... "
+    uint8_t resp_buf[1024];
+    int n_read = strread(&stream_, resp_buf, sizeof(resp_buf) - 1);
+    if (n_read > 0) {
+        resp_buf[n_read] = '\0';
+        std::string response(reinterpret_cast<char*>(resp_buf));
+        RCLCPP_INFO(get_logger(), "Receiver configuration response: %s", response.c_str());
+
+        // Check for error logic
+        // "invalid" or "Error" usually indicates rejection
+        if (response.find("invalid") != std::string::npos || response.find("Error") != std::string::npos) {
+            // If command failed and NavIC was enabled, try disabling it
+            if (config_.enable_navic_nav) {
+                RCLCPP_WARN(get_logger(), "Receiver rejected configuration with NavIC. Retrying without NavIC...");
+                config_.enable_navic_nav = false;
+                configureReceiver(); // Recursive retry (without NavIC)
+            } else {
+                RCLCPP_ERROR(get_logger(), "Receiver rejected configuration even without NavIC. Check port and other settings.");
+            }
+        }
+    } else {
+        RCLCPP_WARN(get_logger(), "No response received from receiver after configuration command.");
+    }
   }
 
   // ============================================================================
@@ -340,9 +386,9 @@ class SbfDriverNode : public rclcpp::Node {
 
     RCLCPP_INFO(
         get_logger(),
-        "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/S/U)=(%d/%d/%d/%d/%d/%d/%d)",
+        "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
         week, tow, msg.observations.size(), sat_count.gps, sat_count.glo, sat_count.gal,
-        sat_count.qzs, sat_count.bds, sat_count.sbs, sat_count.unknown);
+        sat_count.qzs, sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
   void appendObservations(const obsd_t& obs,
@@ -424,6 +470,7 @@ class SbfDriverNode : public rclcpp::Node {
     int gal = 0;
     int qzs = 0;
     int bds = 0;
+    int irn = 0;
     int sbs = 0;
     int unknown = 0;
   };
@@ -436,6 +483,7 @@ class SbfDriverNode : public rclcpp::Node {
       case SYS_GAL: ++count.gal; break;
       case SYS_QZS: ++count.qzs; break;
       case SYS_CMP: ++count.bds; break;
+      case SYS_IRN: ++count.irn; break;
       case SYS_SBS: ++count.sbs; break;
       default: ++count.unknown; break;
     }

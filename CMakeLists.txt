@@ -13,6 +13,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rcutils REQUIRED)
@@ -26,6 +27,7 @@ option(ENABLE_GAL "Enable Galileo" ON)
 option(ENABLE_BDS "Enable BeiDou (Compass)" ON)
 option(ENABLE_QZS "Enable QZSS" ON)
 option(ENABLE_SBS "Enable SBAS" ON)
+option(ENABLE_IRN "Enable IRNSS" ON)
 set(NEXOBS "3" CACHE STRING "Extra observation channels (NEXOBS)")
 option(BUILD_RTCM_DECODER_NODE "Build rtcm_decoder_node" ON)
 option(BUILD_RINEX_WRITER_TOOL "Build ros2_rinex_writer (db3->RINEX)" ON)
@@ -37,10 +39,11 @@ set(_msgs
   msg/GnssEphemeris.msg
   msg/GlonassEphemeris.msg
   msg/GnssEphemerides.msg
+  msg/GnssSolution.msg
 )
 rosidl_generate_interfaces(${PROJECT_NAME}
   ${_msgs}
-  DEPENDENCIES std_msgs builtin_interfaces
+  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
@@ -84,6 +87,7 @@ target_compile_definitions(rtkcore_config INTERFACE
   $<$<BOOL:${ENABLE_BDS}>:ENACMP>
   $<$<BOOL:${ENABLE_QZS}>:ENAQZS>
   $<$<BOOL:${ENABLE_SBS}>:ENASBS>
+  $<$<BOOL:${ENABLE_IRN}>:ENAIRN>
   NEXOBS=${NEXOBS}
 )
 target_include_directories(rtkcore_config INTERFACE "${MALIB_ROOT}/src")
@@ -282,3 +286,4 @@ endif()
 # Export
 ament_export_dependencies(rosidl_default_runtime std_msgs builtin_interfaces)
 ament_package()
+

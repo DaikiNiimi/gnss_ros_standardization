@@ -62,6 +62,7 @@ constexpr const char* BLOCK_GLONAV    = "GLONav";
 constexpr const char* BLOCK_GALNAV    = "GALNav";
 constexpr const char* BLOCK_BDSNAV    = "BDSNav";
 constexpr const char* BLOCK_QZSNAV    = "QZSNav";
+constexpr const char* BLOCK_NAVICNAV  = "NavICNav";
 constexpr const char* BLOCK_PVTGEODETIC = "PVTGeodetic";
 constexpr const char* BLOCK_POSCOVGEODETIC = "PosCovGeodetic";
 constexpr const char* BLOCK_PVTCARTESIAN = "PVTCartesian";

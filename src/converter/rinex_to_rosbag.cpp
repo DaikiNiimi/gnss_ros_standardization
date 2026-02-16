@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <type_traits>
 
 using gnss_ros_standardization::msg::GnssObservation;
 using gnss_ros_standardization::msg::GnssObservations;
@@ -81,6 +82,19 @@ int select_best_eph(const std::vector<int>& indices, const T* data_array, gtime_
         }
     }
     return best_idx;
+}
+
+// Helper to handle ROS 2 API differences (Humble vs Jazzy)
+// Humble: offered_qos_profiles is std::string
+// Jazzy+: offered_qos_profiles is std::vector<std::string>
+template <typename T>
+void set_qos_profile(T& tm, const std::string& profile) {
+    if constexpr (std::is_same_v<decltype(tm.offered_qos_profiles), std::string>) {
+        tm.offered_qos_profiles = profile;
+    } else {
+        // Assume std::vector<std::string>
+        tm.offered_qos_profiles.push_back(profile);
+    }
 }
 
 int main(int argc, char** argv) {
@@ -173,7 +187,9 @@ int main(int argc, char** argv) {
 
   rosbag2_storage::TopicMetadata tm;
   tm.serialization_format = "cdr";
-  tm.offered_qos_profiles = qos_profile;
+  
+  // Use helper to set QoS profile compatibly
+  set_qos_profile(tm, qos_profile);
 
   tm.name = "/gnss/observation";
   tm.type = "gnss_ros_standardization/msg/GnssObservations";

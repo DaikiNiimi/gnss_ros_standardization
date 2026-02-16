@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
+#include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 extern "C" {
   #include "rtklib.h"
@@ -57,6 +58,9 @@ public:
     RCLCPP_INFO(get_logger(), "Subscriptions created. Initializing RTK...");
     initializeRtk();
     RCLCPP_INFO(get_logger(), "RTK initialized.");
+
+    gnss_sol_pub_ = this->create_publisher<grs::GnssSolution>(
+      get_parameter("topics.solution").as_string(), 10);
 
     int tcp_port = get_parameter("tcp_port").as_int();
     if (tcp_port > 0) {
@@ -103,6 +107,7 @@ private:
     declare_safe("topics.rover_observation", std::string("/rover/gnss/observation"));
     declare_safe("topics.base_observation", std::string("/base/gnss/observation"));
     declare_safe("topics.ephemeris", std::string("/gnss/ephemeris"));
+    declare_safe("topics.solution", std::string("/gnss/solution"));
 
     // TCP Server
     declare_safe("tcp_port", 8000);
@@ -110,6 +115,10 @@ private:
     // Base Position
     declare_safe("ant2.postype", std::string("rtcm")); // ecef, llh, rtcm
     declare_safe("ant2.pos", std::vector<double>{0.0, 0.0, 0.0});
+
+    // Fixed Origin for Enu
+    declare_safe("fixed_origin.postype", std::string("llh"));
+    declare_safe("fixed_origin.pos", std::vector<double>{0.0, 0.0, 0.0});
 
     // pos1 options
     declare_safe("pos1.frequency", 2);
@@ -126,6 +135,7 @@ private:
     declare_safe("pos1.navsys.gal", true);
     declare_safe("pos1.navsys.bds", true);
     declare_safe("pos1.navsys.qzs", true);
+    declare_safe("pos1.navsys.irn", true);
 
     // SNR Mask
     declare_safe("pos1.snrmask.enable", false);
@@ -192,6 +202,7 @@ private:
     if (get_parameter("pos1.navsys.gal").as_bool()) opt.navsys |= SYS_GAL;
     if (get_parameter("pos1.navsys.bds").as_bool()) opt.navsys |= SYS_CMP;
     if (get_parameter("pos1.navsys.qzs").as_bool()) opt.navsys |= SYS_QZS;
+    if (get_parameter("pos1.navsys.irn").as_bool()) opt.navsys |= SYS_IRN;
 
     RCLCPP_INFO(get_logger(), "Init RTK: getting snrmask");
     // SNR mask
@@ -448,12 +459,195 @@ private:
         rtk_.sol.ns);
 
 
+
     int stat = rtkpos(&rtk_, obs.data(), static_cast<int>(obs.size()), &nav_);
 
     if (stat > 0) {
       double llh[3];
       ecef2pos(rtk_.sol.rr, llh);
       RCLCPP_INFO(get_logger(), "RTK %s | LLH: %.8f, %.8f, %.3f | Ratio: %.1f | Sats: %d",
+                  getStatString(rtk_.sol.stat).c_str(), llh[0]*R2D, llh[1]*R2D, llh[2],
+                  rtk_.sol.ratio, rtk_.sol.ns);
+      
+      // Calculate ENU velocity
+      double vel_ecef[3] = {rtk_.sol.rr[3], rtk_.sol.rr[4], rtk_.sol.rr[5]};
+      double vel_enu[3];
+      ecef2enu(llh, vel_ecef, vel_enu);
+
+      // Calculate Local ENU Position (Relative to Base)
+      double pos_enu[3];
+      // RTKLIB stores Base ECEF in rtk_.rb
+      if (norm(rtk_.rb, 3) > 0.0) {
+          double rb_llh[3];
+          ecef2pos(rtk_.rb, rb_llh);
+          double d_ecef[3] = {
+              rtk_.sol.rr[0] - rtk_.rb[0],
+              rtk_.sol.rr[1] - rtk_.rb[1],
+              rtk_.sol.rr[2] - rtk_.rb[2]
+          };
+          ecef2enu(rb_llh, d_ecef, pos_enu);
+      } else {
+          // Fallback if base not set (should not happen in RTK)
+          pos_enu[0] = 0; pos_enu[1] = 0; pos_enu[2] = 0;
+      }
+
+      // Publish GnssSolution
+      auto sol_msg = std::make_unique<grs::GnssSolution>();
+      sol_msg->header.stamp = this->now();
+      sol_msg->header.frame_id = "gnss_link";
+      
+      sol_msg->time_week = rtk_.sol.time.time / (7*24*3600); // Approximate week (RTKLIB internal time is GPST)
+      sol_msg->time_tow = fmod(rtk_.sol.time.time + rtk_.sol.time.sec, 7*24*3600); 
+
+      sol_msg->status = rtk_.sol.stat;
+      sol_msg->num_sats = rtk_.sol.ns;
+      sol_msg->ratio = rtk_.sol.ratio;
+      sol_msg->age_diff = rtk_.sol.age;
+      // Calculate DOPs
+      // Using rtk_.opt.elmin which should be populated during configuration
+      auto dops = gnss_utils::calculateDops(rtk_.ssat, MAXSAT, rtk_.opt.elmin);
+      
+      sol_msg->gdop = dops.gdop;
+      sol_msg->pdop = dops.pdop;
+      sol_msg->hdop = dops.hdop;
+      sol_msg->vdop = dops.vdop;
+
+      sol_msg->latitude = llh[0] * R2D;
+      sol_msg->longitude = llh[1] * R2D;
+      sol_msg->altitude = llh[2];
+
+      // Covariance (position) - RTKLIB gives float QR[6] = {xx,yy,zz,xy,yz,zx}
+      // Note: These are in ECEF usually for sol_t. Need rotation to ENU if strictly needed.
+      // For simplicity here, we populate diagonal. A full rotation P_enu = R * P_ecef * R' is better.
+      // Let's implement a proper rotation later if needed, or use the single point pos function which does it.
+      // For now, just fill diagonal with first 3 elements (xx, yy, zz) as approximation or placeholder.
+      // Position covariance (ENU)
+
+      // Global Position (ECEF)
+      sol_msg->position_ecef.x = rtk_.sol.rr[0];
+      sol_msg->position_ecef.y = rtk_.sol.rr[1];
+      sol_msg->position_ecef.z = rtk_.sol.rr[2];
+      // Note: qr is in ECEF, so we can map it directly to pos_cov_ecef if we treat it as such.
+      // RTKLIB sol_t qr is float[6] = {xx, yy, zz, xy, yz, zx} variance-covariance in ECEF?
+      // Actually RTKLIB documentation says:
+      // "float qr[6]; /* position variance/covariance (m^2) */
+      //               /* {c_xx,c_yy,c_zz,c_xy,c_yz,c_zx} or */
+      //               /* {c_ee,c_nn,c_uu,c_en,c_nu,c_ue} */"
+      // It depends on the mode. For RTK (kinematic), it is typically ECEF.
+      sol_msg->pos_cov_ecef[0] = rtk_.sol.qr[0];
+      sol_msg->pos_cov_ecef[4] = rtk_.sol.qr[1];
+      sol_msg->pos_cov_ecef[8] = rtk_.sol.qr[2];
+      sol_msg->pos_cov_ecef[1] = rtk_.sol.qr[3]; // xy
+      sol_msg->pos_cov_ecef[3] = rtk_.sol.qr[3]; // yx
+      sol_msg->pos_cov_ecef[5] = rtk_.sol.qr[4]; // yz
+      sol_msg->pos_cov_ecef[7] = rtk_.sol.qr[4]; // zy
+      sol_msg->pos_cov_ecef[2] = rtk_.sol.qr[5]; // zx
+      sol_msg->pos_cov_ecef[6] = rtk_.sol.qr[5]; // xz
+
+      // Global Velocity (ECEF)
+      sol_msg->velocity_ecef.x = rtk_.sol.rr[3];
+      sol_msg->velocity_ecef.y = rtk_.sol.rr[4];
+      sol_msg->velocity_ecef.z = rtk_.sol.rr[5];
+      // Velocity covariance
+      sol_msg->vel_cov_ecef[0] = rtk_.sol.qv[0];
+      sol_msg->vel_cov_ecef[4] = rtk_.sol.qv[1];
+      sol_msg->vel_cov_ecef[8] = rtk_.sol.qv[2];
+      sol_msg->vel_cov_ecef[1] = rtk_.sol.qv[3];
+      sol_msg->vel_cov_ecef[3] = rtk_.sol.qv[3];
+      sol_msg->vel_cov_ecef[5] = rtk_.sol.qv[4];
+      sol_msg->vel_cov_ecef[7] = rtk_.sol.qv[4];
+      sol_msg->vel_cov_ecef[2] = rtk_.sol.qv[5];
+      sol_msg->vel_cov_ecef[6] = rtk_.sol.qv[5];
+
+      // Local Origin (ECEF)
+      double origin_ecef[3] = {0.0, 0.0, 0.0};
+      
+      // Check fixed_origin parameters first
+      std::string fo_type = get_parameter("fixed_origin.postype").as_string();
+      std::vector<double> fo_pos = get_parameter("fixed_origin.pos").as_double_array();
+      
+      bool use_fixed = false;
+      if (fo_pos.size() == 3 && norm(fo_pos.data(), 3) > 0.0) {
+          if (fo_type == "llh") {
+              double input_llh[3] = {fo_pos[0] * D2R, fo_pos[1] * D2R, fo_pos[2]};
+              pos2ecef(input_llh, origin_ecef);
+              RCLCPP_INFO_ONCE(get_logger(), "RTK ENU Origin set from Config (LLH->ECEF)");
+          } else {
+              origin_ecef[0] = fo_pos[0];
+              origin_ecef[1] = fo_pos[1];
+              origin_ecef[2] = fo_pos[2];
+              RCLCPP_INFO_ONCE(get_logger(), "RTK ENU Origin set from Config (ECEF)");
+          }
+          use_fixed = true;
+      } 
+      
+      if (!use_fixed) {
+          // Fallback to Base Station Position (rtk_.rb)
+          if (norm(rtk_.rb, 3) > 0.0) {
+              origin_ecef[0] = rtk_.rb[0];
+              origin_ecef[1] = rtk_.rb[1];
+              origin_ecef[2] = rtk_.rb[2];
+          }
+      }
+
+      sol_msg->local_origin_ecef.x = origin_ecef[0];
+      sol_msg->local_origin_ecef.y = origin_ecef[1];
+      sol_msg->local_origin_ecef.z = origin_ecef[2];
+      
+      // Calculate Local Position (ENU) relative to chosen origin
+      if (norm(origin_ecef, 3) > 0.0) {
+          double origin_llh[3];
+          ecef2pos(origin_ecef, origin_llh);
+          
+          double d_ecef[3] = {
+              rtk_.sol.rr[0] - origin_ecef[0],
+              rtk_.sol.rr[1] - origin_ecef[1],
+              rtk_.sol.rr[2] - origin_ecef[2]
+          };
+          double loc_pos_enu[3];
+          ecef2enu(origin_llh, d_ecef, loc_pos_enu);
+          
+          sol_msg->local_position.x = loc_pos_enu[0];
+          sol_msg->local_position.y = loc_pos_enu[1];
+          sol_msg->local_position.z = loc_pos_enu[2];
+      } else {
+           // No origin, no local position
+           sol_msg->local_position.x = 0.0;
+           sol_msg->local_position.y = 0.0;
+           sol_msg->local_position.z = 0.0;
+      }
+
+      // Local Position Covariance (ENU) - Rotated from ECEF
+      // Re-adding this as per user request for "Local Position and its Covariance"
+      double Q_ecef[9] = {
+        rtk_.sol.qr[0], rtk_.sol.qr[3], rtk_.sol.qr[5],
+        rtk_.sol.qr[3], rtk_.sol.qr[1], rtk_.sol.qr[4],
+        rtk_.sol.qr[5], rtk_.sol.qr[4], rtk_.sol.qr[2]
+      };
+      double Q_enu[9];
+      gnss_utils::rotateCovariance(Q_ecef, llh[0], llh[1], Q_enu);
+      for(int i=0; i<9; ++i) sol_msg->local_pos_cov[i] = Q_enu[i];
+
+      // Local Velocity (ENU)
+      sol_msg->velocity_enu.x = vel_enu[0];
+      sol_msg->velocity_enu.y = vel_enu[1];
+      sol_msg->velocity_enu.z = vel_enu[2];
+      
+      // Velocity covariance (ENU) - Rotated from ECEF (rtk_.sol.qv)
+      double Qv_ecef[9] = {
+        rtk_.sol.qv[0], rtk_.sol.qv[3], rtk_.sol.qv[5],
+        rtk_.sol.qv[3], rtk_.sol.qv[1], rtk_.sol.qv[4],
+        rtk_.sol.qv[5], rtk_.sol.qv[4], rtk_.sol.qv[2]
+      };
+      double Qv_enu[9];
+      gnss_utils::rotateCovariance(Qv_ecef, llh[0], llh[1], Qv_enu);
+      
+      for(int i=0; i<9; ++i) sol_msg->vel_cov_enu[i] = Qv_enu[i];
+
+      gnss_sol_pub_->publish(std::move(sol_msg));
+
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000, 
+                  "RTK %s | LLH: %.8f, %.8f, %.3f | Ratio: %.1f | Sats: %d",
                   getStatString(rtk_.sol.stat).c_str(), llh[0]*R2D, llh[1]*R2D, llh[2],
                   rtk_.sol.ratio, rtk_.sol.ns);
       
@@ -558,6 +752,7 @@ private:
   rclcpp::Subscription<grs::GnssObservations>::SharedPtr rover_obs_sub_;
   rclcpp::Subscription<grs::GnssObservations>::SharedPtr base_obs_sub_;
   rclcpp::Subscription<grs::GnssEphemerides>::SharedPtr nav_sub_;
+  rclcpp::Publisher<grs::GnssSolution>::SharedPtr gnss_sol_pub_;
 
   // TCP Server
   int server_socket_ = -1;

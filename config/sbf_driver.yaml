@@ -14,10 +14,10 @@ sbf_driver_node:
     # Examples:
     #   serial:///dev/ttyACM0:115200
     #   tcpcli://192.168.1.100:5000
-    stream_path: "serial:///dev/ttyACM2:460800"
+    stream_path: "serial:///dev/ttyACM3:460800"
     
     # Measurement rate in Hz (1-100)
-    publish_rate: 1
+    publish_rate: 10
     
     # ROS settings
     frame_id: "gnss_link"
@@ -38,7 +38,7 @@ sbf_driver_node:
     # Specifies which logical port on the receiver to configure for SBF output.
     # Common values: USB1, USB2, COM1, COM2, IP10...
     # Must match the physical connection used by stream_path.
-    receiver_port: "USB1"
+    receiver_port: "USB2"
 
     # ==========================================================================
     # Output Messages
@@ -50,6 +50,7 @@ sbf_driver_node:
       gal_nav: true          # Galileo Navigation data
       bds_nav: true          # BeiDou Navigation data
       qzs_nav: true          # QZSS Navigation data
+      navic_nav: true        # NavIC Navigation data
       
       # Position / Velocity / Time
       pvt_geodetic: false    # PVT solution (geodetic)

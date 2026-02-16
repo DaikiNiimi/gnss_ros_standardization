@@ -153,7 +153,7 @@ private:
   };
   struct EpochBuffer {
     std::vector<gnss_ros_standardization::msg::GnssObservation> observations;
-    int cnt_G=0,cnt_R=0,cnt_E=0,cnt_J=0,cnt_C=0,cnt_S=0,cnt_U=0;
+    int cnt_G=0,cnt_R=0,cnt_E=0,cnt_J=0,cnt_C=0,cnt_I=0,cnt_S=0,cnt_U=0;
     int    week{0};
     double tow{0.0};
     gtime_t gpst_time{};
@@ -195,6 +195,7 @@ private:
         case SYS_GAL: ++epoch.cnt_E; break;
         case SYS_QZS: ++epoch.cnt_J; break;
         case SYS_CMP: ++epoch.cnt_C; break;
+        case SYS_IRN: ++epoch.cnt_I; break;
         case SYS_SBS: ++epoch.cnt_S; break;
         default:      ++epoch.cnt_U; break;
       }
@@ -216,9 +217,9 @@ private:
       obs_pub_->publish(msg);
 
       RCLCPP_INFO(get_logger(),
-        "obs published: week=%d tow=%.3f num=%zu sats(G/R/E/J/C/S/U)=(%d/%d/%d/%d/%d/%d/%d)",
+        "obs published: week=%d tow=%.3f num=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
         epoch.week, epoch.tow, msg.observations.size(),
-        epoch.cnt_G, epoch.cnt_R, epoch.cnt_E, epoch.cnt_J, epoch.cnt_C, epoch.cnt_S, epoch.cnt_U);
+        epoch.cnt_G, epoch.cnt_R, epoch.cnt_E, epoch.cnt_J, epoch.cnt_C, epoch.cnt_I, epoch.cnt_S, epoch.cnt_U);
 
       it = epochs_.erase(it);
     }

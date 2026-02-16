@@ -10,10 +10,12 @@
 #include <thread>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include "gnss_ros_standardization/msg/gnss_ephemerides.hpp"
+#include "gnss_ros_standardization/msg/gnss_solution.hpp"
+#include "gnss_ros_standardization/gnss_utils.hpp"
+
 #include <arpa/inet.h> 
 #include <unistd.h>
-
-#include "gnss_ros_standardization/gnss_utils.hpp"
 
 
 extern "C" {
@@ -28,16 +30,16 @@ public:
     initializeParameters();
 
     // Use configured topic names
-    const std::string obs_topic = get_parameter("topics.observation").as_string();
-    const std::string eph_topic = get_parameter("topics.ephemeris").as_string();
-
     obs_sub_ = create_subscription<grs::GnssObservations>(
-      obs_topic, rclcpp::QoS(50),
+      get_parameter("topics.observation").as_string(), rclcpp::QoS(50),
       std::bind(&SppPntposNode::onObs, this, std::placeholders::_1));
 
     nav_sub_ = create_subscription<grs::GnssEphemerides>(
-      eph_topic, rclcpp::QoS(10).reliable(),
+      get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(10).reliable(),
       std::bind(&SppPntposNode::onNav, this, std::placeholders::_1));
+
+    gnss_sol_pub_ = this->create_publisher<grs::GnssSolution>(
+      get_parameter("topics.solution").as_string(), 10);
 
     opt_ = prcopt_default;
     opt_.mode    = PMODE_SINGLE;
@@ -50,6 +52,7 @@ public:
     if (get_parameter("nav_systems.gal").as_bool()) opt_.navsys |= SYS_GAL;
     if (get_parameter("nav_systems.bds").as_bool()) opt_.navsys |= SYS_CMP;
     if (get_parameter("nav_systems.qzs").as_bool()) opt_.navsys |= SYS_QZS;
+    if (get_parameter("nav_systems.irn").as_bool()) opt_.navsys |= SYS_IRN;
     if (get_parameter("nav_systems.sbs").as_bool()) opt_.navsys |= SYS_SBS;
 
     opt_.ionoopt = IONOOPT_BRDC;
@@ -139,6 +142,7 @@ private:
     declare_parameter<int>("tcp_port", 8000);
     declare_parameter<std::string>("topics.observation", "/gnss/observation");
     declare_parameter<std::string>("topics.ephemeris", "/gnss/ephemeris");
+    declare_parameter<std::string>("topics.solution", "/gnss/solution");
     
     declare_parameter<double>("elevation_mask_deg", 15.0);
     
@@ -153,6 +157,7 @@ private:
     declare_parameter<bool>("nav_systems.gal", true);
     declare_parameter<bool>("nav_systems.bds", true);
     declare_parameter<bool>("nav_systems.qzs", true);
+    declare_parameter<bool>("nav_systems.irn", true);
     declare_parameter<bool>("nav_systems.sbs", false);
 
     declare_parameter<bool>("frequencies.enable_l1", true);
@@ -160,6 +165,9 @@ private:
     declare_parameter<bool>("frequencies.enable_l5", true);
 
     declare_parameter<std::vector<std::string>>("excluded_satellites", std::vector<std::string>{});
+    
+    declare_parameter<std::string>("fixed_origin.postype", "llh");
+    declare_parameter<std::vector<double>>("fixed_origin.pos", {0.0, 0.0, 0.0});
   }
 
   // (Helper functions toEph, toGeph, upsertEph, upsertGeph, solstatToString are unchanged)
@@ -296,11 +304,12 @@ private:
           int sat = i + 1; int sys = satsys(sat, NULL);
           if (sys == SYS_GPS) cnt_sys[0]++; else if (sys == SYS_GLO) cnt_sys[1]++;
           else if (sys == SYS_GAL) cnt_sys[2]++; else if (sys == SYS_QZS) cnt_sys[3]++;
-          else if (sys == SYS_CMP) cnt_sys[4]++; else if (sys == SYS_SBS) cnt_sys[6]++;
+          else if (sys == SYS_CMP) cnt_sys[4]++; else if (sys == SYS_IRN) cnt_sys[5]++;
+          else if (sys == SYS_SBS) cnt_sys[6]++;
       }
       char sat_breakdown[128];
-      snprintf(sat_breakdown, sizeof(sat_breakdown), "G:%d R:%d E:%d J:%d C:%d",
-              cnt_sys[0], cnt_sys[1], cnt_sys[2], cnt_sys[3], cnt_sys[4]);
+      snprintf(sat_breakdown, sizeof(sat_breakdown), "G:%d R:%d E:%d J:%d C:%d I:%d",
+              cnt_sys[0], cnt_sys[1], cnt_sys[2], cnt_sys[3], cnt_sys[4], cnt_sys[5]);
       char frq_breakdown[128] = "";
       if (opt_.nf >= 1) snprintf(frq_breakdown + strlen(frq_breakdown), sizeof(frq_breakdown) - strlen(frq_breakdown), "L1:%d", cnt_frq[0]);
       if (opt_.nf >= 2) snprintf(frq_breakdown + strlen(frq_breakdown), sizeof(frq_breakdown) - strlen(frq_breakdown), " L2:%d", cnt_frq[1]);
@@ -313,6 +322,165 @@ private:
         "SPP OK | Time: %s | LLH: (%.8f, %.8f, %.3f)m | Sats: %d (%s) | Freqs: (%s) | Sol: %s",
         time_str(sol.time, 3), llh[0] * R2D, llh[1] * R2D, llh[2], sol.ns,
         sat_breakdown, frq_breakdown, solstatToString(sol.stat).c_str());
+
+
+
+
+      // --- Publish GnssSolution ---
+      auto sol_msg = std::make_unique<grs::GnssSolution>();
+      sol_msg->header.stamp = this->now();
+      sol_msg->header.frame_id = "gnss_link";
+      
+      sol_msg->time_week = sol.time.time / (7*24*3600);
+      sol_msg->time_tow = fmod(sol.time.time + sol.time.sec, 7*24*3600);
+      
+      sol_msg->status = sol.stat;
+      sol_msg->num_sats = sol.ns;
+      sol_msg->ratio = sol.ratio;
+      sol_msg->age_diff = sol.age;
+      
+      
+      // Calculate DOPs using helper (sol_t does not have dop member)
+      auto dops = gnss_utils::calculateDops(ssat, MAXSAT, opt_.elmin);
+      sol_msg->gdop = dops.gdop;
+      sol_msg->pdop = dops.pdop;
+      sol_msg->hdop = dops.hdop;
+      sol_msg->vdop = dops.vdop;
+      
+      sol_msg->latitude = llh[0] * R2D;
+      sol_msg->longitude = llh[1] * R2D;
+      sol_msg->altitude = llh[2];
+      
+      // Global Position (ECEF)
+      sol_msg->position_ecef.x = sol.rr[0];
+      sol_msg->position_ecef.y = sol.rr[1];
+      sol_msg->position_ecef.z = sol.rr[2];
+      
+      // Position Covariance (ECEF)
+      sol_msg->pos_cov_ecef[0] = sol.qr[0]; // xx
+      sol_msg->pos_cov_ecef[4] = sol.qr[1]; // yy
+      sol_msg->pos_cov_ecef[8] = sol.qr[2]; // zz
+      sol_msg->pos_cov_ecef[1] = sol.qr[3]; // xy
+      sol_msg->pos_cov_ecef[3] = sol.qr[3]; // yx
+      sol_msg->pos_cov_ecef[5] = sol.qr[4]; // yz
+      sol_msg->pos_cov_ecef[7] = sol.qr[4]; // zy
+      sol_msg->pos_cov_ecef[2] = sol.qr[5]; // zx
+      sol_msg->pos_cov_ecef[6] = sol.qr[5]; // xz
+
+      // Global Velocity (ECEF)
+      sol_msg->velocity_ecef.x = sol.rr[3];
+      sol_msg->velocity_ecef.y = sol.rr[4];
+      sol_msg->velocity_ecef.z = sol.rr[5];
+      
+      // Velocity Covariance (ECEF)
+      sol_msg->vel_cov_ecef[0] = sol.qv[0];
+      sol_msg->vel_cov_ecef[4] = sol.qv[1];
+      sol_msg->vel_cov_ecef[8] = sol.qv[2];
+      sol_msg->vel_cov_ecef[1] = sol.qv[3];
+      sol_msg->vel_cov_ecef[3] = sol.qv[3];
+      sol_msg->vel_cov_ecef[5] = sol.qv[4];
+      sol_msg->vel_cov_ecef[7] = sol.qv[4];
+      sol_msg->vel_cov_ecef[2] = sol.qv[5];
+      sol_msg->vel_cov_ecef[6] = sol.qv[5];
+
+      // Local Origin (ECEF)
+      if (norm(origin_ecef_, 3) <= 0.0) {
+          // Check parameters first
+          std::string type = get_parameter("fixed_origin.postype").as_string();
+          std::vector<double> pos = get_parameter("fixed_origin.pos").as_double_array();
+          
+          if (pos.size() == 3 && norm(pos.data(), 3) > 0.0) {
+              if (type == "llh") {
+                  // Convert LLH to ECEF
+                  double input_llh[3] = {pos[0] * D2R, pos[1] * D2R, pos[2]};
+                  pos2ecef(input_llh, origin_ecef_);
+                  RCLCPP_INFO(get_logger(), "ENU Origin set from Config (LLH): %.8f, %.8f, %.3f -> ECEF: %.3f, %.3f, %.3f", 
+                              pos[0], pos[1], pos[2], origin_ecef_[0], origin_ecef_[1], origin_ecef_[2]);
+              } else {
+                  // Assume ECEF
+                  origin_ecef_[0] = pos[0];
+                  origin_ecef_[1] = pos[1];
+                  origin_ecef_[2] = pos[2];
+                  RCLCPP_INFO(get_logger(), "ENU Origin set from Config (ECEF): %.3f, %.3f, %.3f", 
+                              origin_ecef_[0], origin_ecef_[1], origin_ecef_[2]);
+              }
+              origin_set_ = true;
+          } else if (!origin_set_) {
+              // Auto-set from first fix (Datum)
+              origin_ecef_[0] = sol.rr[0];
+              origin_ecef_[1] = sol.rr[1];
+              origin_ecef_[2] = sol.rr[2];
+              origin_set_ = true;
+              RCLCPP_INFO(get_logger(), "ENU Origin set to First Fix: %.3f, %.3f, %.3f", 
+                          origin_ecef_[0], origin_ecef_[1], origin_ecef_[2]);
+          }
+      }
+
+      sol_msg->local_origin_ecef.x = origin_ecef_[0];
+      sol_msg->local_origin_ecef.y = origin_ecef_[1];
+      sol_msg->local_origin_ecef.z = origin_ecef_[2];
+
+      // Local Position (ENU)
+      if (origin_set_) {
+          double origin_llh[3];
+          ecef2pos(origin_ecef_, origin_llh);
+          
+          double d_ecef[3] = {
+              sol.rr[0] - origin_ecef_[0],
+              sol.rr[1] - origin_ecef_[1],
+              sol.rr[2] - origin_ecef_[2]
+          };
+          double pos_enu[3];
+          ecef2enu(origin_llh, d_ecef, pos_enu);
+          
+          sol_msg->local_position.x = pos_enu[0];
+          sol_msg->local_position.y = pos_enu[1];
+          sol_msg->local_position.z = pos_enu[2];
+          
+          // Local Position Covariance (ENU) - Rotated
+          // Use current LLH for rotation? Or Origin LLH?
+          // Strictly speaking, covariance at current position should use current LLH for ENU directions.
+          // But 'local_pos_cov' usually pairs with 'local_position'.
+          // If local_position is relative to Origin, its covariance is also in Origin's ENU frame?
+          // Usually we want "East/North/Up" at the rover's location.
+          // Let's use current LLH for rotation (same as RTK logic).
+          double Q_ecef[9] = {
+            sol.qr[0], sol.qr[3], sol.qr[5],
+            sol.qr[3], sol.qr[1], sol.qr[4],
+            sol.qr[5], sol.qr[4], sol.qr[2]
+          };
+          double Q_enu[9];
+          gnss_utils::rotateCovariance(Q_ecef, llh[0], llh[1], Q_enu);
+          for(int i=0; i<9; ++i) sol_msg->local_pos_cov[i] = Q_enu[i];
+      } else {
+          // Should not happen if logic above handles first fix
+          sol_msg->local_position.x = 0;
+          sol_msg->local_position.y = 0;
+          sol_msg->local_position.z = 0;
+      }
+      
+      // Calculate ENU velocity
+      double vel_ecef[3] = {sol.rr[3], sol.rr[4], sol.rr[5]};
+      double vel_enu[3];
+      ecef2enu(llh, vel_ecef, vel_enu);
+
+      // Local Velocity (ENU)
+      sol_msg->velocity_enu.x = vel_enu[0];
+      sol_msg->velocity_enu.y = vel_enu[1];
+      sol_msg->velocity_enu.z = vel_enu[2];
+      
+      // Velocity Covariance (ENU) - Rotated from ECEF
+      double Qv_ecef[9] = {
+        sol.qv[0], sol.qv[3], sol.qv[5],
+        sol.qv[3], sol.qv[1], sol.qv[4],
+        sol.qv[5], sol.qv[4], sol.qv[2]
+      };
+      double Qv_enu[9];
+      gnss_utils::rotateCovariance(Qv_ecef, llh[0], llh[1], Qv_enu);
+      for(int i=0; i<9; ++i) sol_msg->vel_cov_enu[i] = Qv_enu[i];
+
+      gnss_sol_pub_->publish(std::move(sol_msg));
+
 
       unsigned char gga[256], rmc[256];
       sol_t sol_for_nmea = sol;
@@ -409,6 +577,7 @@ private:
 private:
   rclcpp::Subscription<grs::GnssObservations>::SharedPtr obs_sub_;
   rclcpp::Subscription<grs::GnssEphemerides>::SharedPtr  nav_sub_;
+  rclcpp::Publisher<grs::GnssSolution>::SharedPtr gnss_sol_pub_;
   std::mutex nav_mtx_;
 
   prcopt_t opt_{};
@@ -425,6 +594,10 @@ private:
   bool enable_l1_ = true;
   bool enable_l2_ = true;
   bool enable_l5_ = true;
+
+  // Origin for Local ENU
+  double origin_ecef_[3] = {0.0, 0.0, 0.0};
+  bool origin_set_ = false;
 };
 
 int main(int argc, char** argv) {

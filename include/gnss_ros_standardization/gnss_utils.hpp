@@ -57,6 +57,31 @@ gnss_ros_standardization::msg::GnssObservation obsToMsg(const obsd_t& o, int kf)
 // ---- Time Helpers ----
 // (Optional if strictly needed, otherwise we can keep using inline calls)
 
+// ---- Math Helpers ----
+
+/**
+ * Rotate 3x3 covariance matrix from ECEF to ENU.
+ * @param cov_ecef 3x3 covariance in ECEF (row-major: xx, xy, xz, yx, yy, yz, zx, zy, zz)
+ * @param lat_rad Latitude in radians
+ * @param lon_rad Longitude in radians
+ * @param cov_enu Output 3x3 covariance in ENU
+ */
+void rotateCovariance(const double cov_ecef[9], double lat_rad, double lon_rad, double cov_enu[9]);
+
+/**
+ * Calculate DOPs from current satellite configuration.
+ * @param sats List of satellites (obsd_t) used in solution
+ * @param ns Number of satellites
+ * @param nav Navigation data (for ephemeris/positions if needed, but dops uses azel)
+ * Note: RTKLIB dops() needs azel. We can pass existing azel from RTK struct if available.
+ * Actually, better to pass the rtk_t struct or ssat_t array?
+ * Let's keep it simple: Pass ssat_t array and count.
+ */
+struct Dops {
+    double gdop{0.0}, pdop{0.0}, hdop{0.0}, vdop{0.0};
+};
+Dops calculateDops(const ssat_t* ssat, int ns_max, double el_min_rad);
+
 } // namespace gnss_utils
 
 #endif // GNSS_ROS_STANDARDIZATION_GNSS_UTILS_HPP

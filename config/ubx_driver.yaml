@@ -84,4 +84,5 @@ ubx_driver_node:
       galileo: true   # Galileo (E1, E5a, E5b)
       beidou: true    # BeiDou (B1I, B2I)
       qzss: true      # QZSS (L1C/A, L2C, L5)
+      navic: false    # NavIC (IRNSS)
       sbas: false     # SBAS (L1C/A)

@@ -10,12 +10,22 @@ spp_pntpos_node:
     # ==========================================================================
     
     # TCP port for RTKPLOT stream (providing NMEA output)
-    tcp_port: 8001
+    tcp_port: 8002
     
     # Input topics
     topics:
       observation: "/gnss/observation"
       ephemeris: "/gnss/ephemeris"
+      solution: "/gnss/solution"
+
+    # Fixed Origin for Local Position (ENU)
+    # If 'pos' is set to non-zero, this position is used as the origin.
+    # If all 0.0, the first valid solution will be used as the origin (Datum).
+    fixed_origin:
+      # Position type (ecef or llh)
+      postype: "llh"
+      # Position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
+      pos: [35.134709472, 136.977574273, 104.7180]
 
     # ==========================================================================
     # Processing Options
@@ -48,6 +58,7 @@ spp_pntpos_node:
       gal: true
       bds: true
       qzs: true
+      irn: true
       sbs: false
 
     # ==========================================================================

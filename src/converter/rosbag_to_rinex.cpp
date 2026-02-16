@@ -72,6 +72,7 @@ static inline int maskFromSystemString(const std::string &s) {
     else if (c == 'E') m |= SYS_GAL;
     else if (c == 'J') m |= SYS_QZS;
     else if (c == 'C') m |= SYS_CMP;
+    else if (c == 'I') m |= SYS_IRN;
     else if (c == 'S') m |= SYS_SBS;
   }
   return m;
@@ -86,6 +87,7 @@ static inline int satFromSysPrn(const std::string &sys, int prn_in) {
   else if (sys=="E") sys_mask = SYS_GAL;
   else if (sys=="J") { sys_mask = SYS_QZS; if (prn >= 193 && prn <= 202) prn -= 192; }
   else if (sys=="C") sys_mask = SYS_CMP;
+  else if (sys=="I") sys_mask = SYS_IRN;
   else if (sys=="S") sys_mask = SYS_SBS;
   else return 0;
 
@@ -113,6 +115,9 @@ static inline int filterByBuildFlags(int mask) {
 #endif
 #ifndef ENAQZS
   mask &= ~SYS_QZS;
+#endif
+#ifndef ENAIRN
+  mask &= ~SYS_IRN;
 #endif
 #ifndef ENASBS
   mask &= ~SYS_SBS;
@@ -224,6 +229,7 @@ static inline bool allowFreqDigit(char sys, char d){
     case 'J': return d=='1'||d=='2'||d=='5'||d=='6';
     case 'S': return d=='1'||d=='5'||d=='6';
     case 'C': return d=='1'||d=='2'||d=='5'||d=='6'||d=='7'||d=='8';
+    case 'I': return d=='5'||d=='9'; // L5, S
     default : return false;
   }
 }
@@ -232,6 +238,7 @@ static inline int sysIdx(char sys){
   switch(sys){
     case 'G': return 0; case 'R': return 1; case 'E': return 2;
     case 'J': return 3; case 'S': return 4; case 'C': return 5;
+    case 'I': return 6;
     default: return -1;
   }
 }
@@ -239,6 +246,7 @@ static inline int sysMaskByIdx(int idx){
   switch(idx){
     case 0: return SYS_GPS; case 1: return SYS_GLO; case 2: return SYS_GAL;
     case 3: return SYS_QZS; case 4: return SYS_SBS; case 5: return SYS_CMP;
+    case 6: return SYS_IRN;
     default: return 0;
   }
 }
@@ -246,6 +254,7 @@ static inline char sysCharByIdx(int idx){
   switch(idx){
     case 0: return 'G'; case 1: return 'R'; case 2: return 'E';
     case 3: return 'J'; case 4: return 'S'; case 5: return 'C';
+    case 6: return 'I';
     default: return '?';
   }
 }
@@ -259,6 +268,7 @@ static inline int freqRank(char sys_ch, char digit) {
     case 'J': return digit=='1'?0: digit=='2'?1: digit=='5'?2: digit=='6'?3: big;
     case 'S': return digit=='1'?0: digit=='5'?1: digit=='6'?2: big;
     case 'C': return digit=='2'?0: digit=='7'?1: digit=='6'?2: digit=='1'?3: digit=='5'?4: digit=='8'?5: big;
+    case 'I': return digit=='5'?0: digit=='9'?1: big;
     default:  return big;
   }
 }
@@ -267,7 +277,7 @@ static inline int typeRank(char t){
 }
 
 static inline void orderTobs(rnxopt_t& o) {
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < 7; ++i) {
     const int n = o.nobs[i];
     if (n <= 1) continue;
 
@@ -298,7 +308,7 @@ static inline void orderTobs(rnxopt_t& o) {
     });
 
     int w = 0;
-    for (const auto& it : v) {
+    for (const auto &it : v) {
       std::snprintf(o.tobs[i][w], sizeof(o.tobs[i][w]), "%.3s", it.s.c_str());
       if (++w >= MAXOBSTYPE) break;
     }
@@ -362,7 +372,7 @@ private:
 
 static inline void fillRnxTobs(rnxopt_t &opt, const ObsTypeSet &set) {
   std::memset(opt.nobs, 0, sizeof(opt.nobs));
-  for (int i=0;i<6;i++) for (int j=0;j<MAXOBSTYPE;j++) opt.tobs[i][j][0]='\0';
+  for (int i=0;i<7;i++) for (int j=0;j<MAXOBSTYPE;j++) opt.tobs[i][j][0]='\0';
 
   int eff_mask = 0;
 
@@ -388,7 +398,7 @@ static inline void fillRnxTobs(rnxopt_t &opt, const ObsTypeSet &set) {
 }
 
 static inline void sanitizeTobs(rnxopt_t& o){
-  for (int i=0;i<6;i++){
+  for (int i=0;i<7;i++){
     if (o.nobs[i] <= 0) continue;
     int w = 0;
     for (int j=0;j<o.nobs[i]; j++){
@@ -396,7 +406,11 @@ static inline void sanitizeTobs(rnxopt_t& o){
       if (!s || !s[0]) continue;
       char sig[3] = { s[1], s[2] };
       if (obs2code(sig) == 0) continue;
-      if (w!=j) std::snprintf(o.tobs[i][w], sizeof(o.tobs[i][w]), "%.3s", s);
+      if (w!=j) {
+        char tmp_buf[4];
+        std::snprintf(tmp_buf, sizeof(tmp_buf), "%.3s", s);
+        std::memcpy(o.tobs[i][w], tmp_buf, 4);
+      }
       ++w;
     }
     for (int j=w;j<MAXOBSTYPE;j++) o.tobs[i][j][0] = '\0';
@@ -412,7 +426,7 @@ static inline rnxopt_t makeObsRnxOpt(double ver, int navsys, const std::string& 
   o.navsys = filterByBuildFlags(navsys);
   std::snprintf(o.prog,  sizeof(o.prog),  "%s", pgm.c_str());
   std::snprintf(o.runby, sizeof(o.runby), "%s", runby.c_str());
-  for (int i=0;i<6;i++) o.mask[i][0] = '\0';
+  for (int i=0;i<7;i++) o.mask[i][0] = '\0';
   return o;
 }
 static inline rnxopt_t makeNavRnxOpt(double ver, int navsys, const std::string& pgm, const std::string& runby) {
@@ -421,7 +435,7 @@ static inline rnxopt_t makeNavRnxOpt(double ver, int navsys, const std::string& 
   o.navsys = filterByBuildFlags(navsys);
   std::snprintf(o.prog,  sizeof(o.prog),  "%s", pgm.c_str());
   std::snprintf(o.runby, sizeof(o.runby), "%s", runby.c_str());
-  for (int i=0;i<6;i++) o.mask[i][0] = '\0';
+  for (int i=0;i<7;i++) o.mask[i][0] = '\0';
   return o;
 }
 
@@ -530,7 +544,7 @@ class ObsWriter {
       fillRnxTobs(rnx_, types);
   
       const int user_mask = filterByBuildFlags(maskFromSystemString(opt.nav_systems));
-      for (int i=0;i<6;i++){
+      for (int i=0;i<7;i++){
         if ((sysMaskByIdx(i) & user_mask) == 0) {
           rnx_.nobs[i]=0;
           for (int j=0;j<MAXOBSTYPE;j++) rnx_.tobs[i][j][0]='\0';
@@ -540,7 +554,7 @@ class ObsWriter {
       orderTobs(rnx_);
   
       int eff=0;
-      for (int i=0;i<6;i++) if (rnx_.nobs[i]>0 && rnx_.tobs[i][0][0]) eff |= sysMaskByIdx(i);
+      for (int i=0;i<7;i++) if (rnx_.nobs[i]>0 && rnx_.tobs[i][0][0]) eff |= sysMaskByIdx(i);
       rnx_.navsys = eff & user_mask;
   
       if (span && span->init) { rnx_.tstart=span->first; rnx_.tend=span->last; }
@@ -740,6 +754,7 @@ private:
     auto push=[&](char c,int bit){ if(filtered & bit) s.push_back(c); };
     push('G', SYS_GPS); push('R', SYS_GLO); push('E', SYS_GAL);
     push('J', SYS_QZS); push('C', SYS_CMP); push('S', SYS_SBS);
+    push('I', SYS_IRN);
     o.nav_systems = s.empty() ? "G" : s;
     return o;
   }

@@ -12,6 +12,7 @@ std::string systemCode(int sys) {
     case SYS_GAL: return "E";
     case SYS_QZS: return "J";
     case SYS_CMP: return "C";
+    case SYS_IRN: return "I";
     case SYS_SBS: return "S";
     default:      return "U";
   }
@@ -38,6 +39,7 @@ static int satFromMsg(const std::string& satid, const std::string& sys, int prn)
   else if (sys=="E") sys_mask = SYS_GAL;
   else if (sys=="J") { sys_mask = SYS_QZS; if (prn >= 193 && prn <= 202) prn -= 192; }
   else if (sys=="C") sys_mask = SYS_CMP;
+  else if (sys=="I") sys_mask = SYS_IRN;
   else if (sys=="S") sys_mask = SYS_SBS;
   else return 0;
 
@@ -111,17 +113,6 @@ geph_t msgToGeph(const gnss_ros_standardization::msg::GlonassEphemeris& m) {
   geph_t g{};
   g.sat = satFromMsg(m.satid, m.system, m.prn);
   int w = static_cast<int>(m.week);
-  
-  // Note: GlonassEphemeris messages typically store TOE/TOF as week+seconds relative to GPST??
-  // In single_point_positioning.cpp: 
-  //   g.toe = gpst2utc(gpst2time(w, m.toe));
-  //   g.tof = gpst2utc(gpst2time(w, m.tof));
-  //
-  // Because RTKLIB's geph_t expects UTC for GLO time fields?
-  // Let's verify. RTKLIB: geph.toe is Time of Ephemeris (UTC).
-  // The ROS msg says 'gnss_ephemeris' has week/toe in GPST generally.
-  // But wait, the existing code in single_point_positioning does: gpst2time -> gpst2utc. 
-  // Does the msg store TOE in GPST? Yes, likely standardized that way in the msg def (implied).
   
   g.toe = gpst2utc(gpst2time(w, m.toe));
   g.tof = gpst2utc(gpst2time(w, m.tof));
@@ -202,10 +193,6 @@ gnss_ros_standardization::msg::GlonassEphemeris gephToMsg(const geph_t& g) {
   m.frq = g.frq;
 
   int w = 0;
-  // geph_t stores UTC. Msg desires GPST week/sec?
-  // In rtcm_decoder_node, it does:
-  // m.toe  = time2gpst(utc2gpst(g.toe), &w);
-  // This implies g.toe is UTC, convert to GPST, then extract week/sec.
   
   m.toe  = time2gpst(utc2gpst(g.toe), &w);
   m.week = static_cast<uint16_t>(w);
@@ -244,11 +231,80 @@ gnss_ros_standardization::msg::GnssObservation obsToMsg(const obsd_t& o, int kf)
   obs.l             = o.L[kf];
   obs.d             = o.D[kf];
   obs.snr           = static_cast<float>(o.SNR[kf]) * 0.001f; 
-  // Mask LLI to standard 2 bits (Cycle slip, Half cycle ambiguity)
-  // Ignore internal flags like 0x80 (Half cycle subtracted)
   obs.lli           = o.LLI[kf] & 0x03;
 
   return obs;
+}
+
+// ---- Math Helpers ----
+
+void rotateCovariance(const double cov_ecef[9], double lat_rad, double lon_rad, double cov_enu[9]) {
+  // R matrix (ECEF to ENU)
+  // R = [-sin(lon)           cos(lon)          0      ]
+  //     [-sin(lat)cos(lon)  -sin(lat)sin(lon)  cos(lat)]
+  //     [ cos(lat)cos(lon)   cos(lat)sin(lon)  sin(lat)]
+  
+  double sl = sin(lat_rad);
+  double cl = cos(lat_rad);
+  double sL = sin(lon_rad);
+  double cL = cos(lon_rad);
+  
+  double R[9];
+  R[0] = -sL;      R[1] = cL;       R[2] = 0.0;
+  R[3] = -sl*cL;   R[4] = -sl*sL;   R[5] = cl;
+  R[6] = cl*cL;    R[7] = cl*sL;    R[8] = sl;
+  
+  // cov_enu = R * cov_ecef * R'
+  // Intermediate T = cov_ecef * R'
+  // T[i,j] = sum(cov_ecef[i,k] * R[j,k])  (since R' element (k,j) is R(j,k))
+  
+  double T[9];
+  for (int i=0; i<3; ++i) {
+    for (int j=0; j<3; ++j) {
+      T[3*i + j] = cov_ecef[3*i + 0] * R[3*j + 0] +
+                   cov_ecef[3*i + 1] * R[3*j + 1] +
+                   cov_ecef[3*i + 2] * R[3*j + 2];
+    }
+  }
+  
+  // Result = R * T
+  for (int i=0; i<3; ++i) {
+    for (int j=0; j<3; ++j) {
+      cov_enu[3*i + j] = R[3*i + 0] * T[0*3 + j] +
+                         R[3*i + 1] * T[1*3 + j] +
+                         R[3*i + 2] * T[2*3 + j];
+    }
+  }
+}
+
+Dops calculateDops(const ssat_t* ssat, int ns_max, double el_min_rad) {
+    Dops d;
+    double azel[MAXSAT * 2];
+    int ns = 0;
+    
+    // Collect valid satellites from ssat array
+    // RTKLIB stores azel even if vs is not set? 
+    // Usually rtkpos updates ssat.vs (valid solution) for used satellites.
+    // However, if we want DOP for the solution, we should check vs.
+    
+    for (int i = 0; i < ns_max; ++i) {
+        if (ssat[i].vs) {
+            azel[2*ns]   = ssat[i].azel[0]; // az
+            azel[2*ns+1] = ssat[i].azel[1]; // el
+            ns++;
+        }
+    }
+    
+    if (ns > 0) {
+        double dop[4] = {0};
+        dops(ns, azel, el_min_rad, dop);
+        d.gdop = dop[0];
+        d.pdop = dop[1];
+        d.hdop = dop[2];
+        d.vdop = dop[3];
+    }
+    
+    return d;
 }
 
 } // namespace gnss_utils

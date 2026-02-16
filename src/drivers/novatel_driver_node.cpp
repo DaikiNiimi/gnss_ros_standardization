@@ -408,9 +408,9 @@ class NovatelDriverNode : public rclcpp::Node {
     
     RCLCPP_INFO(
         get_logger(),
-        "Published observations: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/S/U)=(%d/%d/%d/%d/%d/%d/%d)",
+        "Published observations: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
         week, tow, msg.observations.size(), sat_count.gps, sat_count.glo, sat_count.gal,
-        sat_count.qzs, sat_count.bds, sat_count.sbs, sat_count.unknown);
+        sat_count.qzs, sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
   void appendObservations(const obsd_t& obs,
@@ -503,6 +503,7 @@ class NovatelDriverNode : public rclcpp::Node {
     int gal = 0;
     int qzs = 0;
     int bds = 0;
+    int irn = 0;
     int sbs = 0;
     int unknown = 0;
   };
@@ -515,6 +516,7 @@ class NovatelDriverNode : public rclcpp::Node {
       case SYS_GAL: ++count.gal; break;
       case SYS_QZS: ++count.qzs; break;
       case SYS_CMP: ++count.bds; break;
+      case SYS_IRN: ++count.irn; break;
       case SYS_SBS: ++count.sbs; break;
       default: ++count.unknown; break;
     }

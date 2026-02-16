@@ -1,4 +1,4 @@
-string system        # "G"=GPS, "E"=Galileo, "J"=QZSS, "C"=BeiDou, "S"=SBAS
+string system        # "G"=GPS, "E"=Galileo, "J"=QZSS, "C"=BeiDou, "I"=NavIC, "S"=SBAS
 uint16 prn
 string satid
 uint16 week
