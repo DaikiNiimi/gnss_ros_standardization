@@ -33,7 +33,7 @@ public:
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
 
     obs_pub_ = create_publisher<gnss_ros_standardization::msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
-    nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), 10);
+    nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
 
     if (init_rtcm(&rtcm_) != 1) {
       RCLCPP_ERROR(get_logger(), "init_rtcm failed");

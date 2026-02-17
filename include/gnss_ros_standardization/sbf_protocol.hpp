@@ -57,12 +57,12 @@ constexpr uint16_t ID_CHANSTATUS        = 4013;
 // =============================================================================
 // Used in setSBFOutput command
 constexpr const char* BLOCK_MEASEPOCH = "MeasEpoch";
-constexpr const char* BLOCK_GPSNAV    = "GPSNav";
-constexpr const char* BLOCK_GLONAV    = "GLONav";
-constexpr const char* BLOCK_GALNAV    = "GALNav";
-constexpr const char* BLOCK_BDSNAV    = "BDSNav";
-constexpr const char* BLOCK_QZSNAV    = "QZSNav";
-constexpr const char* BLOCK_NAVICNAV  = "NavICNav";
+constexpr const char* BLOCK_GPSNAV    = "GPSRawCA";
+constexpr const char* BLOCK_GLONAV    = "GLORawCA";
+constexpr const char* BLOCK_GALNAV    = "GALRawINAV+GALRawFNAV";
+constexpr const char* BLOCK_BDSNAV    = "BDSRaw";
+constexpr const char* BLOCK_QZSNAV    = "QZSRawL1CA";
+constexpr const char* BLOCK_NAVICNAV  = "NAVICRaw";
 constexpr const char* BLOCK_PVTGEODETIC = "PVTGeodetic";
 constexpr const char* BLOCK_POSCOVGEODETIC = "PosCovGeodetic";
 constexpr const char* BLOCK_PVTCARTESIAN = "PVTCartesian";

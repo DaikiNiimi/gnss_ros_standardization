@@ -52,7 +52,7 @@ public:
       std::bind(&RtkPositionNode::onBaseObs, this, std::placeholders::_1));
 
     nav_sub_ = create_subscription<grs::GnssEphemerides>(
-      eph_topic, rclcpp::QoS(10).reliable(),
+      eph_topic, rclcpp::QoS(100).transient_local(),
       std::bind(&RtkPositionNode::onNav, this, std::placeholders::_1));
 
     RCLCPP_INFO(get_logger(), "Subscriptions created. Initializing RTK...");
@@ -310,7 +310,7 @@ private:
   void upsertEph(const eph_t &e) {
     if (e.sat <= 0 || e.sat > MAXSAT) return;
     for (int i = 0; i < nav_.n; i++) {
-        if (nav_.eph[i].sat == e.sat) { nav_.eph[i] = e; return; }
+        if (nav_.eph[i].sat == e.sat && nav_.eph[i].code == e.code) { nav_.eph[i] = e; return; }
     }
     if (nav_.n >= nav_.nmax) {
         int newmax = nav_.nmax == 0 ? 8 : nav_.nmax * 2;

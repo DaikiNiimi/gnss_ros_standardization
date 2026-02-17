@@ -60,7 +60,7 @@ class SbfDecoderNode : public rclcpp::Node {
 
   void initializePublishers() {
     obs_pub_ = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), 10);
+    eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
   }
 
   void initializeDecoder() {
@@ -231,8 +231,8 @@ class SbfDecoderNode : public rclcpp::Node {
       if (it == last_glo_iode_.end() || it->second != geph.iode) {
         last_glo_iode_[geph.sat] = geph.iode;
         has_new_ephemeris = true;
+        glo_eph.push_back(gnss_utils::gephToMsg(geph));
       }
-      glo_eph.push_back(gnss_utils::gephToMsg(geph));
     }
 
     // Publish on first call or when new ephemeris is available

@@ -35,7 +35,7 @@ public:
       std::bind(&SppPntposNode::onObs, this, std::placeholders::_1));
 
     nav_sub_ = create_subscription<grs::GnssEphemerides>(
-      get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(10).reliable(),
+      get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(100).transient_local(),
       std::bind(&SppPntposNode::onNav, this, std::placeholders::_1));
 
     gnss_sol_pub_ = this->create_publisher<grs::GnssSolution>(
@@ -175,7 +175,7 @@ private:
   void upsertEph(const eph_t &e) {
     if (e.sat <= 0 || e.sat > MAXSAT) return;
     for (int i = 0; i < nav_.n; i++) {
-      if (nav_.eph[i].sat == e.sat) { nav_.eph[i] = e; return; }
+      if (nav_.eph[i].sat == e.sat && nav_.eph[i].code == e.code) { nav_.eph[i] = e; return; }
     }
     if (nav_.n >= nav_.nmax) {
       int newmax = nav_.nmax == 0 ? 8 : nav_.nmax * 2;

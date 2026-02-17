@@ -37,7 +37,7 @@ struct SbfConfig {
   bool enable_gal_nav{true};
   bool enable_bds_nav{true};
   bool enable_qzs_nav{true};
-  bool enable_navic_nav{false};
+  bool enable_navic_nav{true};
   
   // PVT
   bool enable_pvt_geodetic{false};
@@ -150,7 +150,7 @@ class SbfDriverNode : public rclcpp::Node {
 
   void initializePublishers() {
     obs_pub_ = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, 10);
+    eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
   }
 
   void initializeDecoder() {
@@ -188,14 +188,9 @@ class SbfDriverNode : public rclcpp::Node {
     }
 
     if (!matched) {
-      // If no prefix found, assume serial if it looks like a device path, or file otherwise
+      // If no prefix found, assume serial if it looks like a device path
        if (path.rfind("/dev/", 0) == 0) {
            stream_type = STR_SERIAL;
-       } else {
-           // Fallback or error? For now assume it might be a file or just a raw path for serial
-           // But existing code structure usually expects valid prefix. 
-           // Let's stick to the matched logic unless user provided raw path.
-           // Actually, let's just log warning if no prefix and try to open as is (likely fail if not handled by malib)
        }
     }
 
@@ -206,10 +201,6 @@ class SbfDriverNode : public rclcpp::Node {
     }
 
     // Convert std::string to const char* for atropen
-    // Note: atropen takes char*, not const char*, so we need a mutable buffer if we used sv directly, 
-    // but here we pass path.c_str() which is const char*. MALIB strinit/stropen signature in C:
-    // int stropen(stream_t *stream, int type, int mode, const char *path); 
-    // (Wait, standard RTKLIB is const char*, let's assume MALIB is too or compatible)
     
     // We need to initialize stream first
     strinit(&stream_);
@@ -230,6 +221,7 @@ class SbfDriverNode : public rclcpp::Node {
   // ============================================================================
 
   void configureReceiver() {
+    // Ensuring latest SBF protocol constants are used (GPSRawCA etc.)
     RCLCPP_INFO(get_logger(), "Configuring receiver...");
 
     // Calculate interval string
@@ -272,23 +264,6 @@ class SbfDriverNode : public rclcpp::Node {
     std::string cmd = std::string(sbf::CMD_SET_SBF_OUTPUT) + ", Stream1, " + 
                       config_.receiver_port + ", " + messages + ", " + interval_str + "\r\n";
     
-    // --------------------------------------------------------------------------------
-    // Reset Stream First (Force strict configuration)
-    // Some receivers persist/merge previous configurations. To ensure strict adherence
-    // to the enabled messages, we disable the stream first.
-    // Command: sso, Stream1, <Port>, MeasEpoch, off
-    // --------------------------------------------------------------------------------
-    std::string reset_cmd = std::string(sbf::CMD_SET_SBF_OUTPUT) + ", Stream1, " +
-                              config_.receiver_port + ", " + sbf::BLOCK_MEASEPOCH + ", off\r\n";
-    
-    RCLCPP_INFO(get_logger(), "Resetting stream before configuration: %s", reset_cmd.c_str());
-    int reset_written = strwrite(&stream_, (uint8_t*)reset_cmd.c_str(), reset_cmd.size());
-    if (reset_written < 0 || (reset_written == 0 && !is_serial_connection_)) {
-       RCLCPP_WARN(get_logger(), "Failed to write reset command, proceeding anyway.");
-    }
-    // Small delay to ensure reset is processed
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
     RCLCPP_INFO(get_logger(), "Sending configuration command to receiver port %s: %s", 
                 config_.receiver_port.c_str(), cmd.c_str());
 
@@ -351,7 +326,12 @@ class SbfDriverNode : public rclcpp::Node {
       case 2:  // Ephemeris data
         publishEphemerides();
         break;
+      case 31: // SBF specific? (No, standard is 1-9)
+        break;
       default:
+        if (result > 0) {
+           RCLCPP_DEBUG(get_logger(), "Decoded SBF message type %d (not handled)", result);
+        }
         break;
     }
   }
@@ -439,8 +419,8 @@ class SbfDriverNode : public rclcpp::Node {
       if (it == last_glo_iode_.end() || it->second != geph.iode) {
         last_glo_iode_[geph.sat] = geph.iode;
         has_new_ephemeris = true;
+        glo_eph.push_back(gnss_utils::gephToMsg(geph));
       }
-      glo_eph.push_back(gnss_utils::gephToMsg(geph));
     }
 
     // Publish on first call or when new ephemeris is available

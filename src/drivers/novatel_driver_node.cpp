@@ -140,7 +140,7 @@ class NovatelDriverNode : public rclcpp::Node {
 
   void initializePublishers() {
     obs_pub_ = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, 10);
+    eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
   }
 
   void initializeDecoder() {
@@ -326,7 +326,10 @@ class NovatelDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Configuring receiver...");
 
     // 1. Unlog all messages first
+    sendCommand(novatel::CMD_UNLOGALL);
+    if (!config_.receiver_port.empty()) {
         sendCommand(std::string(novatel::CMD_UNLOGALL) + " " + config_.receiver_port);
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     // 2. Configure messages
@@ -472,8 +475,8 @@ class NovatelDriverNode : public rclcpp::Node {
       if (it == last_glo_iode_.end() || it->second != geph.iode) {
         last_glo_iode_[geph.sat] = geph.iode;
         has_new_ephemeris = true;
+        glo_eph.push_back(gnss_utils::gephToMsg(geph));
       }
-      glo_eph.push_back(gnss_utils::gephToMsg(geph));
     }
 
     // Publish on first call or when new ephemeris is available
