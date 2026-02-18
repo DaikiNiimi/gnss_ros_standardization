@@ -524,9 +524,9 @@ private:
       // Position covariance (ENU)
 
       // Global Position (ECEF)
-      sol_msg->position_ecef.x = rtk_.sol.rr[0];
-      sol_msg->position_ecef.y = rtk_.sol.rr[1];
-      sol_msg->position_ecef.z = rtk_.sol.rr[2];
+      sol_msg->pos_ecef.x = rtk_.sol.rr[0];
+      sol_msg->pos_ecef.y = rtk_.sol.rr[1];
+      sol_msg->pos_ecef.z = rtk_.sol.rr[2];
       // Note: qr is in ECEF, so we can map it directly to pos_cov_ecef if we treat it as such.
       // RTKLIB sol_t qr is float[6] = {xx, yy, zz, xy, yz, zx} variance-covariance in ECEF?
       // Actually RTKLIB documentation says:
@@ -545,9 +545,9 @@ private:
       sol_msg->pos_cov_ecef[6] = rtk_.sol.qr[5]; // xz
 
       // Global Velocity (ECEF)
-      sol_msg->velocity_ecef.x = rtk_.sol.rr[3];
-      sol_msg->velocity_ecef.y = rtk_.sol.rr[4];
-      sol_msg->velocity_ecef.z = rtk_.sol.rr[5];
+      sol_msg->vel_ecef.x = rtk_.sol.rr[3];
+      sol_msg->vel_ecef.y = rtk_.sol.rr[4];
+      sol_msg->vel_ecef.z = rtk_.sol.rr[5];
       // Velocity covariance
       sol_msg->vel_cov_ecef[0] = rtk_.sol.qv[0];
       sol_msg->vel_cov_ecef[4] = rtk_.sol.qv[1];
@@ -590,9 +590,9 @@ private:
           }
       }
 
-      sol_msg->local_origin_ecef.x = origin_ecef[0];
-      sol_msg->local_origin_ecef.y = origin_ecef[1];
-      sol_msg->local_origin_ecef.z = origin_ecef[2];
+      sol_msg->org_ecef.x = origin_ecef[0];
+      sol_msg->org_ecef.y = origin_ecef[1];
+      sol_msg->org_ecef.z = origin_ecef[2];
       
       // Calculate Local Position (ENU) relative to chosen origin
       if (norm(origin_ecef, 3) > 0.0) {
@@ -607,14 +607,14 @@ private:
           double loc_pos_enu[3];
           ecef2enu(origin_llh, d_ecef, loc_pos_enu);
           
-          sol_msg->local_position.x = loc_pos_enu[0];
-          sol_msg->local_position.y = loc_pos_enu[1];
-          sol_msg->local_position.z = loc_pos_enu[2];
+          sol_msg->pos_enu.x = loc_pos_enu[0];
+          sol_msg->pos_enu.y = loc_pos_enu[1];
+          sol_msg->pos_enu.z = loc_pos_enu[2];
       } else {
            // No origin, no local position
-           sol_msg->local_position.x = 0.0;
-           sol_msg->local_position.y = 0.0;
-           sol_msg->local_position.z = 0.0;
+           sol_msg->pos_enu.x = 0.0;
+           sol_msg->pos_enu.y = 0.0;
+           sol_msg->pos_enu.z = 0.0;
       }
 
       // Local Position Covariance (ENU) - Rotated from ECEF
@@ -626,12 +626,12 @@ private:
       };
       double Q_enu[9];
       gnss_utils::rotateCovariance(Q_ecef, llh[0], llh[1], Q_enu);
-      for(int i=0; i<9; ++i) sol_msg->local_pos_cov[i] = Q_enu[i];
+      for(int i=0; i<9; ++i) sol_msg->pos_enu_cov[i] = Q_enu[i];
 
       // Local Velocity (ENU)
-      sol_msg->velocity_enu.x = vel_enu[0];
-      sol_msg->velocity_enu.y = vel_enu[1];
-      sol_msg->velocity_enu.z = vel_enu[2];
+      sol_msg->vel_enu.x = vel_enu[0];
+      sol_msg->vel_enu.y = vel_enu[1];
+      sol_msg->vel_enu.z = vel_enu[2];
       
       // Velocity covariance (ENU) - Rotated from ECEF (rtk_.sol.qv)
       double Qv_ecef[9] = {
@@ -642,7 +642,7 @@ private:
       double Qv_enu[9];
       gnss_utils::rotateCovariance(Qv_ecef, llh[0], llh[1], Qv_enu);
       
-      for(int i=0; i<9; ++i) sol_msg->vel_cov_enu[i] = Qv_enu[i];
+      for(int i=0; i<9; ++i) sol_msg->vel_enu_cov[i] = Qv_enu[i];
 
       gnss_sol_pub_->publish(std::move(sol_msg));
 

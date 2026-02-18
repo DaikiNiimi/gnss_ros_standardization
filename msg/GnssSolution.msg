@@ -29,20 +29,20 @@ float64 altitude    # meters
 
 
 # Global Position (ECEF)
-geometry_msgs/Point position_ecef # m (X, Y, Z)
+geometry_msgs/Point pos_ecef # m (X, Y, Z)
 float64[9] pos_cov_ecef
 
 # Global Velocity (ECEF)
-geometry_msgs/Vector3 velocity_ecef # m/s (X, Y, Z)
+geometry_msgs/Vector3 vel_ecef # m/s (X, Y, Z)
 float64[9] vel_cov_ecef
 
 # Origin of the Local Coordinate System (ECEF)
-geometry_msgs/Point local_origin_ecef # m (X, Y, Z)
+geometry_msgs/Point org_ecef # m (X, Y, Z)
 
 # Local Position (ENU)
-geometry_msgs/Point local_position   # m (East, North, Up)
-float64[9] local_pos_cov
+geometry_msgs/Point pos_enu   # m (East, North, Up)
+float64[9] pos_enu_cov
 
 # Local Velocity (ENU)
-geometry_msgs/Vector3 velocity_enu # m/s (East, North, Up)
-float64[9] vel_cov_enu
+geometry_msgs/Vector3 vel_enu # m/s (East, North, Up)
+float64[9] vel_enu_cov

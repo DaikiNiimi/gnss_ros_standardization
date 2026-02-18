@@ -23,7 +23,7 @@ novatel_driver_node:
 
     # Receiver port to configure data output on (e.g., USB1, COM1, COM2)
     # This is used in the LOG command: LOG [receiver_port] [message] ONTIME [interval]
-    receiver_port: "USB2"
+    receiver_port: "THISPORT"
 
     # Whether to send configuration commands on startup
     configure_on_startup: true
