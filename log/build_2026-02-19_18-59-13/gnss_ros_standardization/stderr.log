@@ -1,0 +1,24 @@
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In constructor ‘GnssVisualizer::GnssVisualizer()’:
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:54:5: error: ‘obs_sub_’ was not declared in this scope
+   54 |     obs_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssObservations>(
+      |     ^~~~~~~~
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:56:5: error: ‘eph_sub_’ was not declared in this scope
+   56 |     eph_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssEphemerides>(
+      |     ^~~~~~~~
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:58:5: error: ‘sol_sub_’ was not declared in this scope
+   58 |     sol_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssSolution>(
+      |     ^~~~~~~~
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:61:5: error: ‘image_pub_’ was not declared in this scope
+   61 |     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("gnss_visualization/dashboard", 1);
+      |     ^~~~~~~~~~
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In static member function ‘static void GnssVisualizer::onMouse(int, int, int, int, void*)’:
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:145:52: warning: unused parameter ‘flags’ [-Wunused-parameter]
+  145 |   static void onMouse(int event, int x, int y, int flags, void* userdata) {
+      |                                                ~~~~^~~~~
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In member function ‘void GnssVisualizer::renderLoop()’:
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:254:5: error: ‘image_pub_’ was not declared in this scope
+  254 |     image_pub_->publish(*msg);
+      |     ^~~~~~~~~~
+gmake[2]: *** [CMakeFiles/gnss_visualizer.dir/build.make:76: CMakeFiles/gnss_visualizer.dir/src/utils/gnss_visualizer.cpp.o] エラー 1
+gmake[1]: *** [CMakeFiles/Makefile2:1018: CMakeFiles/gnss_visualizer.dir/all] エラー 2
+gmake: *** [Makefile:146: all] エラー 2

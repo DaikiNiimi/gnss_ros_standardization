@@ -1,0 +1,112 @@
+[0.005s] Invoking command in '/home/daiki/ws_gnss/build/gnss_ros_standardization': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/daiki/ws_gnss/src/gnss_ros_standardization -DCMAKE_INSTALL_PREFIX=/home/daiki/ws_gnss/install/gnss_ros_standardization
+[0.014s] -- Found ament_cmake: 1.3.11 (/opt/ros/humble/share/ament_cmake/cmake)
+[0.087s] -- Override CMake install command with custom implementation using symlinks instead of copying resources
+[0.091s] -- Found rosidl_default_generators: 1.2.0 (/opt/ros/humble/share/rosidl_default_generators/cmake)
+[0.091s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[0.092s] -- Found rosidl_adapter: 3.1.6 (/opt/ros/humble/share/rosidl_adapter/cmake)
+[0.106s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[0.117s] -- Found std_msgs: 4.2.4 (/opt/ros/humble/share/std_msgs/cmake)
+[0.127s] -- Found geometry_msgs: 4.2.4 (/opt/ros/humble/share/geometry_msgs/cmake)
+[0.133s] -- Found rclcpp: 16.0.11 (/opt/ros/humble/share/rclcpp/cmake)
+[0.145s] -- Found rmw_implementation_cmake: 6.1.2 (/opt/ros/humble/share/rmw_implementation_cmake/cmake)
+[0.145s] -- Found rmw_cyclonedds_cpp: 1.3.4 (/opt/ros/humble/share/rmw_cyclonedds_cpp/cmake)
+[0.153s] -- Using RMW implementation 'rmw_cyclonedds_cpp' as default
+[0.170s] -- Found rosbag2_cpp: 0.15.13 (/opt/ros/humble/share/rosbag2_cpp/cmake)
+[0.368s] -- Found ament_cmake_ros: 0.10.0 (/opt/ros/humble/share/ament_cmake_ros/cmake)
+[0.508s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[0.715s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[0.732s] -- Found python_cmake_module: 0.10.0 (/opt/ros/humble/share/python_cmake_module/cmake)
+[0.748s] -- Using PYTHON_EXECUTABLE: /usr/bin/python3
+[0.748s] -- Using PYTHON_INCLUDE_DIRS: /usr/include/python3.10
+[0.748s] -- Using PYTHON_LIBRARIES: /usr/lib/x86_64-linux-gnu/libpython3.10.so
+[0.793s] -- Configuring done
+[0.833s] -- Generating done
+[0.848s] -- Build files have been written to: /home/daiki/ws_gnss/build/gnss_ros_standardization
+[0.853s] Invoked command in '/home/daiki/ws_gnss/build/gnss_ros_standardization' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/daiki/ws_gnss/src/gnss_ros_standardization -DCMAKE_INSTALL_PREFIX=/home/daiki/ws_gnss/install/gnss_ros_standardization
+[0.854s] Invoking command in '/home/daiki/ws_gnss/build/gnss_ros_standardization': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/daiki/ws_gnss/build/gnss_ros_standardization -- -j28 -l28
+[0.884s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_generator_c
+[0.890s] Consolidate compiler generated dependencies of target rtkcore_lib
+[0.890s] [  6%] Built target gnss_ros_standardization__rosidl_generator_c
+[0.892s] [  6%] Built target gnss_ros_standardization__cpp
+[0.899s] [ 33%] Built target rtkcore_lib
+[0.899s] [ 33%] Built target ament_cmake_python_symlink_gnss_ros_standardization
+[0.901s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_introspection_cpp
+[0.901s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_c
+[0.902s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_introspection_c
+[0.903s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_fastrtps_c
+[0.904s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_cpp
+[0.904s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_fastrtps_cpp
+[0.906s] [ 39%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_cpp
+[0.908s] [ 45%] Built target gnss_ros_standardization__rosidl_typesupport_c
+[0.909s] [ 51%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c
+[0.911s] [ 57%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c
+[0.911s] [ 63%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_cpp
+[0.912s] [ 69%] Built target gnss_ros_standardization__rosidl_typesupport_cpp
+[0.918s] Consolidate compiler generated dependencies of target gnss_utils
+[0.923s] [ 69%] Built target gnss_ros_standardization
+[0.925s] [ 71%] Built target gnss_utils
+[0.935s] Consolidate compiler generated dependencies of target novatel_decoder_node
+[0.935s] Consolidate compiler generated dependencies of target sbf_decoder_node
+[0.935s] Consolidate compiler generated dependencies of target ubx_driver_node
+[0.935s] Consolidate compiler generated dependencies of target rosbag_to_rinex
+[0.935s] Consolidate compiler generated dependencies of target single_point_positioning
+[0.936s] Consolidate compiler generated dependencies of target rinex_to_rosbag
+[0.936s] Consolidate compiler generated dependencies of target novatel_driver_node
+[0.938s] Consolidate compiler generated dependencies of target rtcm_decoder_node
+[0.939s] Consolidate compiler generated dependencies of target ubx_decoder_node
+[0.939s] Consolidate compiler generated dependencies of target sbf_driver_node
+[0.940s] [ 72%] Built target gnss_ros_standardization__py
+[0.941s] Consolidate compiler generated dependencies of target real_time_kinematic
+[0.942s] Consolidate compiler generated dependencies of target gnss_visualizer
+[0.944s] [ 74%] Built target novatel_decoder_node
+[0.944s] [ 77%] Built target single_point_positioning
+[0.944s] [ 76%] Built target ubx_driver_node
+[0.945s] [ 78%] Built target novatel_driver_node
+[0.947s] [ 79%] Built target sbf_decoder_node
+[0.948s] [ 81%] Built target rosbag_to_rinex
+[0.948s] [ 82%] Built target rinex_to_rosbag
+[0.948s] [ 83%] Built target rtcm_decoder_node
+[0.949s] [ 85%] Built target ubx_decoder_node
+[0.951s] [ 87%] Built target sbf_driver_node
+[0.951s] [ 89%] Built target real_time_kinematic
+[0.953s] [ 90%] Building CXX object CMakeFiles/gnss_visualizer.dir/src/utils/gnss_visualizer.cpp.o
+[0.954s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_generator_py
+[0.961s] [ 95%] Built target gnss_ros_standardization__rosidl_generator_py
+[0.966s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_fastrtps_c__pyext
+[0.967s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_c__pyext
+[0.968s] Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_introspection_c__pyext
+[0.972s] [ 97%] Built target gnss_ros_standardization__rosidl_typesupport_c__pyext
+[0.973s] [ 99%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c__pyext
+[0.975s] [100%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c__pyext
+[1.007s] running egg_info
+[1.007s] writing gnss_ros_standardization.egg-info/PKG-INFO
+[1.007s] writing dependency_links to gnss_ros_standardization.egg-info/dependency_links.txt
+[1.007s] writing top-level names to gnss_ros_standardization.egg-info/top_level.txt
+[1.008s] reading manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'
+[1.008s] writing manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'
+[1.023s] [100%] Built target ament_cmake_python_build_gnss_ros_standardization_egg
+[2.279s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In constructor ‘GnssVisualizer::GnssVisualizer()’:
+[2.279s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:54:5: error: ‘obs_sub_’ was not declared in this scope
+[2.279s]    54 |     obs_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssObservations>(
+[2.279s]       |     ^~~~~~~~
+[2.306s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:56:5: error: ‘eph_sub_’ was not declared in this scope
+[2.306s]    56 |     eph_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssEphemerides>(
+[2.306s]       |     ^~~~~~~~
+[2.330s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:58:5: error: ‘sol_sub_’ was not declared in this scope
+[2.330s]    58 |     sol_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssSolution>(
+[2.330s]       |     ^~~~~~~~
+[2.353s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:61:5: error: ‘image_pub_’ was not declared in this scope
+[2.353s]    61 |     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("gnss_visualization/dashboard", 1);
+[2.353s]       |     ^~~~~~~~~~
+[2.355s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In static member function ‘static void GnssVisualizer::onMouse(int, int, int, int, void*)’:
+[2.355s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:145:52: warning: unused parameter ‘flags’ [-Wunused-parameter]
+[2.355s]   145 |   static void onMouse(int event, int x, int y, int flags, void* userdata) {
+[2.355s]       |                                                ~~~~^~~~~
+[2.370s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In member function ‘void GnssVisualizer::renderLoop()’:
+[2.370s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:254:5: error: ‘image_pub_’ was not declared in this scope
+[2.370s]   254 |     image_pub_->publish(*msg);
+[2.370s]       |     ^~~~~~~~~~
+[4.536s] gmake[2]: *** [CMakeFiles/gnss_visualizer.dir/build.make:76: CMakeFiles/gnss_visualizer.dir/src/utils/gnss_visualizer.cpp.o] エラー 1
+[4.536s] gmake[1]: *** [CMakeFiles/Makefile2:1018: CMakeFiles/gnss_visualizer.dir/all] エラー 2
+[4.536s] gmake: *** [Makefile:146: all] エラー 2
+[4.538s] Invoked command in '/home/daiki/ws_gnss/build/gnss_ros_standardization' returned '2': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/daiki/ws_gnss/build/gnss_ros_standardization -- -j28 -l28

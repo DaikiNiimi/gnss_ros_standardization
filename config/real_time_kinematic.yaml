@@ -4,7 +4,7 @@ rtk_position_node:
     # Input / Output
     # ==========================================================================
     topics:
-      rover_observation: "/rover/gnss/observation"
+      rover_observation: "/gnss/observation"
       base_observation: "/base/gnss/observation"
       ephemeris: "/gnss/ephemeris"
     
@@ -42,7 +42,7 @@ rtk_position_node:
       # posmode: 2 
       
       # Frequencies (1:l1, 2:l1+l2, 3:l1+l2+l5)
-      frequency: 2
+      frequency: 3
       # Elevation mask in degrees
       elmask: 15.0
       # Dynamics model (0:off, 1:on)
@@ -61,7 +61,7 @@ rtk_position_node:
         gal: true
         bds: true
         qzs: true
-        irn: true
+        irn: false
         
       # SNR mask (dBHz) at 5, 15, 25, 35, 45, 55, 65, 75, 85 deg
       # Set 'enable' to true to apply these masks.
@@ -79,7 +79,7 @@ rtk_position_node:
     # ==========================================================================
     pos2:
       # AR mode (0:off, 1:continuous, 2:instantaneous, 3:fix-and-hold)
-      armode: 2
+      armode: 3
       # GLONASS AR mode (0:off, 1:on, 2:autocal)
       gloarmode: 1
       # BeiDou AR mode (0:off, 1:on)

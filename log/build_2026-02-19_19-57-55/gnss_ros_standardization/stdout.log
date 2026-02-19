@@ -1,0 +1,38 @@
+[  0%] Built target gnss_ros_standardization__cpp
+[  6%] Built target gnss_ros_standardization__rosidl_generator_c
+[  6%] Built target ament_cmake_python_symlink_gnss_ros_standardization
+[ 33%] Built target rtkcore_lib
+[ 38%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_cpp
+[ 44%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c
+[ 50%] Built target gnss_ros_standardization__rosidl_typesupport_c
+[ 56%] Built target gnss_ros_standardization__rosidl_typesupport_cpp
+[ 62%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_cpp
+[ 68%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c
+[ 68%] Built target gnss_ros_standardization
+[ 70%] Built target gnss_utils
+[ 74%] Built target rtcm_decoder_node
+[ 74%] Built target ubx_decoder_node
+[ 74%] Built target rosbag_to_rinex
+[ 76%] Built target real_time_kinematic
+[ 77%] Built target gnss_ros_standardization__py
+[ 79%] Built target novatel_driver_node
+[ 80%] Built target novatel_decoder_node
+Consolidate compiler generated dependencies of target simple_gnss_visualizer
+[ 82%] Built target sbf_driver_node
+[ 83%] Built target rinex_to_rosbag
+[ 85%] Built target ubx_driver_node
+[ 86%] Built target sbf_decoder_node
+[ 88%] Built target single_point_positioning
+[ 89%] Built target gnss_visualizer
+[ 89%] Building CXX object CMakeFiles/simple_gnss_visualizer.dir/src/utils/simple_gnss_visualizer.cpp.o
+[ 94%] Built target gnss_ros_standardization__rosidl_generator_py
+[ 95%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c__pyext
+[ 98%] Built target gnss_ros_standardization__rosidl_typesupport_c__pyext
+[ 99%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c__pyext
+running egg_info
+writing gnss_ros_standardization.egg-info/PKG-INFO
+writing dependency_links to gnss_ros_standardization.egg-info/dependency_links.txt
+writing top-level names to gnss_ros_standardization.egg-info/top_level.txt
+reading manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'
+writing manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'
+[ 99%] Built target ament_cmake_python_build_gnss_ros_standardization_egg

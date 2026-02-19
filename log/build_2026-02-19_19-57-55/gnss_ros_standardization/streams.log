@@ -1,0 +1,74 @@
+[0.004s] Invoking command in '/home/daiki/ws_gnss/build/gnss_ros_standardization': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/daiki/ws_gnss/build/gnss_ros_standardization -- -j28 -l28
+[0.052s] [  0%] Built target gnss_ros_standardization__cpp
+[0.055s] [  6%] Built target gnss_ros_standardization__rosidl_generator_c
+[0.059s] [  6%] Built target ament_cmake_python_symlink_gnss_ros_standardization
+[0.059s] [ 33%] Built target rtkcore_lib
+[0.067s] [ 38%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_cpp
+[0.067s] [ 44%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c
+[0.067s] [ 50%] Built target gnss_ros_standardization__rosidl_typesupport_c
+[0.068s] [ 56%] Built target gnss_ros_standardization__rosidl_typesupport_cpp
+[0.069s] [ 62%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_cpp
+[0.069s] [ 68%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c
+[0.079s] [ 68%] Built target gnss_ros_standardization
+[0.080s] [ 70%] Built target gnss_utils
+[0.093s] [ 74%] Built target rtcm_decoder_node
+[0.093s] [ 74%] Built target ubx_decoder_node
+[0.093s] [ 74%] Built target rosbag_to_rinex
+[0.094s] [ 76%] Built target real_time_kinematic
+[0.094s] [ 77%] Built target gnss_ros_standardization__py
+[0.094s] [ 79%] Built target novatel_driver_node
+[0.094s] [ 80%] Built target novatel_decoder_node
+[0.095s] Consolidate compiler generated dependencies of target simple_gnss_visualizer
+[0.095s] [ 82%] Built target sbf_driver_node
+[0.096s] [ 83%] Built target rinex_to_rosbag
+[0.098s] [ 85%] Built target ubx_driver_node
+[0.098s] [ 86%] Built target sbf_decoder_node
+[0.100s] [ 88%] Built target single_point_positioning
+[0.101s] [ 89%] Built target gnss_visualizer
+[0.103s] [ 89%] Building CXX object CMakeFiles/simple_gnss_visualizer.dir/src/utils/simple_gnss_visualizer.cpp.o
+[0.107s] [ 94%] Built target gnss_ros_standardization__rosidl_generator_py
+[0.120s] [ 95%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c__pyext
+[0.120s] [ 98%] Built target gnss_ros_standardization__rosidl_typesupport_c__pyext
+[0.120s] [ 99%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c__pyext
+[0.153s] running egg_info
+[0.153s] writing gnss_ros_standardization.egg-info/PKG-INFO
+[0.153s] writing dependency_links to gnss_ros_standardization.egg-info/dependency_links.txt
+[0.153s] writing top-level names to gnss_ros_standardization.egg-info/top_level.txt
+[0.154s] reading manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'
+[0.154s] writing manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'
+[0.168s] [ 99%] Built target ament_cmake_python_build_gnss_ros_standardization_egg
+[1.447s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp: In static member function ‘static void gnss_visualizer::SimpleGnssVisualizer::onMouse(int, int, int, int, void*)’:
+[1.447s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:119:38: warning: unused parameter ‘x’ [-Wunused-parameter]
+[1.447s]   119 |   static void onMouse(int event, int x, int y, int flags, void* userdata) {
+[1.447s]       |                                  ~~~~^
+[1.447s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:119:45: warning: unused parameter ‘y’ [-Wunused-parameter]
+[1.448s]   119 |   static void onMouse(int event, int x, int y, int flags, void* userdata) {
+[1.448s]       |                                         ~~~~^
+[1.453s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp: In member function ‘cv::Scalar gnss_visualizer::SimpleGnssVisualizer::statusColor(int)’:
+[1.453s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:137:12: error: ‘STATUS_FIX’ was not declared in this scope
+[1.453s]   137 |       case STATUS_FIX:   return cv::Scalar(0, 200, 0);   // Green
+[1.453s]       |            ^~~~~~~~~~
+[1.459s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:138:12: error: ‘STATUS_FLOAT’ was not declared in this scope
+[1.459s]   138 |       case STATUS_FLOAT: return cv::Scalar(0, 200, 200); // Yellow
+[1.459s]       |            ^~~~~~~~~~~~
+[1.464s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:139:12: error: ‘STATUS_SBAS’ was not declared in this scope
+[1.464s]   139 |       case STATUS_SBAS:  return cv::Scalar(200, 50, 50); // Blue
+[1.464s]       |            ^~~~~~~~~~~
+[1.470s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:140:12: error: ‘STATUS_DGPS’ was not declared in this scope
+[1.470s]   140 |       case STATUS_DGPS:  return cv::Scalar(200, 50, 50); // Blue
+[1.470s]       |            ^~~~~~~~~~~
+[1.475s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:141:12: error: ‘STATUS_PPP’ was not declared in this scope
+[1.475s]   141 |       case STATUS_PPP:   return cv::Scalar(200, 200, 50);// Teal
+[1.475s]       |            ^~~~~~~~~~
+[1.477s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp: In member function ‘void gnss_visualizer::SimpleGnssVisualizer::renderStatus(cv::Mat&, cv::Rect)’:
+[1.477s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:200:28: error: ‘STATUS_DR’ is not a member of ‘gnss_ros_standardization::msg::GnssSolution’ {aka ‘gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >’}
+[1.477s]   200 |         case GnssSolution::STATUS_DR: status_str="DR"; break;
+[1.477s]       |                            ^~~~~~~~~
+[1.482s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp: In member function ‘void gnss_visualizer::SimpleGnssVisualizer::renderPositionPlot(cv::Mat&, cv::Rect)’:
+[1.482s] /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:252:40: error: ‘DEG2RAD’ was not declared in this scope
+[1.482s]   252 |     double ref_llh[3] = {fixed_llh_[0]*DEG2RAD, fixed_llh_[1]*DEG2RAD, fixed_llh_[2]};
+[1.482s]       |                                        ^~~~~~~
+[3.368s] gmake[2]: *** [CMakeFiles/simple_gnss_visualizer.dir/build.make:76: CMakeFiles/simple_gnss_visualizer.dir/src/utils/simple_gnss_visualizer.cpp.o] エラー 1
+[3.369s] gmake[1]: *** [CMakeFiles/Makefile2:1051: CMakeFiles/simple_gnss_visualizer.dir/all] エラー 2
+[3.369s] gmake: *** [Makefile:146: all] エラー 2
+[3.370s] Invoked command in '/home/daiki/ws_gnss/build/gnss_ros_standardization' returned '2': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/daiki/ws_gnss/build/gnss_ros_standardization -- -j28 -l28

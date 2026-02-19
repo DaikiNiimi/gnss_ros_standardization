@@ -14,10 +14,10 @@ sbf_driver_node:
     # Examples:
     #   serial:///dev/ttyACM0:115200
     #   tcpcli://192.168.1.100:5000
-    stream_path: "serial:///dev/ttyACM3:460800"
+    stream_path: "serial:///dev/ttyACM1:115200"
     
     # Measurement rate in Hz (1-100)
-    publish_rate: 10
+    publish_rate: 1
     
     # ROS settings
     frame_id: "gnss_link"

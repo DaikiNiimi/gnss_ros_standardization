@@ -4,7 +4,7 @@ uint8 code          # code indicator (CODE_? ? ?)
 float64 p           # observation data pseudorange (m) [P]
 float64 l           # observation data carrier-phase (cycle) [L]
 float64 d           # observation data doppler frequency (Hz) [D]
-float32 snr         # signal strength (0.001 dBHz) [SNR]
+float32 snr         # signal strength [SNR]
 uint8 lli           # loss of lock indicator [LLI]
 
 # These fields are derived from the core RTKLIB fields for easier usage in ROS.

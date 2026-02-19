@@ -1,0 +1,92 @@
+-- Found ament_cmake: 1.3.11 (/opt/ros/humble/share/ament_cmake/cmake)
+-- Override CMake install command with custom implementation using symlinks instead of copying resources
+-- Found rosidl_default_generators: 1.2.0 (/opt/ros/humble/share/rosidl_default_generators/cmake)
+-- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+-- Found rosidl_adapter: 3.1.6 (/opt/ros/humble/share/rosidl_adapter/cmake)
+-- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+-- Found std_msgs: 4.2.4 (/opt/ros/humble/share/std_msgs/cmake)
+-- Found geometry_msgs: 4.2.4 (/opt/ros/humble/share/geometry_msgs/cmake)
+-- Found rclcpp: 16.0.11 (/opt/ros/humble/share/rclcpp/cmake)
+-- Found rmw_implementation_cmake: 6.1.2 (/opt/ros/humble/share/rmw_implementation_cmake/cmake)
+-- Found rmw_cyclonedds_cpp: 1.3.4 (/opt/ros/humble/share/rmw_cyclonedds_cpp/cmake)
+-- Using RMW implementation 'rmw_cyclonedds_cpp' as default
+-- Found rosbag2_cpp: 0.15.13 (/opt/ros/humble/share/rosbag2_cpp/cmake)
+-- Found ament_cmake_ros: 0.10.0 (/opt/ros/humble/share/ament_cmake_ros/cmake)
+-- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+-- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+-- Found python_cmake_module: 0.10.0 (/opt/ros/humble/share/python_cmake_module/cmake)
+-- Using PYTHON_EXECUTABLE: /usr/bin/python3
+-- Using PYTHON_INCLUDE_DIRS: /usr/include/python3.10
+-- Using PYTHON_LIBRARIES: /usr/lib/x86_64-linux-gnu/libpython3.10.so
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/daiki/ws_gnss/build/gnss_ros_standardization
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_generator_c
+[  0%] Built target gnss_ros_standardization__cpp
+Consolidate compiler generated dependencies of target rtkcore_lib
+[  6%] Built target gnss_ros_standardization__rosidl_generator_c
+[  6%] Built target ament_cmake_python_symlink_gnss_ros_standardization
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_c
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_fastrtps_cpp
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_cpp
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_introspection_cpp
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_introspection_c
+[ 33%] Built target rtkcore_lib
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_fastrtps_c
+[ 39%] Built target gnss_ros_standardization__rosidl_typesupport_c
+[ 45%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_cpp
+[ 51%] Built target gnss_ros_standardization__rosidl_typesupport_cpp
+[ 57%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c
+[ 62%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_cpp
+[ 68%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c
+Consolidate compiler generated dependencies of target gnss_utils
+[ 70%] Built target gnss_utils
+[ 70%] Built target gnss_ros_standardization
+Consolidate compiler generated dependencies of target ubx_driver_node
+Consolidate compiler generated dependencies of target novatel_driver_node
+Consolidate compiler generated dependencies of target novatel_decoder_node
+Consolidate compiler generated dependencies of target rinex_to_rosbag
+Consolidate compiler generated dependencies of target sbf_decoder_node
+Consolidate compiler generated dependencies of target rosbag_to_rinex
+Consolidate compiler generated dependencies of target real_time_kinematic
+Consolidate compiler generated dependencies of target rtcm_decoder_node
+Consolidate compiler generated dependencies of target ubx_decoder_node
+Consolidate compiler generated dependencies of target sbf_driver_node
+Consolidate compiler generated dependencies of target single_point_positioning
+Consolidate compiler generated dependencies of target gnss_visualizer
+[ 74%] Built target novatel_driver_node
+[ 75%] Built target novatel_decoder_node
+[ 72%] Built target ubx_driver_node
+[ 76%] Built target rinex_to_rosbag
+[ 76%] Building CXX object CMakeFiles/simple_gnss_visualizer.dir/src/utils/simple_gnss_visualizer.cpp.o
+[ 78%] Built target rosbag_to_rinex
+[ 79%] Built target sbf_decoder_node
+[ 81%] Built target single_point_positioning
+[ 83%] Built target real_time_kinematic
+[ 85%] Built target ubx_decoder_node
+[ 85%] Built target rtcm_decoder_node
+[ 86%] Built target gnss_visualizer
+[ 88%] Built target sbf_driver_node
+[ 89%] Built target gnss_ros_standardization__py
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_generator_py
+[ 94%] Built target gnss_ros_standardization__rosidl_generator_py
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_fastrtps_c__pyext
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_introspection_c__pyext
+Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_c__pyext
+[ 96%] Built target gnss_ros_standardization__rosidl_typesupport_c__pyext
+[ 97%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c__pyext
+[ 99%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c__pyext
+running egg_info
+writing gnss_ros_standardization.egg-info/PKG-INFO
+writing dependency_links to gnss_ros_standardization.egg-info/dependency_links.txt
+writing top-level names to gnss_ros_standardization.egg-info/top_level.txt
+reading manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'
+writing manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'
+[ 99%] Built target ament_cmake_python_build_gnss_ros_standardization_egg
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:14:10: fatal error: gnss_utils.hpp: そのようなファイルやディレクトリはありません
+   14 | #include "gnss_utils.hpp"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+gmake[2]: *** [CMakeFiles/simple_gnss_visualizer.dir/build.make:76: CMakeFiles/simple_gnss_visualizer.dir/src/utils/simple_gnss_visualizer.cpp.o] エラー 1
+gmake[1]: *** [CMakeFiles/Makefile2:1051: CMakeFiles/simple_gnss_visualizer.dir/all] エラー 2
+gmake: *** [Makefile:146: all] エラー 2

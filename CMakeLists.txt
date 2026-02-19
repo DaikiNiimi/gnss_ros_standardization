@@ -20,6 +20,9 @@ find_package(rcutils REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_storage REQUIRED)
 find_package(Threads REQUIRED)
+find_package(cv_bridge QUIET)
+find_package(image_transport QUIET)
+find_package(OpenCV QUIET)
 
 # Options
 option(ENABLE_GLO "Enable GLONASS" ON)
@@ -113,7 +116,7 @@ set(_rosidl_deps
 include_directories(include)
 
 # gnss_utils
-add_library(gnss_utils src/gnss_utils.cpp)
+add_library(gnss_utils src/utils/gnss_utils.cpp)
 target_include_directories(gnss_utils PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -286,4 +289,23 @@ endif()
 # Export
 ament_export_dependencies(rosidl_default_runtime std_msgs builtin_interfaces)
 ament_package()
+
+# gnss_visualizer
+if(cv_bridge_FOUND AND image_transport_FOUND AND OpenCV_FOUND)
+  add_executable(gnss_visualizer src/utils/gnss_visualizer.cpp)
+  target_include_directories(gnss_visualizer PUBLIC ${_gen_include})
+  ament_target_dependencies(gnss_visualizer rclcpp std_msgs sensor_msgs cv_bridge image_transport builtin_interfaces)
+  target_link_libraries(gnss_visualizer gnss_utils ${OpenCV_LIBRARIES})
+  add_dependencies(gnss_visualizer ${_rosidl_deps})
+  install(TARGETS gnss_visualizer DESTINATION lib/${PROJECT_NAME})
+
+  add_executable(simple_gnss_visualizer src/utils/simple_gnss_visualizer.cpp)
+  target_include_directories(simple_gnss_visualizer PUBLIC ${_gen_include})
+  ament_target_dependencies(simple_gnss_visualizer rclcpp std_msgs sensor_msgs cv_bridge image_transport builtin_interfaces)
+  target_link_libraries(simple_gnss_visualizer gnss_utils ${OpenCV_LIBRARIES})
+  add_dependencies(simple_gnss_visualizer ${_rosidl_deps})
+  install(TARGETS simple_gnss_visualizer DESTINATION lib/${PROJECT_NAME})
+else()
+  message(STATUS "Skipping gnss_visualizer: cv_bridge, image_transport, or OpenCV not found.")
+endif()
 

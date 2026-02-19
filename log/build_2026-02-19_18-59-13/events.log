@@ -1,0 +1,164 @@
+[0.000000] (-) TimerEvent: {}
+[0.000088] (gnss_ros_standardization) JobQueued: {'identifier': 'gnss_ros_standardization', 'dependencies': OrderedDict()}
+[0.000338] (gnss_ros_standardization) JobStarted: {'identifier': 'gnss_ros_standardization'}
+[0.004171] (gnss_ros_standardization) JobProgress: {'identifier': 'gnss_ros_standardization', 'progress': 'cmake'}
+[0.004743] (gnss_ros_standardization) Command: {'cmd': ['/usr/bin/cmake', '/home/daiki/ws_gnss/src/gnss_ros_standardization', '-DCMAKE_INSTALL_PREFIX=/home/daiki/ws_gnss/install/gnss_ros_standardization'], 'cwd': '/home/daiki/ws_gnss/build/gnss_ros_standardization', 'env': OrderedDict([('GJS_DEBUG_TOPICS', 'JS ERROR;JS LOG'), ('PYTHON_BASIC_REPL', '1'), ('LESSOPEN', '| /usr/bin/lesspipe %s'), ('USER', 'daiki'), ('XDG_SESSION_TYPE', 'x11'), ('GIT_ASKPASS', '/usr/share/antigravity/resources/app/extensions/git/dist/askpass.sh'), ('SHLVL', '0'), ('LD_LIBRARY_PATH', '/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib'), ('ANTIGRAVITY_CLI_ALIAS', 'agy'), ('HOME', '/home/daiki'), ('CHROME_DESKTOP', 'antigravity.desktop'), ('OLDPWD', '/home/daiki/ws_gnss/src/gnss_ros_standardization'), ('TERM_PROGRAM_VERSION', '1.107.0'), ('DESKTOP_SESSION', 'ubuntu'), ('GIO_LAUNCHED_DESKTOP_FILE', '/usr/share/applications/antigravity.desktop'), ('ROS_PYTHON_VERSION', '3'), ('GNOME_SHELL_SESSION_MODE', 'ubuntu'), ('GTK_MODULES', 'gail:atk-bridge'), ('PAGER', 'cat'), ('VSCODE_GIT_ASKPASS_MAIN', '/usr/share/antigravity/resources/app/extensions/git/dist/askpass-main.js'), ('VSCODE_GIT_ASKPASS_NODE', '/usr/share/antigravity/antigravity'), ('MANAGERPID', '4699'), ('SYSTEMD_EXEC_PID', '5012'), ('VSCODE_PYTHON_AUTOACTIVATE_GUARD', '1'), ('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus'), ('COLORTERM', 'truecolor'), ('ANTIGRAVITY_AGENT', '1'), ('GIO_LAUNCHED_DESKTOP_FILE_PID', '7484'), ('ROS_DISTRO', 'humble'), ('GTK_IM_MODULE', 'ibus'), ('LOGNAME', 'daiki'), ('JOURNAL_STREAM', '8:14082'), ('_', '/usr/bin/colcon'), ('ROS_VERSION', '2'), ('XDG_SESSION_CLASS', 'user'), ('USERNAME', 'daiki'), ('TERM', 'xterm-256color'), ('GNOME_DESKTOP_SESSION_ID', 'this-is-deprecated'), ('FC_FONTATIONS', '1'), ('ROS_LOCALHOST_ONLY', '1'), ('WINDOWPATH', '2'), ('PATH', '/opt/ros/humble/bin:/home/daiki/.local/bin:/home/daiki/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin'), ('SESSION_MANAGER', 'local/daiki-ubuntu22:@/tmp/.ICE-unix/4958,unix/daiki-ubuntu22:/tmp/.ICE-unix/4958'), ('INVOCATION_ID', '40713bbc3c9241b0a3370c9015f41ffc'), ('VK_ICD_FILENAMES', '/usr/share/vulkan/icd.d/nvidia_icd.json'), ('XDG_MENU_PREFIX', 'gnome-'), ('XDG_RUNTIME_DIR', '/run/user/1000'), ('GDK_BACKEND', 'x11'), ('DISPLAY', ':1'), ('LANG', 'ja_JP.UTF-8'), ('XDG_CURRENT_DESKTOP', 'ubuntu:GNOME'), ('PYTHONSTARTUP', '/home/daiki/.config/Antigravity/User/workspaceStorage/a996545d141405a7e35365a9bb52016f/ms-python.python/pythonrc.py'), ('RMW_IMPLEMENTATION', 'rmw_cyclonedds_cpp'), ('XMODIFIERS', '@im=ibus'), ('XDG_SESSION_DESKTOP', 'ubuntu'), ('XAUTHORITY', '/run/user/1000/gdm/Xauthority'), ('LS_COLORS', 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:'), ('VSCODE_GIT_IPC_HANDLE', '/run/user/1000/vscode-git-e68bc7393d.sock'), ('TERM_PROGRAM', 'vscode'), ('SSH_AGENT_LAUNCHER', 'gnome-keyring'), ('SSH_AUTH_SOCK', '/run/user/1000/keyring/ssh'), ('AMENT_PREFIX_PATH', '/opt/ros/humble'), ('SHELL', '/bin/bash'), ('QT_ACCESSIBILITY', '1'), ('GDMSESSION', 'ubuntu'), ('LESSCLOSE', '/usr/bin/lesspipe %s %s'), ('VK_LAYER_PATH', '/usr/share/vulkan/explicit_layer.d'), ('GPG_AGENT_INFO', '/run/user/1000/gnupg/S.gpg-agent:0:1'), ('GJS_DEBUG_OUTPUT', 'stderr'), ('VSCODE_GIT_ASKPASS_EXTRA_ARGS', ''), ('QT_IM_MODULE', 'ibus'), ('PWD', '/home/daiki/ws_gnss/build/gnss_ros_standardization'), ('XDG_CONFIG_DIRS', '/etc/xdg/xdg-ubuntu:/etc/xdg'), ('XDG_DATA_DIRS', '/usr/share/ubuntu:/usr/share/gnome:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop'), ('PYTHONPATH', '/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages'), ('COLCON', '1'), ('CMAKE_PREFIX_PATH', '/opt/ros/humble')]), 'shell': False}
+[0.014641] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found ament_cmake: 1.3.11 (/opt/ros/humble/share/ament_cmake/cmake)\n'}
+[0.087859] (gnss_ros_standardization) StdoutLine: {'line': b'-- Override CMake install command with custom implementation using symlinks instead of copying resources\n'}
+[0.090931] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found rosidl_default_generators: 1.2.0 (/opt/ros/humble/share/rosidl_default_generators/cmake)\n'}
+[0.091558] (gnss_ros_standardization) StdoutLine: {'line': b'-- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c\n'}
+[0.092736] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found rosidl_adapter: 3.1.6 (/opt/ros/humble/share/rosidl_adapter/cmake)\n'}
+[0.099851] (-) TimerEvent: {}
+[0.106143] (gnss_ros_standardization) StdoutLine: {'line': b'-- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp\n'}
+[0.117370] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found std_msgs: 4.2.4 (/opt/ros/humble/share/std_msgs/cmake)\n'}
+[0.127666] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found geometry_msgs: 4.2.4 (/opt/ros/humble/share/geometry_msgs/cmake)\n'}
+[0.133275] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found rclcpp: 16.0.11 (/opt/ros/humble/share/rclcpp/cmake)\n'}
+[0.145009] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found rmw_implementation_cmake: 6.1.2 (/opt/ros/humble/share/rmw_implementation_cmake/cmake)\n'}
+[0.145601] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found rmw_cyclonedds_cpp: 1.3.4 (/opt/ros/humble/share/rmw_cyclonedds_cpp/cmake)\n'}
+[0.153616] (gnss_ros_standardization) StdoutLine: {'line': b"-- Using RMW implementation 'rmw_cyclonedds_cpp' as default\n"}
+[0.170721] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found rosbag2_cpp: 0.15.13 (/opt/ros/humble/share/rosbag2_cpp/cmake)\n'}
+[0.199922] (-) TimerEvent: {}
+[0.300019] (-) TimerEvent: {}
+[0.367895] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found ament_cmake_ros: 0.10.0 (/opt/ros/humble/share/ament_cmake_ros/cmake)\n'}
+[0.400083] (-) TimerEvent: {}
+[0.500200] (-) TimerEvent: {}
+[0.508537] (gnss_ros_standardization) StdoutLine: {'line': b'-- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c\n'}
+[0.600268] (-) TimerEvent: {}
+[0.700375] (-) TimerEvent: {}
+[0.714919] (gnss_ros_standardization) StdoutLine: {'line': b'-- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp\n'}
+[0.732638] (gnss_ros_standardization) StdoutLine: {'line': b'-- Found python_cmake_module: 0.10.0 (/opt/ros/humble/share/python_cmake_module/cmake)\n'}
+[0.748145] (gnss_ros_standardization) StdoutLine: {'line': b'-- Using PYTHON_EXECUTABLE: /usr/bin/python3\n'}
+[0.748225] (gnss_ros_standardization) StdoutLine: {'line': b'-- Using PYTHON_INCLUDE_DIRS: /usr/include/python3.10\n'}
+[0.748253] (gnss_ros_standardization) StdoutLine: {'line': b'-- Using PYTHON_LIBRARIES: /usr/lib/x86_64-linux-gnu/libpython3.10.so\n'}
+[0.793416] (gnss_ros_standardization) StdoutLine: {'line': b'-- Configuring done\n'}
+[0.800439] (-) TimerEvent: {}
+[0.833358] (gnss_ros_standardization) StdoutLine: {'line': b'-- Generating done\n'}
+[0.848228] (gnss_ros_standardization) StdoutLine: {'line': b'-- Build files have been written to: /home/daiki/ws_gnss/build/gnss_ros_standardization\n'}
+[0.853232] (gnss_ros_standardization) CommandEnded: {'returncode': 0}
+[0.853563] (gnss_ros_standardization) JobProgress: {'identifier': 'gnss_ros_standardization', 'progress': 'build'}
+[0.853894] (gnss_ros_standardization) Command: {'cmd': ['/usr/bin/cmake', '--build', '/home/daiki/ws_gnss/build/gnss_ros_standardization', '--', '-j28', '-l28'], 'cwd': '/home/daiki/ws_gnss/build/gnss_ros_standardization', 'env': OrderedDict([('GJS_DEBUG_TOPICS', 'JS ERROR;JS LOG'), ('PYTHON_BASIC_REPL', '1'), ('LESSOPEN', '| /usr/bin/lesspipe %s'), ('USER', 'daiki'), ('XDG_SESSION_TYPE', 'x11'), ('GIT_ASKPASS', '/usr/share/antigravity/resources/app/extensions/git/dist/askpass.sh'), ('SHLVL', '0'), ('LD_LIBRARY_PATH', '/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib'), ('ANTIGRAVITY_CLI_ALIAS', 'agy'), ('HOME', '/home/daiki'), ('CHROME_DESKTOP', 'antigravity.desktop'), ('OLDPWD', '/home/daiki/ws_gnss/src/gnss_ros_standardization'), ('TERM_PROGRAM_VERSION', '1.107.0'), ('DESKTOP_SESSION', 'ubuntu'), ('GIO_LAUNCHED_DESKTOP_FILE', '/usr/share/applications/antigravity.desktop'), ('ROS_PYTHON_VERSION', '3'), ('GNOME_SHELL_SESSION_MODE', 'ubuntu'), ('GTK_MODULES', 'gail:atk-bridge'), ('PAGER', 'cat'), ('VSCODE_GIT_ASKPASS_MAIN', '/usr/share/antigravity/resources/app/extensions/git/dist/askpass-main.js'), ('VSCODE_GIT_ASKPASS_NODE', '/usr/share/antigravity/antigravity'), ('MANAGERPID', '4699'), ('SYSTEMD_EXEC_PID', '5012'), ('VSCODE_PYTHON_AUTOACTIVATE_GUARD', '1'), ('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus'), ('COLORTERM', 'truecolor'), ('ANTIGRAVITY_AGENT', '1'), ('GIO_LAUNCHED_DESKTOP_FILE_PID', '7484'), ('ROS_DISTRO', 'humble'), ('GTK_IM_MODULE', 'ibus'), ('LOGNAME', 'daiki'), ('JOURNAL_STREAM', '8:14082'), ('_', '/usr/bin/colcon'), ('ROS_VERSION', '2'), ('XDG_SESSION_CLASS', 'user'), ('USERNAME', 'daiki'), ('TERM', 'xterm-256color'), ('GNOME_DESKTOP_SESSION_ID', 'this-is-deprecated'), ('FC_FONTATIONS', '1'), ('ROS_LOCALHOST_ONLY', '1'), ('WINDOWPATH', '2'), ('PATH', '/opt/ros/humble/bin:/home/daiki/.local/bin:/home/daiki/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin'), ('SESSION_MANAGER', 'local/daiki-ubuntu22:@/tmp/.ICE-unix/4958,unix/daiki-ubuntu22:/tmp/.ICE-unix/4958'), ('INVOCATION_ID', '40713bbc3c9241b0a3370c9015f41ffc'), ('VK_ICD_FILENAMES', '/usr/share/vulkan/icd.d/nvidia_icd.json'), ('XDG_MENU_PREFIX', 'gnome-'), ('XDG_RUNTIME_DIR', '/run/user/1000'), ('GDK_BACKEND', 'x11'), ('DISPLAY', ':1'), ('LANG', 'ja_JP.UTF-8'), ('XDG_CURRENT_DESKTOP', 'ubuntu:GNOME'), ('PYTHONSTARTUP', '/home/daiki/.config/Antigravity/User/workspaceStorage/a996545d141405a7e35365a9bb52016f/ms-python.python/pythonrc.py'), ('RMW_IMPLEMENTATION', 'rmw_cyclonedds_cpp'), ('XMODIFIERS', '@im=ibus'), ('XDG_SESSION_DESKTOP', 'ubuntu'), ('XAUTHORITY', '/run/user/1000/gdm/Xauthority'), ('LS_COLORS', 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:'), ('VSCODE_GIT_IPC_HANDLE', '/run/user/1000/vscode-git-e68bc7393d.sock'), ('TERM_PROGRAM', 'vscode'), ('SSH_AGENT_LAUNCHER', 'gnome-keyring'), ('SSH_AUTH_SOCK', '/run/user/1000/keyring/ssh'), ('AMENT_PREFIX_PATH', '/opt/ros/humble'), ('SHELL', '/bin/bash'), ('QT_ACCESSIBILITY', '1'), ('GDMSESSION', 'ubuntu'), ('LESSCLOSE', '/usr/bin/lesspipe %s %s'), ('VK_LAYER_PATH', '/usr/share/vulkan/explicit_layer.d'), ('GPG_AGENT_INFO', '/run/user/1000/gnupg/S.gpg-agent:0:1'), ('GJS_DEBUG_OUTPUT', 'stderr'), ('VSCODE_GIT_ASKPASS_EXTRA_ARGS', ''), ('QT_IM_MODULE', 'ibus'), ('PWD', '/home/daiki/ws_gnss/build/gnss_ros_standardization'), ('XDG_CONFIG_DIRS', '/etc/xdg/xdg-ubuntu:/etc/xdg'), ('XDG_DATA_DIRS', '/usr/share/ubuntu:/usr/share/gnome:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop'), ('PYTHONPATH', '/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages'), ('COLCON', '1'), ('CMAKE_PREFIX_PATH', '/opt/ros/humble')]), 'shell': False}
+[0.884800] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_generator_c\n'}
+[0.890529] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target rtkcore_lib\n'}
+[0.890794] (gnss_ros_standardization) StdoutLine: {'line': b'[  6%] Built target gnss_ros_standardization__rosidl_generator_c\n'}
+[0.892603] (gnss_ros_standardization) StdoutLine: {'line': b'[  6%] Built target gnss_ros_standardization__cpp\n'}
+[0.898960] (gnss_ros_standardization) StdoutLine: {'line': b'[ 33%] Built target rtkcore_lib\n'}
+[0.899002] (gnss_ros_standardization) StdoutLine: {'line': b'[ 33%] Built target ament_cmake_python_symlink_gnss_ros_standardization\n'}
+[0.900494] (-) TimerEvent: {}
+[0.900994] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_introspection_cpp\n'}
+[0.901778] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_c\n'}
+[0.902298] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_introspection_c\n'}
+[0.903143] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_fastrtps_c\n'}
+[0.904039] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_cpp\n'}
+[0.904413] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_fastrtps_cpp\n'}
+[0.906851] (gnss_ros_standardization) StdoutLine: {'line': b'[ 39%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_cpp\n'}
+[0.908792] (gnss_ros_standardization) StdoutLine: {'line': b'[ 45%] Built target gnss_ros_standardization__rosidl_typesupport_c\n'}
+[0.909773] (gnss_ros_standardization) StdoutLine: {'line': b'[ 51%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c\n'}
+[0.910945] (gnss_ros_standardization) StdoutLine: {'line': b'[ 57%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c\n'}
+[0.911603] (gnss_ros_standardization) StdoutLine: {'line': b'[ 63%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_cpp\n'}
+[0.912239] (gnss_ros_standardization) StdoutLine: {'line': b'[ 69%] Built target gnss_ros_standardization__rosidl_typesupport_cpp\n'}
+[0.918483] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_utils\n'}
+[0.923537] (gnss_ros_standardization) StdoutLine: {'line': b'[ 69%] Built target gnss_ros_standardization\n'}
+[0.925699] (gnss_ros_standardization) StdoutLine: {'line': b'[ 71%] Built target gnss_utils\n'}
+[0.935515] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target novatel_decoder_node\n'}
+[0.935655] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target sbf_decoder_node\n'}
+[0.935718] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target ubx_driver_node\n'}
+[0.935767] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target rosbag_to_rinex\n'}
+[0.935818] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target single_point_positioning\n'}
+[0.935940] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target rinex_to_rosbag\n'}
+[0.936326] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target novatel_driver_node\n'}
+[0.938735] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target rtcm_decoder_node\n'}
+[0.939365] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target ubx_decoder_node\n'}
+[0.939640] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target sbf_driver_node\n'}
+[0.940275] (gnss_ros_standardization) StdoutLine: {'line': b'[ 72%] Built target gnss_ros_standardization__py\n'}
+[0.941602] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target real_time_kinematic\n'}
+[0.942442] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_visualizer\n'}
+[0.944122] (gnss_ros_standardization) StdoutLine: {'line': b'[ 74%] Built target novatel_decoder_node\n'}
+[0.944546] (gnss_ros_standardization) StdoutLine: {'line': b'[ 77%] Built target single_point_positioning\n'}
+[0.944662] (gnss_ros_standardization) StdoutLine: {'line': b'[ 76%] Built target ubx_driver_node\n'}
+[0.945550] (gnss_ros_standardization) StdoutLine: {'line': b'[ 78%] Built target novatel_driver_node\n'}
+[0.947495] (gnss_ros_standardization) StdoutLine: {'line': b'[ 79%] Built target sbf_decoder_node\n'}
+[0.947996] (gnss_ros_standardization) StdoutLine: {'line': b'[ 81%] Built target rosbag_to_rinex\n'}
+[0.948124] (gnss_ros_standardization) StdoutLine: {'line': b'[ 82%] Built target rinex_to_rosbag\n'}
+[0.948683] (gnss_ros_standardization) StdoutLine: {'line': b'[ 83%] Built target rtcm_decoder_node\n'}
+[0.949395] (gnss_ros_standardization) StdoutLine: {'line': b'[ 85%] Built target ubx_decoder_node\n'}
+[0.951360] (gnss_ros_standardization) StdoutLine: {'line': b'[ 87%] Built target sbf_driver_node\n'}
+[0.951610] (gnss_ros_standardization) StdoutLine: {'line': b'[ 89%] Built target real_time_kinematic\n'}
+[0.953411] (gnss_ros_standardization) StdoutLine: {'line': b'[ 90%] Building CXX object CMakeFiles/gnss_visualizer.dir/src/utils/gnss_visualizer.cpp.o\n'}
+[0.954453] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_generator_py\n'}
+[0.961403] (gnss_ros_standardization) StdoutLine: {'line': b'[ 95%] Built target gnss_ros_standardization__rosidl_generator_py\n'}
+[0.966842] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_fastrtps_c__pyext\n'}
+[0.966956] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_c__pyext\n'}
+[0.968537] (gnss_ros_standardization) StdoutLine: {'line': b'Consolidate compiler generated dependencies of target gnss_ros_standardization__rosidl_typesupport_introspection_c__pyext\n'}
+[0.971960] (gnss_ros_standardization) StdoutLine: {'line': b'[ 97%] Built target gnss_ros_standardization__rosidl_typesupport_c__pyext\n'}
+[0.973537] (gnss_ros_standardization) StdoutLine: {'line': b'[ 99%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c__pyext\n'}
+[0.975157] (gnss_ros_standardization) StdoutLine: {'line': b'[100%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c__pyext\n'}
+[1.000585] (-) TimerEvent: {}
+[1.007209] (gnss_ros_standardization) StdoutLine: {'line': b'running egg_info\n'}
+[1.007536] (gnss_ros_standardization) StdoutLine: {'line': b'writing gnss_ros_standardization.egg-info/PKG-INFO\n'}
+[1.007621] (gnss_ros_standardization) StdoutLine: {'line': b'writing dependency_links to gnss_ros_standardization.egg-info/dependency_links.txt\n'}
+[1.007675] (gnss_ros_standardization) StdoutLine: {'line': b'writing top-level names to gnss_ros_standardization.egg-info/top_level.txt\n'}
+[1.008607] (gnss_ros_standardization) StdoutLine: {'line': b"reading manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'\n"}
+[1.008860] (gnss_ros_standardization) StdoutLine: {'line': b"writing manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'\n"}
+[1.023444] (gnss_ros_standardization) StdoutLine: {'line': b'[100%] Built target ament_cmake_python_build_gnss_ros_standardization_egg\n'}
+[1.100669] (-) TimerEvent: {}
+[1.200806] (-) TimerEvent: {}
+[1.300943] (-) TimerEvent: {}
+[1.401077] (-) TimerEvent: {}
+[1.501224] (-) TimerEvent: {}
+[1.601391] (-) TimerEvent: {}
+[1.701521] (-) TimerEvent: {}
+[1.801658] (-) TimerEvent: {}
+[1.901789] (-) TimerEvent: {}
+[2.001923] (-) TimerEvent: {}
+[2.102067] (-) TimerEvent: {}
+[2.202202] (-) TimerEvent: {}
+[2.279542] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In constructor \xe2\x80\x98GnssVisualizer::GnssVisualizer()\xe2\x80\x99:\n'}
+[2.279645] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:54:5: error: \xe2\x80\x98obs_sub_\xe2\x80\x99 was not declared in this scope\n'}
+[2.279673] (gnss_ros_standardization) StderrLine: {'line': b'   54 |     obs_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssObservations>(\n'}
+[2.279695] (gnss_ros_standardization) StderrLine: {'line': b'      |     ^~~~~~~~\n'}
+[2.302268] (-) TimerEvent: {}
+[2.305892] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:56:5: error: \xe2\x80\x98eph_sub_\xe2\x80\x99 was not declared in this scope\n'}
+[2.305949] (gnss_ros_standardization) StderrLine: {'line': b'   56 |     eph_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssEphemerides>(\n'}
+[2.305977] (gnss_ros_standardization) StderrLine: {'line': b'      |     ^~~~~~~~\n'}
+[2.330046] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:58:5: error: \xe2\x80\x98sol_sub_\xe2\x80\x99 was not declared in this scope\n'}
+[2.330105] (gnss_ros_standardization) StderrLine: {'line': b'   58 |     sol_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssSolution>(\n'}
+[2.330127] (gnss_ros_standardization) StderrLine: {'line': b'      |     ^~~~~~~~\n'}
+[2.353512] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:61:5: error: \xe2\x80\x98image_pub_\xe2\x80\x99 was not declared in this scope\n'}
+[2.353550] (gnss_ros_standardization) StderrLine: {'line': b'   61 |     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("gnss_visualization/dashboard", 1);\n'}
+[2.353571] (gnss_ros_standardization) StderrLine: {'line': b'      |     ^~~~~~~~~~\n'}
+[2.355828] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In static member function \xe2\x80\x98static void GnssVisualizer::onMouse(int, int, int, int, void*)\xe2\x80\x99:\n'}
+[2.355854] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:145:52: warning: unused parameter \xe2\x80\x98flags\xe2\x80\x99 [-Wunused-parameter]\n'}
+[2.355873] (gnss_ros_standardization) StderrLine: {'line': b'  145 |   static void onMouse(int event, int x, int y, int flags, void* userdata) {\n'}
+[2.355892] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                ~~~~^~~~~\n'}
+[2.369912] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In member function \xe2\x80\x98void GnssVisualizer::renderLoop()\xe2\x80\x99:\n'}
+[2.369947] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:254:5: error: \xe2\x80\x98image_pub_\xe2\x80\x99 was not declared in this scope\n'}
+[2.369966] (gnss_ros_standardization) StderrLine: {'line': b'  254 |     image_pub_->publish(*msg);\n'}
+[2.369985] (gnss_ros_standardization) StderrLine: {'line': b'      |     ^~~~~~~~~~\n'}
+[2.402397] (-) TimerEvent: {}
+[2.502537] (-) TimerEvent: {}
+[2.602678] (-) TimerEvent: {}
+[2.702812] (-) TimerEvent: {}
+[2.802941] (-) TimerEvent: {}
+[2.903062] (-) TimerEvent: {}
+[3.003191] (-) TimerEvent: {}
+[3.103307] (-) TimerEvent: {}
+[3.203402] (-) TimerEvent: {}
+[3.303489] (-) TimerEvent: {}
+[3.403574] (-) TimerEvent: {}
+[3.503646] (-) TimerEvent: {}
+[3.603721] (-) TimerEvent: {}
+[3.703794] (-) TimerEvent: {}
+[3.803877] (-) TimerEvent: {}
+[3.903964] (-) TimerEvent: {}
+[4.004080] (-) TimerEvent: {}
+[4.104192] (-) TimerEvent: {}
+[4.204251] (-) TimerEvent: {}
+[4.304327] (-) TimerEvent: {}
+[4.404403] (-) TimerEvent: {}
+[4.504474] (-) TimerEvent: {}
+[4.536180] (gnss_ros_standardization) StderrLine: {'line': b'gmake[2]: *** [CMakeFiles/gnss_visualizer.dir/build.make:76: CMakeFiles/gnss_visualizer.dir/src/utils/gnss_visualizer.cpp.o] \xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xbc 1\n'}
+[4.536428] (gnss_ros_standardization) StderrLine: {'line': b'gmake[1]: *** [CMakeFiles/Makefile2:1018: CMakeFiles/gnss_visualizer.dir/all] \xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xbc 2\n'}
+[4.536607] (gnss_ros_standardization) StderrLine: {'line': b'gmake: *** [Makefile:146: all] \xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xbc 2\n'}
+[4.537914] (gnss_ros_standardization) CommandEnded: {'returncode': 2}
+[4.544998] (gnss_ros_standardization) JobEnded: {'identifier': 'gnss_ros_standardization', 'rc': 2}
+[4.555177] (-) EventReactorShutdown: {}

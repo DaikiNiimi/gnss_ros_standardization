@@ -7,7 +7,7 @@
     Standardization of GNSS raw data handling for ROS2 with MALIB core.
     Provides message definitions and tools (RTCM decoder, ROS bag -> RINEX converter).
   </description>
-  <maintainer email="200447061@ccmailg.meijo-u.ac.jp">daiki</maintainer>
+  <maintainer email="dai12.gnss@gmail.com">daiki</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -30,6 +30,8 @@
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
   <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>image_transport</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

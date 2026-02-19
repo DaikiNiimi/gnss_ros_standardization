@@ -1,0 +1,182 @@
+[0.000000] (-) TimerEvent: {}
+[0.000033] (gnss_ros_standardization) JobQueued: {'identifier': 'gnss_ros_standardization', 'dependencies': OrderedDict()}
+[0.000254] (gnss_ros_standardization) JobStarted: {'identifier': 'gnss_ros_standardization'}
+[0.004032] (gnss_ros_standardization) JobProgress: {'identifier': 'gnss_ros_standardization', 'progress': 'cmake'}
+[0.004426] (gnss_ros_standardization) JobProgress: {'identifier': 'gnss_ros_standardization', 'progress': 'build'}
+[0.004916] (gnss_ros_standardization) Command: {'cmd': ['/usr/bin/cmake', '--build', '/home/daiki/ws_gnss/build/gnss_ros_standardization', '--', '-j28', '-l28'], 'cwd': '/home/daiki/ws_gnss/build/gnss_ros_standardization', 'env': OrderedDict([('GJS_DEBUG_TOPICS', 'JS ERROR;JS LOG'), ('PYTHON_BASIC_REPL', '1'), ('LESSOPEN', '| /usr/bin/lesspipe %s'), ('USER', 'daiki'), ('XDG_SESSION_TYPE', 'x11'), ('GIT_ASKPASS', '/usr/share/antigravity/resources/app/extensions/git/dist/askpass.sh'), ('SHLVL', '0'), ('LD_LIBRARY_PATH', '/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib'), ('ANTIGRAVITY_CLI_ALIAS', 'agy'), ('HOME', '/home/daiki'), ('CHROME_DESKTOP', 'antigravity.desktop'), ('OLDPWD', '/home/daiki/ws_gnss/src/gnss_ros_standardization'), ('TERM_PROGRAM_VERSION', '1.107.0'), ('DESKTOP_SESSION', 'ubuntu'), ('GIO_LAUNCHED_DESKTOP_FILE', '/usr/share/applications/antigravity.desktop'), ('ROS_PYTHON_VERSION', '3'), ('GNOME_SHELL_SESSION_MODE', 'ubuntu'), ('GTK_MODULES', 'gail:atk-bridge'), ('PAGER', 'cat'), ('VSCODE_GIT_ASKPASS_MAIN', '/usr/share/antigravity/resources/app/extensions/git/dist/askpass-main.js'), ('VSCODE_GIT_ASKPASS_NODE', '/usr/share/antigravity/antigravity'), ('MANAGERPID', '4699'), ('SYSTEMD_EXEC_PID', '5012'), ('VSCODE_PYTHON_AUTOACTIVATE_GUARD', '1'), ('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus'), ('COLORTERM', 'truecolor'), ('ANTIGRAVITY_AGENT', '1'), ('GIO_LAUNCHED_DESKTOP_FILE_PID', '7484'), ('ROS_DISTRO', 'humble'), ('GTK_IM_MODULE', 'ibus'), ('LOGNAME', 'daiki'), ('JOURNAL_STREAM', '8:14082'), ('_', '/usr/bin/colcon'), ('ROS_VERSION', '2'), ('XDG_SESSION_CLASS', 'user'), ('USERNAME', 'daiki'), ('TERM', 'xterm-256color'), ('GNOME_DESKTOP_SESSION_ID', 'this-is-deprecated'), ('FC_FONTATIONS', '1'), ('ROS_LOCALHOST_ONLY', '1'), ('WINDOWPATH', '2'), ('PATH', '/opt/ros/humble/bin:/home/daiki/.local/bin:/home/daiki/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin'), ('SESSION_MANAGER', 'local/daiki-ubuntu22:@/tmp/.ICE-unix/4958,unix/daiki-ubuntu22:/tmp/.ICE-unix/4958'), ('INVOCATION_ID', '40713bbc3c9241b0a3370c9015f41ffc'), ('VK_ICD_FILENAMES', '/usr/share/vulkan/icd.d/nvidia_icd.json'), ('XDG_MENU_PREFIX', 'gnome-'), ('XDG_RUNTIME_DIR', '/run/user/1000'), ('GDK_BACKEND', 'x11'), ('DISPLAY', ':1'), ('LANG', 'ja_JP.UTF-8'), ('XDG_CURRENT_DESKTOP', 'ubuntu:GNOME'), ('PYTHONSTARTUP', '/home/daiki/.config/Antigravity/User/workspaceStorage/a996545d141405a7e35365a9bb52016f/ms-python.python/pythonrc.py'), ('RMW_IMPLEMENTATION', 'rmw_cyclonedds_cpp'), ('XMODIFIERS', '@im=ibus'), ('XDG_SESSION_DESKTOP', 'ubuntu'), ('XAUTHORITY', '/run/user/1000/gdm/Xauthority'), ('LS_COLORS', 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:'), ('VSCODE_GIT_IPC_HANDLE', '/run/user/1000/vscode-git-e68bc7393d.sock'), ('TERM_PROGRAM', 'vscode'), ('SSH_AGENT_LAUNCHER', 'gnome-keyring'), ('SSH_AUTH_SOCK', '/run/user/1000/keyring/ssh'), ('AMENT_PREFIX_PATH', '/opt/ros/humble'), ('SHELL', '/bin/bash'), ('QT_ACCESSIBILITY', '1'), ('GDMSESSION', 'ubuntu'), ('LESSCLOSE', '/usr/bin/lesspipe %s %s'), ('VK_LAYER_PATH', '/usr/share/vulkan/explicit_layer.d'), ('GPG_AGENT_INFO', '/run/user/1000/gnupg/S.gpg-agent:0:1'), ('GJS_DEBUG_OUTPUT', 'stderr'), ('VSCODE_GIT_ASKPASS_EXTRA_ARGS', ''), ('QT_IM_MODULE', 'ibus'), ('PWD', '/home/daiki/ws_gnss/build/gnss_ros_standardization'), ('XDG_CONFIG_DIRS', '/etc/xdg/xdg-ubuntu:/etc/xdg'), ('XDG_DATA_DIRS', '/usr/share/ubuntu:/usr/share/gnome:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop'), ('PYTHONPATH', '/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages'), ('COLCON', '1'), ('CMAKE_PREFIX_PATH', '/opt/ros/humble')]), 'shell': False}
+[0.046899] (gnss_ros_standardization) StdoutLine: {'line': b'[  0%] Built target gnss_ros_standardization__cpp\n'}
+[0.047079] (gnss_ros_standardization) StdoutLine: {'line': b'[  6%] Built target gnss_ros_standardization__rosidl_generator_c\n'}
+[0.050459] (gnss_ros_standardization) StdoutLine: {'line': b'[  6%] Built target ament_cmake_python_symlink_gnss_ros_standardization\n'}
+[0.052330] (gnss_ros_standardization) StdoutLine: {'line': b'[ 33%] Built target rtkcore_lib\n'}
+[0.059724] (gnss_ros_standardization) StdoutLine: {'line': b'[ 38%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_cpp\n'}
+[0.061161] (gnss_ros_standardization) StdoutLine: {'line': b'[ 45%] Built target gnss_ros_standardization__rosidl_typesupport_c\n'}
+[0.061193] (gnss_ros_standardization) StdoutLine: {'line': b'[ 50%] Built target gnss_ros_standardization__rosidl_typesupport_cpp\n'}
+[0.061248] (gnss_ros_standardization) StdoutLine: {'line': b'[ 56%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_cpp\n'}
+[0.063340] (gnss_ros_standardization) StdoutLine: {'line': b'[ 62%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c\n'}
+[0.065623] (gnss_ros_standardization) StdoutLine: {'line': b'[ 68%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c\n'}
+[0.072534] (gnss_ros_standardization) StdoutLine: {'line': b'[ 70%] Built target gnss_utils\n'}
+[0.078803] (gnss_ros_standardization) StdoutLine: {'line': b'[ 70%] Built target gnss_ros_standardization\n'}
+[0.083544] (gnss_ros_standardization) StdoutLine: {'line': b'[ 72%] Built target ubx_decoder_node\n'}
+[0.083694] (gnss_ros_standardization) StdoutLine: {'line': b'[ 72%] Built target sbf_decoder_node\n'}
+[0.083893] (gnss_ros_standardization) StdoutLine: {'line': b'[ 74%] Built target ubx_driver_node\n'}
+[0.084389] (gnss_ros_standardization) StdoutLine: {'line': b'[ 75%] Built target rtcm_decoder_node\n'}
+[0.084498] (gnss_ros_standardization) StdoutLine: {'line': b'[ 76%] Built target novatel_driver_node\n'}
+[0.085460] (gnss_ros_standardization) StdoutLine: {'line': b'[ 78%] Built target sbf_driver_node\n'}
+[0.086853] (gnss_ros_standardization) StdoutLine: {'line': b'[ 79%] Built target gnss_visualizer\n'}
+[0.087052] (gnss_ros_standardization) StdoutLine: {'line': b'[ 79%] Building CXX object CMakeFiles/simple_gnss_visualizer.dir/src/utils/simple_gnss_visualizer.cpp.o\n'}
+[0.087771] (gnss_ros_standardization) StdoutLine: {'line': b'[ 81%] Built target real_time_kinematic\n'}
+[0.087942] (gnss_ros_standardization) StdoutLine: {'line': b'[ 82%] Built target rinex_to_rosbag\n'}
+[0.088368] (gnss_ros_standardization) StdoutLine: {'line': b'[ 83%] Built target gnss_ros_standardization__py\n'}
+[0.089377] (gnss_ros_standardization) StdoutLine: {'line': b'[ 85%] Built target novatel_decoder_node\n'}
+[0.089864] (gnss_ros_standardization) StdoutLine: {'line': b'[ 87%] Built target single_point_positioning\n'}
+[0.090017] (gnss_ros_standardization) StdoutLine: {'line': b'[ 89%] Built target rosbag_to_rinex\n'}
+[0.099875] (-) TimerEvent: {}
+[0.100253] (gnss_ros_standardization) StdoutLine: {'line': b'[ 94%] Built target gnss_ros_standardization__rosidl_generator_py\n'}
+[0.113621] (gnss_ros_standardization) StdoutLine: {'line': b'[ 95%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c__pyext\n'}
+[0.113876] (gnss_ros_standardization) StdoutLine: {'line': b'[ 99%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c__pyext\n'}
+[0.113904] (gnss_ros_standardization) StdoutLine: {'line': b'[ 99%] Built target gnss_ros_standardization__rosidl_typesupport_c__pyext\n'}
+[0.145614] (gnss_ros_standardization) StdoutLine: {'line': b'running egg_info\n'}
+[0.145946] (gnss_ros_standardization) StdoutLine: {'line': b'writing gnss_ros_standardization.egg-info/PKG-INFO\n'}
+[0.146044] (gnss_ros_standardization) StdoutLine: {'line': b'writing dependency_links to gnss_ros_standardization.egg-info/dependency_links.txt\n'}
+[0.146097] (gnss_ros_standardization) StdoutLine: {'line': b'writing top-level names to gnss_ros_standardization.egg-info/top_level.txt\n'}
+[0.146953] (gnss_ros_standardization) StdoutLine: {'line': b"reading manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'\n"}
+[0.147237] (gnss_ros_standardization) StdoutLine: {'line': b"writing manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'\n"}
+[0.160960] (gnss_ros_standardization) StdoutLine: {'line': b'[ 99%] Built target ament_cmake_python_build_gnss_ros_standardization_egg\n'}
+[0.199947] (-) TimerEvent: {}
+[0.300060] (-) TimerEvent: {}
+[0.400183] (-) TimerEvent: {}
+[0.500308] (-) TimerEvent: {}
+[0.600413] (-) TimerEvent: {}
+[0.700501] (-) TimerEvent: {}
+[0.800648] (-) TimerEvent: {}
+[0.900768] (-) TimerEvent: {}
+[1.000881] (-) TimerEvent: {}
+[1.100985] (-) TimerEvent: {}
+[1.201086] (-) TimerEvent: {}
+[1.301209] (-) TimerEvent: {}
+[1.401342] (-) TimerEvent: {}
+[1.463361] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp: In static member function \xe2\x80\x98static void gnss_visualizer::SimpleGnssVisualizer::onMouse(int, int, int, int, void*)\xe2\x80\x99:\n'}
+[1.463475] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:119:38: warning: unused parameter \xe2\x80\x98x\xe2\x80\x99 [-Wunused-parameter]\n'}
+[1.463503] (gnss_ros_standardization) StderrLine: {'line': b'  119 |   static void onMouse(int event, int x, int y, int flags, void* userdata) {\n'}
+[1.463525] (gnss_ros_standardization) StderrLine: {'line': b'      |                                  ~~~~^\n'}
+[1.463546] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:119:45: warning: unused parameter \xe2\x80\x98y\xe2\x80\x99 [-Wunused-parameter]\n'}
+[1.463567] (gnss_ros_standardization) StderrLine: {'line': b'  119 |   static void onMouse(int event, int x, int y, int flags, void* userdata) {\n'}
+[1.463588] (gnss_ros_standardization) StderrLine: {'line': b'      |                                         ~~~~^\n'}
+[1.468966] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp: In member function \xe2\x80\x98cv::Scalar gnss_visualizer::SimpleGnssVisualizer::statusColor(int)\xe2\x80\x99:\n'}
+[1.469010] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:137:12: error: \xe2\x80\x98STATUS_FIX\xe2\x80\x99 was not declared in this scope\n'}
+[1.469040] (gnss_ros_standardization) StderrLine: {'line': b'  137 |       case STATUS_FIX:   return cv::Scalar(0, 200, 0);   // Green\n'}
+[1.469066] (gnss_ros_standardization) StderrLine: {'line': b'      |            ^~~~~~~~~~\n'}
+[1.474514] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:138:12: error: \xe2\x80\x98STATUS_FLOAT\xe2\x80\x99 was not declared in this scope\n'}
+[1.474550] (gnss_ros_standardization) StderrLine: {'line': b'  138 |       case STATUS_FLOAT: return cv::Scalar(0, 200, 200); // Yellow\n'}
+[1.474571] (gnss_ros_standardization) StderrLine: {'line': b'      |            ^~~~~~~~~~~~\n'}
+[1.479591] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:139:12: error: \xe2\x80\x98STATUS_SBAS\xe2\x80\x99 was not declared in this scope\n'}
+[1.479627] (gnss_ros_standardization) StderrLine: {'line': b'  139 |       case STATUS_SBAS:  return cv::Scalar(200, 50, 50); // Blue\n'}
+[1.479652] (gnss_ros_standardization) StderrLine: {'line': b'      |            ^~~~~~~~~~~\n'}
+[1.484566] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:140:12: error: \xe2\x80\x98STATUS_DGPS\xe2\x80\x99 was not declared in this scope\n'}
+[1.484607] (gnss_ros_standardization) StderrLine: {'line': b'  140 |       case STATUS_DGPS:  return cv::Scalar(200, 50, 50); // Blue\n'}
+[1.484629] (gnss_ros_standardization) StderrLine: {'line': b'      |            ^~~~~~~~~~~\n'}
+[1.489403] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:141:12: error: \xe2\x80\x98STATUS_PPP\xe2\x80\x99 was not declared in this scope\n'}
+[1.489437] (gnss_ros_standardization) StderrLine: {'line': b'  141 |       case STATUS_PPP:   return cv::Scalar(200, 200, 50);// Teal\n'}
+[1.489458] (gnss_ros_standardization) StderrLine: {'line': b'      |            ^~~~~~~~~~\n'}
+[1.491271] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp: In member function \xe2\x80\x98void gnss_visualizer::SimpleGnssVisualizer::renderStatus(cv::Mat&, cv::Rect)\xe2\x80\x99:\n'}
+[1.491308] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:182:68: error: \xe2\x80\x98using element_type = struct gnss_ros_standardization::msg::GnssObservations_<std::allocator<void> >\xe2\x80\x99 {aka \xe2\x80\x98struct gnss_ros_standardization::msg::GnssObservations_<std::allocator<void> >\xe2\x80\x99} has no member named \xe2\x80\x98time\xe2\x80\x99\n'}
+[1.491335] (gnss_ros_standardization) StderrLine: {'line': b'  182 |       snprintf(buf, sizeof(buf), "Week: %d  TOW: %.1f", last_obs_->time.week, last_obs_->time.tow);\n'}
+[1.491356] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                                    ^~~~\n'}
+[1.491377] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:182:90: error: \xe2\x80\x98using element_type = struct gnss_ros_standardization::msg::GnssObservations_<std::allocator<void> >\xe2\x80\x99 {aka \xe2\x80\x98struct gnss_ros_standardization::msg::GnssObservations_<std::allocator<void> >\xe2\x80\x99} has no member named \xe2\x80\x98time\xe2\x80\x99\n'}
+[1.491398] (gnss_ros_standardization) StderrLine: {'line': b'  182 |       snprintf(buf, sizeof(buf), "Week: %d  TOW: %.1f", last_obs_->time.week, last_obs_->time.tow);\n'}
+[1.491418] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                                                          ^~~~\n'}
+[1.496235] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:193:14: error: \xe2\x80\x98STATUS_FIX\xe2\x80\x99 was not declared in this scope\n'}
+[1.496277] (gnss_ros_standardization) StderrLine: {'line': b'  193 |         case STATUS_FIX: status_str="FIX"; status_col=cv::Scalar(0,180,0); break;\n'}
+[1.496300] (gnss_ros_standardization) StderrLine: {'line': b'      |              ^~~~~~~~~~\n'}
+[1.501393] (-) TimerEvent: {}
+[1.501574] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:194:14: error: \xe2\x80\x98STATUS_FLOAT\xe2\x80\x99 was not declared in this scope\n'}
+[1.501611] (gnss_ros_standardization) StderrLine: {'line': b'  194 |         case STATUS_FLOAT: status_str="FLOAT"; status_col=cv::Scalar(0,180,180); break;\n'}
+[1.501634] (gnss_ros_standardization) StderrLine: {'line': b'      |              ^~~~~~~~~~~~\n'}
+[1.506430] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:195:14: error: \xe2\x80\x98STATUS_SBAS\xe2\x80\x99 was not declared in this scope\n'}
+[1.506480] (gnss_ros_standardization) StderrLine: {'line': b'  195 |         case STATUS_SBAS: status_str="SBAS"; status_col=cv::Scalar(200,0,0); break;\n'}
+[1.506507] (gnss_ros_standardization) StderrLine: {'line': b'      |              ^~~~~~~~~~~\n'}
+[1.511374] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:196:14: error: \xe2\x80\x98STATUS_DGPS\xe2\x80\x99 was not declared in this scope\n'}
+[1.511407] (gnss_ros_standardization) StderrLine: {'line': b'  196 |         case STATUS_DGPS: status_str="DGPS"; status_col=cv::Scalar(200,0,0); break;\n'}
+[1.511428] (gnss_ros_standardization) StderrLine: {'line': b'      |              ^~~~~~~~~~~\n'}
+[1.516738] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:197:14: error: \xe2\x80\x98STATUS_SINGLE\xe2\x80\x99 was not declared in this scope; did you mean \xe2\x80\x98SOLQ_SINGLE\xe2\x80\x99?\n'}
+[1.516768] (gnss_ros_standardization) StderrLine: {'line': b'  197 |         case STATUS_SINGLE: status_str="SINGLE"; status_col=cv::Scalar(0,0,200); break;\n'}
+[1.516790] (gnss_ros_standardization) StderrLine: {'line': b'      |              ^~~~~~~~~~~~~\n'}
+[1.516809] (gnss_ros_standardization) StderrLine: {'line': b'      |              SOLQ_SINGLE\n'}
+[1.521584] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:198:14: error: \xe2\x80\x98STATUS_PPP\xe2\x80\x99 was not declared in this scope\n'}
+[1.521635] (gnss_ros_standardization) StderrLine: {'line': b'  198 |         case STATUS_PPP: status_str="PPP"; status_col=cv::Scalar(200,200,0); break;\n'}
+[1.521657] (gnss_ros_standardization) StderrLine: {'line': b'      |              ^~~~~~~~~~\n'}
+[1.526104] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:199:14: error: \xe2\x80\x98STATUS_DR\xe2\x80\x99 was not declared in this scope\n'}
+[1.526139] (gnss_ros_standardization) StderrLine: {'line': b'  199 |         case STATUS_DR: status_str="DR"; break;\n'}
+[1.526162] (gnss_ros_standardization) StderrLine: {'line': b'      |              ^~~~~~~~~\n'}
+[1.526305] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:206:66: error: \xe2\x80\x98using element_type = struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99 {aka \xe2\x80\x98struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99} has no member named \xe2\x80\x98pos_llh\xe2\x80\x99\n'}
+[1.526330] (gnss_ros_standardization) StderrLine: {'line': b'  206 |       snprintf(pos_buf, sizeof(pos_buf), "Lat: %.8f", last_sol_->pos_llh.lat * RAD2DEG);\n'}
+[1.526351] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                                  ^~~~~~~\n'}
+[1.530467] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:206:80: error: \xe2\x80\x98RAD2DEG\xe2\x80\x99 was not declared in this scope\n'}
+[1.530503] (gnss_ros_standardization) StderrLine: {'line': b'  206 |       snprintf(pos_buf, sizeof(pos_buf), "Lat: %.8f", last_sol_->pos_llh.lat * RAD2DEG);\n'}
+[1.530530] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                                                ^~~~~~~\n'}
+[1.530580] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:209:66: error: \xe2\x80\x98using element_type = struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99 {aka \xe2\x80\x98struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99} has no member named \xe2\x80\x98pos_llh\xe2\x80\x99\n'}
+[1.530604] (gnss_ros_standardization) StderrLine: {'line': b'  209 |       snprintf(pos_buf, sizeof(pos_buf), "Lon: %.8f", last_sol_->pos_llh.lon * RAD2DEG);\n'}
+[1.530627] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                                  ^~~~~~~\n'}
+[1.530673] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:212:68: error: \xe2\x80\x98using element_type = struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99 {aka \xe2\x80\x98struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99} has no member named \xe2\x80\x98pos_llh\xe2\x80\x99\n'}
+[1.530696] (gnss_ros_standardization) StderrLine: {'line': b'  212 |       snprintf(pos_buf, sizeof(pos_buf), "Alt: %.3f m", last_sol_->pos_llh.alt);\n'}
+[1.530716] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                                    ^~~~~~~\n'}
+[1.531372] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp: In member function \xe2\x80\x98void gnss_visualizer::SimpleGnssVisualizer::renderPositionPlot(cv::Mat&, cv::Rect)\xe2\x80\x99:\n'}
+[1.531426] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:252:32: error: \xe2\x80\x98const struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99 has no member named \xe2\x80\x98pos_llh\xe2\x80\x99\n'}
+[1.531449] (gnss_ros_standardization) StderrLine: {'line': b'  252 |       double cur_llh[3] = {sol.pos_llh.lat, sol.pos_llh.lon, sol.pos_llh.alt};\n'}
+[1.531470] (gnss_ros_standardization) StderrLine: {'line': b'      |                                ^~~~~~~\n'}
+[1.531489] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:252:49: error: \xe2\x80\x98const struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99 has no member named \xe2\x80\x98pos_llh\xe2\x80\x99\n'}
+[1.531511] (gnss_ros_standardization) StderrLine: {'line': b'  252 |       double cur_llh[3] = {sol.pos_llh.lat, sol.pos_llh.lon, sol.pos_llh.alt};\n'}
+[1.531532] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                 ^~~~~~~\n'}
+[1.531552] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:252:66: error: \xe2\x80\x98const struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99 has no member named \xe2\x80\x98pos_llh\xe2\x80\x99\n'}
+[1.531646] (gnss_ros_standardization) StderrLine: {'line': b'  252 |       double cur_llh[3] = {sol.pos_llh.lat, sol.pos_llh.lon, sol.pos_llh.alt};\n'}
+[1.531668] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                                  ^~~~~~~\n'}
+[1.531687] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:256:15: error: too many arguments to function \xe2\x80\x98void ecef2enu(const double*, const double*, double*)\xe2\x80\x99\n'}
+[1.531707] (gnss_ros_standardization) StderrLine: {'line': b'  256 |       ecef2enu(fixed_llh_, cur_ecef, fixed_ecef_, enu);\n'}
+[1.531726] (gnss_ros_standardization) StderrLine: {'line': b'      |       ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n'}
+[1.531744] (gnss_ros_standardization) StderrLine: {'line': b'In file included from /home/daiki/ws_gnss/src/gnss_ros_standardization/include/gnss_ros_standardization/gnss_utils.hpp:15,\n'}
+[1.531764] (gnss_ros_standardization) StderrLine: {'line': b'                 from /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:14:\n'}
+[1.531783] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/third_party/MALIB/src/rtklib.h:1441:6: note: declared here\n'}
+[1.531800] (gnss_ros_standardization) StderrLine: {'line': b' 1441 | void ecef2enu(const double *pos, const double *r, double *e);\n'}
+[1.531819] (gnss_ros_standardization) StderrLine: {'line': b'      |      ^~~~~~~~\n'}
+[1.531837] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:269:40: error: \xe2\x80\x98using element_type = struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99 {aka \xe2\x80\x98struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99} has no member named \xe2\x80\x98pos_llh\xe2\x80\x99\n'}
+[1.531861] (gnss_ros_standardization) StderrLine: {'line': b'  269 |        double cur_llh[3] = {last_sol_->pos_llh.lat, last_sol_->pos_llh.lon, last_sol_->pos_llh.alt};\n'}
+[1.531882] (gnss_ros_standardization) StderrLine: {'line': b'      |                                        ^~~~~~~\n'}
+[1.531901] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:269:64: error: \xe2\x80\x98using element_type = struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99 {aka \xe2\x80\x98struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99} has no member named \xe2\x80\x98pos_llh\xe2\x80\x99\n'}
+[1.531920] (gnss_ros_standardization) StderrLine: {'line': b'  269 |        double cur_llh[3] = {last_sol_->pos_llh.lat, last_sol_->pos_llh.lon, last_sol_->pos_llh.alt};\n'}
+[1.531939] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                                ^~~~~~~\n'}
+[1.531957] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:269:88: error: \xe2\x80\x98using element_type = struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99 {aka \xe2\x80\x98struct gnss_ros_standardization::msg::GnssSolution_<std::allocator<void> >\xe2\x80\x99} has no member named \xe2\x80\x98pos_llh\xe2\x80\x99\n'}
+[1.531976] (gnss_ros_standardization) StderrLine: {'line': b'  269 |        double cur_llh[3] = {last_sol_->pos_llh.lat, last_sol_->pos_llh.lon, last_sol_->pos_llh.alt};\n'}
+[1.531995] (gnss_ros_standardization) StderrLine: {'line': b'      |                                                                                        ^~~~~~~\n'}
+[1.532013] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:273:16: error: too many arguments to function \xe2\x80\x98void ecef2enu(const double*, const double*, double*)\xe2\x80\x99\n'}
+[1.532031] (gnss_ros_standardization) StderrLine: {'line': b'  273 |        ecef2enu(fixed_llh_, cur_ecef, fixed_ecef_, enu);\n'}
+[1.532071] (gnss_ros_standardization) StderrLine: {'line': b'      |        ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n'}
+[1.532090] (gnss_ros_standardization) StderrLine: {'line': b'In file included from /home/daiki/ws_gnss/src/gnss_ros_standardization/include/gnss_ros_standardization/gnss_utils.hpp:15,\n'}
+[1.532108] (gnss_ros_standardization) StderrLine: {'line': b'                 from /home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:14:\n'}
+[1.532126] (gnss_ros_standardization) StderrLine: {'line': b'/home/daiki/ws_gnss/src/gnss_ros_standardization/third_party/MALIB/src/rtklib.h:1441:6: note: declared here\n'}
+[1.532144] (gnss_ros_standardization) StderrLine: {'line': b' 1441 | void ecef2enu(const double *pos, const double *r, double *e);\n'}
+[1.532162] (gnss_ros_standardization) StderrLine: {'line': b'      |      ^~~~~~~~\n'}
+[1.601479] (-) TimerEvent: {}
+[1.701624] (-) TimerEvent: {}
+[1.801772] (-) TimerEvent: {}
+[1.901894] (-) TimerEvent: {}
+[2.002035] (-) TimerEvent: {}
+[2.102173] (-) TimerEvent: {}
+[2.202313] (-) TimerEvent: {}
+[2.302456] (-) TimerEvent: {}
+[2.402642] (-) TimerEvent: {}
+[2.502833] (-) TimerEvent: {}
+[2.603046] (-) TimerEvent: {}
+[2.703231] (-) TimerEvent: {}
+[2.803420] (-) TimerEvent: {}
+[2.903560] (-) TimerEvent: {}
+[3.003754] (-) TimerEvent: {}
+[3.103954] (-) TimerEvent: {}
+[3.204095] (-) TimerEvent: {}
+[3.304230] (-) TimerEvent: {}
+[3.404364] (-) TimerEvent: {}
+[3.419171] (gnss_ros_standardization) StderrLine: {'line': b'gmake[2]: *** [CMakeFiles/simple_gnss_visualizer.dir/build.make:76: CMakeFiles/simple_gnss_visualizer.dir/src/utils/simple_gnss_visualizer.cpp.o] \xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xbc 1\n'}
+[3.419408] (gnss_ros_standardization) StderrLine: {'line': b'gmake[1]: *** [CMakeFiles/Makefile2:1051: CMakeFiles/simple_gnss_visualizer.dir/all] \xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xbc 2\n'}
+[3.419540] (gnss_ros_standardization) StderrLine: {'line': b'gmake: *** [Makefile:146: all] \xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xbc 2\n'}
+[3.421041] (gnss_ros_standardization) CommandEnded: {'returncode': 2}
+[3.428239] (gnss_ros_standardization) JobEnded: {'identifier': 'gnss_ros_standardization', 'rc': 2}
+[3.438448] (-) EventReactorShutdown: {}

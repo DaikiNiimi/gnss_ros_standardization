@@ -1,0 +1,7 @@
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In member function ‘void GnssVisualizer::handleMouseClick(int, int)’:
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:202:29: error: ‘roi’ was not declared in this scope
+  202 |       cv::Rect btn_zoom_out(roi.x + roi.width - 65, roi.y + 4, 20, 16);
+      |                             ^~~
+gmake[2]: *** [CMakeFiles/gnss_visualizer.dir/build.make:76: CMakeFiles/gnss_visualizer.dir/src/utils/gnss_visualizer.cpp.o] エラー 1
+gmake[1]: *** [CMakeFiles/Makefile2:1018: CMakeFiles/gnss_visualizer.dir/all] エラー 2
+gmake: *** [Makefile:146: all] エラー 2

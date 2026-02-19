@@ -1,0 +1,44 @@
+[  0%] Built target gnss_ros_standardization__cpp
+[  6%] Built target gnss_ros_standardization__rosidl_generator_c
+[  6%] Built target ament_cmake_python_symlink_gnss_ros_standardization
+[ 33%] Built target rtkcore_lib
+[ 39%] Built target gnss_ros_standardization__rosidl_typesupport_cpp
+[ 45%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c
+[ 51%] Built target gnss_ros_standardization__rosidl_typesupport_c
+[ 63%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_cpp
+[ 63%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_cpp
+[ 69%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c
+[ 71%] Built target gnss_utils
+[ 71%] Built target gnss_ros_standardization
+Consolidate compiler generated dependencies of target gnss_visualizer
+[ 73%] Built target single_point_positioning
+[ 74%] Built target ubx_driver_node
+[ 75%] Built target novatel_driver_node
+[ 77%] Built target real_time_kinematic
+[ 79%] Built target novatel_decoder_node
+[ 81%] Built target rosbag_to_rinex
+[ 83%] Built target ubx_decoder_node
+[ 84%] Built target rinex_to_rosbag
+[ 86%] Built target gnss_ros_standardization__py
+[ 86%] Built target sbf_decoder_node
+[ 87%] Building CXX object CMakeFiles/gnss_visualizer.dir/src/utils/gnss_visualizer.cpp.o
+[ 89%] Built target sbf_driver_node
+[ 90%] Built target rtcm_decoder_node
+[ 95%] Built target gnss_ros_standardization__rosidl_generator_py
+[ 97%] Built target gnss_ros_standardization__rosidl_typesupport_fastrtps_c__pyext
+[ 99%] Built target gnss_ros_standardization__rosidl_typesupport_c__pyext
+[100%] Built target gnss_ros_standardization__rosidl_typesupport_introspection_c__pyext
+running egg_info
+writing gnss_ros_standardization.egg-info/PKG-INFO
+writing dependency_links to gnss_ros_standardization.egg-info/dependency_links.txt
+writing top-level names to gnss_ros_standardization.egg-info/top_level.txt
+reading manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'
+writing manifest file 'gnss_ros_standardization.egg-info/SOURCES.txt'
+[100%] Built target ament_cmake_python_build_gnss_ros_standardization_egg
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp: In member function ‘void GnssVisualizer::handleMouseClick(int, int)’:
+/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/gnss_visualizer.cpp:202:29: error: ‘roi’ was not declared in this scope
+  202 |       cv::Rect btn_zoom_out(roi.x + roi.width - 65, roi.y + 4, 20, 16);
+      |                             ^~~
+gmake[2]: *** [CMakeFiles/gnss_visualizer.dir/build.make:76: CMakeFiles/gnss_visualizer.dir/src/utils/gnss_visualizer.cpp.o] エラー 1
+gmake[1]: *** [CMakeFiles/Makefile2:1018: CMakeFiles/gnss_visualizer.dir/all] エラー 2
+gmake: *** [Makefile:146: all] エラー 2

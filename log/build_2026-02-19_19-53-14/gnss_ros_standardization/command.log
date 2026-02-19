@@ -1,0 +1,2 @@
+Invoking command in '/home/daiki/ws_gnss/build/gnss_ros_standardization': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/daiki/ws_gnss/build/gnss_ros_standardization -- -j28 -l28
+Invoked command in '/home/daiki/ws_gnss/build/gnss_ros_standardization' returned '2': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/daiki/ws_gnss/build/gnss_ros_standardization -- -j28 -l28
