@@ -1,6 +1,0 @@
-Invoking command in '/home/daiki/ws_gnss/build/gnss_ros_standardization': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/daiki/ws_gnss/src/gnss_ros_standardization -DCMAKE_INSTALL_PREFIX=/home/daiki/ws_gnss/install/gnss_ros_standardization
-Invoked command in '/home/daiki/ws_gnss/build/gnss_ros_standardization' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/daiki/ws_gnss/src/gnss_ros_standardization -DCMAKE_INSTALL_PREFIX=/home/daiki/ws_gnss/install/gnss_ros_standardization
-Invoking command in '/home/daiki/ws_gnss/build/gnss_ros_standardization': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/daiki/ws_gnss/build/gnss_ros_standardization -- -j28 -l28
-Invoked command in '/home/daiki/ws_gnss/build/gnss_ros_standardization' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/daiki/ws_gnss/build/gnss_ros_standardization -- -j28 -l28
-Invoking command in '/home/daiki/ws_gnss/build/gnss_ros_standardization': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/daiki/ws_gnss/build/gnss_ros_standardization
-Invoked command in '/home/daiki/ws_gnss/build/gnss_ros_standardization' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/daiki/ws_gnss/build/gnss_ros_standardization

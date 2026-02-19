@@ -1,7 +1,0 @@
-/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp: In static member function ‘static void gnss_visualizer::SimpleGnssVisualizer::onMouse(int, int, int, int, void*)’:
-/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:129:38: warning: unused parameter ‘x’ [-Wunused-parameter]
-  129 |   static void onMouse(int event, int x, int y, int flags, void* userdata) {
-      |                                  ~~~~^
-/home/daiki/ws_gnss/src/gnss_ros_standardization/src/utils/simple_gnss_visualizer.cpp:129:45: warning: unused parameter ‘y’ [-Wunused-parameter]
-  129 |   static void onMouse(int event, int x, int y, int flags, void* userdata) {
-      |                                         ~~~~^
