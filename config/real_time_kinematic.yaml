@@ -42,7 +42,7 @@ rtk_position_node:
       # posmode: 2 
       
       # Frequencies (1:l1, 2:l1+l2, 3:l1+l2+l5)
-      frequency: 3
+      frequency: 2
       # Elevation mask in degrees
       elmask: 15.0
       # Dynamics model (0:off, 1:on)
@@ -79,7 +79,7 @@ rtk_position_node:
     # ==========================================================================
     pos2:
       # AR mode (0:off, 1:continuous, 2:instantaneous, 3:fix-and-hold)
-      armode: 3
+      armode: 1
       # GLONASS AR mode (0:off, 1:on, 2:autocal)
       gloarmode: 1
       # BeiDou AR mode (0:off, 1:on)

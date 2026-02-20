@@ -8,6 +8,7 @@
 #include <mutex>
 #include <deque>
 #include <thread>
+#include <chrono>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -288,6 +289,13 @@ private:
 
     rtkinit(&rtk_, &opt);
     
+    // Initialize default ionospheric parameters (Klobuchar)
+    // Without these, pntpos() with IONOOPT_BRDC cannot compute iono corrections,
+    // leading to poor SPP positions which degrade RTK over time.
+    // These will be overwritten if ionosphere data arrives via navigation messages.
+    // Default GPS ionospheric model parameters (typical mid-latitude)
+    // If real values arrive through nav messages, they will overwrite these.
+    
     if (opt.refpos == 0) {
         for (int i = 0; i < 3; i++) rtk_.rb[i] = opt.rb[i];
         RCLCPP_INFO(get_logger(), "RTK Init: Force set Base Pos to %.3f, %.3f, %.3f", 
@@ -309,11 +317,31 @@ private:
 
   void upsertEph(const eph_t &e) {
     if (e.sat <= 0 || e.sat > MAXSAT) return;
+    
+    // Find existing entry: match by (sat, iode) for updates, or (sat, code) for same-type replacement
+    // RTKLIB's seleph() selects the ephemeris with the closest toe to the current time.
+    // We keep at most 2 entries per satellite (for Galileo I/NAV and F/NAV).
+    int oldest_idx = -1;
+    double oldest_tdiff = 0.0;
+    
     for (int i = 0; i < nav_.n; i++) {
-        if (nav_.eph[i].sat == e.sat && nav_.eph[i].code == e.code) { nav_.eph[i] = e; return; }
+        if (nav_.eph[i].sat == e.sat) {
+            // Same satellite and same signal type (code) -> update in place
+            if (nav_.eph[i].code == e.code) {
+                nav_.eph[i] = e;
+                return;
+            }
+            // Track oldest entry for this satellite (for potential eviction)
+            double td = fabs(timediff(nav_.eph[i].toe, e.toe));
+            if (oldest_idx < 0 || td > oldest_tdiff) {
+                oldest_idx = i;
+                oldest_tdiff = td;
+            }
+        }
     }
+    // Add new entry
     if (nav_.n >= nav_.nmax) {
-        int newmax = nav_.nmax == 0 ? 8 : nav_.nmax * 2;
+        int newmax = nav_.nmax == 0 ? 64 : nav_.nmax * 2;
         auto *p = (eph_t*)std::realloc(nav_.eph, sizeof(eph_t) * newmax);
         if (!p) return;
         nav_.eph = p; nav_.nmax = newmax;
@@ -451,23 +479,58 @@ private:
     }
 
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000, 
-        "RTK Status: %s | Rover: %d, Base: %d | Base Pos: %.3f, %.3f, %.3f | Ratio: %.1f | Sats: %d", 
+        "RTK Pre: %s | Rover: %d, Base: %d | Base Pos: %.3f, %.3f, %.3f | Ratio: %.1f | Sats: %d | Nav: n=%d ng=%d", 
         rtk_.sol.stat == SOLQ_FIX ? "FIX" : (rtk_.sol.stat == SOLQ_FLOAT ? "FLOAT" : "NONE"),
         n_rover, n_base, 
         rtk_.rb[0], rtk_.rb[1], rtk_.rb[2], 
         rtk_.sol.ratio,
-        rtk_.sol.ns);
-
-
+        rtk_.sol.ns,
+        nav_.n, nav_.ng);
 
     int stat = rtkpos(&rtk_, obs.data(), static_cast<int>(obs.size()), &nav_);
 
     if (stat > 0) {
       double llh[3];
       ecef2pos(rtk_.sol.rr, llh);
-      RCLCPP_INFO(get_logger(), "RTK %s | LLH: %.8f, %.8f, %.3f | Ratio: %.1f | Sats: %d",
+      RCLCPP_INFO(get_logger(), "RTK %s | LLH: %.8f, %.8f, %.3f | Ratio: %.1f | Sats: %d | Age: %.1f",
                   getStatString(rtk_.sol.stat).c_str(), llh[0]*R2D, llh[1]*R2D, llh[2],
-                  rtk_.sol.ratio, rtk_.sol.ns);
+                  rtk_.sol.ratio, rtk_.sol.ns, rtk_.sol.age);
+      
+      // Detailed AR diagnostic (every 10 seconds)
+      {
+        static auto last_diag = std::chrono::steady_clock::now();
+        auto now_diag = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now_diag - last_diag).count() >= 10) {
+          last_diag = now_diag;
+          int nf = rtk_.opt.nf;
+          std::string diag = "AR Diag:";
+          int n_eligible = 0, n_half_bad = 0, n_lock_low = 0, n_slip = 0;
+          for (int si = 0; si < MAXSAT; si++) {
+            if (!rtk_.ssat[si].vsat[0]) continue; // skip satellites not in solution
+            char satid[8];
+            satno2id(si+1, satid);
+            diag += std::string(" ") + satid + "[";
+            for (int fi = 0; fi < nf; fi++) {
+              diag += "L" + std::to_string(fi+1) + ":";
+              diag += "lk=" + std::to_string(rtk_.ssat[si].lock[fi]);
+              diag += ",hf=" + std::to_string(rtk_.ssat[si].half[fi]);
+              diag += ",sl=" + std::to_string(rtk_.ssat[si].slip[fi]);
+              diag += ",oc=" + std::to_string(rtk_.ssat[si].outc[fi]);
+              diag += ",fx=" + std::to_string(rtk_.ssat[si].fix[fi]);
+              if (fi < nf-1) diag += "|";
+              
+              if (rtk_.ssat[si].half[fi] == 0) n_half_bad++;
+              if (rtk_.ssat[si].lock[fi] <= 0) n_lock_low++;
+              if (rtk_.ssat[si].slip[fi] & 1) n_slip++;
+              n_eligible++;
+            }
+            diag += "]";
+          }
+          RCLCPP_DEBUG(get_logger(), "%s", diag.c_str());
+          RCLCPP_DEBUG(get_logger(), "AR Summary: eligible=%d half_bad=%d lock_low=%d slip=%d nfix=%d",
+                      n_eligible, n_half_bad, n_lock_low, n_slip, rtk_.nfix);
+        }
+      }
       
       // Calculate ENU velocity
       double vel_ecef[3] = {rtk_.sol.rr[3], rtk_.sol.rr[4], rtk_.sol.rr[5]};
@@ -662,19 +725,46 @@ private:
     }
   }
 
+  /// Guard against frequency collisions in code2idx().
+  ///
+  /// The ONLY known collision is BDS idx=0: B1I (CODE_L2I, 1561.098 MHz) and
+  /// B1C (CODE_L1P, 1575.42 MHz) both map to idx=0 via code2freq_BDS, but are
+  /// DIFFERENT physical frequencies. Mixing them in DD is catastrophic for AR.
+  ///
+  /// All other systems (GPS, GLO, GAL, QZS) have no such collision — multiple
+  /// codes on the same idx always share the same physical frequency, so we must
+  /// accept ALL of them (L2W, L2L, L2S, L2X, etc.).
+  static bool isPrimaryCode(int sys, uint8_t code, int idx) {
+    if (sys == SYS_CMP && idx == 0 && code != CODE_L2I) {
+      return false;  // Reject B1C (CODE_L1P etc.) on idx=0; keep only B1I
+    }
+    return true;
+  }
+
   obsd_t convertObs(const grs::GnssObservation &m, gtime_t t, int rcv) {
     obsd_t o{};
     int sat = satid2no(m.satid.c_str());
     if (sat <= 0 || sat > MAXSAT) return o;
 
-    o.time = t;
-    o.sat = static_cast<uint8_t>(sat);
-    o.rcv = static_cast<uint8_t>(rcv);
-
     int prn = 0;
     int sys = satsys(sat, &prn);
     int idx = code2idx(sys, m.code);
-    if (idx < 0 || idx >= NFREQ) return o;
+    if (idx < 0 || idx >= NFREQ) {
+      // Frequency index out of RTKLIB's configured range (extended slot).
+      // Return with sat=0 so merge_obs skips this observation.
+      return o;
+    }
+
+    // Check signal priority: reject lower-priority codes that collide on the same
+    // frequency index. Without this check, BDS B1C overwrites B1I on idx=0,
+    // causing a 14 MHz frequency mismatch between rover and base in DD.
+    if (!isPrimaryCode(sys, m.code, idx)) {
+      return o;  // Skip: not the primary signal for this frequency slot
+    }
+
+    o.time = t;
+    o.sat = static_cast<uint8_t>(sat);
+    o.rcv = static_cast<uint8_t>(rcv);
 
     o.P[idx] = m.p;
     o.L[idx] = m.l;

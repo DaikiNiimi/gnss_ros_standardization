@@ -223,6 +223,16 @@ private:
     RCLCPP_INFO_ONCE(get_logger(), "Ephemeris received. Ready for positioning.");
   }
 
+  /// Guard against frequency collisions in code2idx().
+  /// Only BDS idx=0 has a real collision (B1I 1561 MHz vs B1C 1575 MHz).
+  /// All other systems have no collision — accept all codes on any idx.
+  static bool isPrimaryCode(int sys, uint8_t code, int idx) {
+    if (sys == SYS_CMP && idx == 0 && code != CODE_L2I) {
+      return false;  // Reject B1C on idx=0; keep only B1I
+    }
+    return true;
+  }
+
   void onObs(const grs::GnssObservations::SharedPtr in) {
     // (onObs function is unchanged until after the pntpos call)
     gtime_t t = gpst2time(static_cast<int>(in->week), in->tow);
@@ -240,6 +250,7 @@ private:
       int prn = 0; const int sys = satsys(sat, &prn);
       const int idx = code2idx(sys, code);
       if (idx < 0) continue;
+      if (!isPrimaryCode(sys, code, idx)) continue;
 
       // Filter by frequency
       // RTKLIB index mapping (roughly):
@@ -256,7 +267,6 @@ private:
         acc.o = {}; acc.o.time = t; acc.o.sat = (uint8_t)sat; acc.o.rcv = 1;
         acc.inited = true;
       }
-      acc.o.code[idx] = code;
       acc.o.code[idx] = code;
       if (m.p > 0.0) acc.o.P[idx] = m.p;
       if (m.l != 0.0) acc.o.L[idx] = m.l;
