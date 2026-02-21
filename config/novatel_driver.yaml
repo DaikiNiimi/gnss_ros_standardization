@@ -10,7 +10,7 @@ novatel_driver_node:
     # ==========================================================================
     # Stream path: serial://<device>:<baud> or tcpcli://<host>:<port> or file://<path>
     # Common bauds: 9600, 115200, 230400, 460800, 921600
-    stream_path: "serial:///dev/ttyUSB2:230400"
+    stream_path: "serial:///dev/ttyUSB1:230400"
 
     # Receiver format: "oem4" (OEM4/6/7) or "oem3" (OEM3/Millennium)
     format: "oem4"

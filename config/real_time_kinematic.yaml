@@ -79,7 +79,7 @@ rtk_position_node:
     # ==========================================================================
     pos2:
       # AR mode (0:off, 1:continuous, 2:instantaneous, 3:fix-and-hold)
-      armode: 1
+      armode: 3
       # GLONASS AR mode (0:off, 1:on, 2:autocal)
       gloarmode: 1
       # BeiDou AR mode (0:off, 1:on)
@@ -101,7 +101,7 @@ rtk_position_node:
       # Max age of differential (s)
       maxage: 30.0
       # Solution sync mode (0:off, 1:on)
-      syncsol: 0
+      syncsol: 1
       # Slip threshold of geometry-free phase (m)
       slipthres: 0.05
       # Reject threshold of innovation (m)
