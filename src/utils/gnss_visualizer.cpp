@@ -74,6 +74,9 @@ public:
         return result;
       });
 
+    render_timer_ = this->create_wall_timer(
+      10ms, std::bind(&GnssVisualizer::renderTimerCallback, this));
+
     if (use_gui_) {
       cv::namedWindow("GNSS Visualizer", cv::WINDOW_NORMAL);
       cv::resizeWindow("GNSS Visualizer", width_, height_);
@@ -162,6 +165,7 @@ private:
   rclcpp::Subscription<gnss_ros_standardization::msg::GnssSolution>::SharedPtr sol_sub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_;
+  rclcpp::TimerBase::SharedPtr render_timer_;
 
   static void onMouse(int event, int x, int y, int flags, void* userdata) {
     GnssVisualizer* viz = (GnssVisualizer*)userdata;
@@ -179,7 +183,7 @@ private:
       zoom_level_--;
     }
     // Clamp
-    if (zoom_level_ > 5) zoom_level_ = 5;
+    if (zoom_level_ > 7) zoom_level_ = 7;
     if (zoom_level_ < -5) zoom_level_ = -5;
     
     RCLCPP_INFO(this->get_logger(), "Zoom Level (Wheel): %d", zoom_level_);
@@ -210,8 +214,8 @@ private:
       // Removed "split screen" logic as it was unintuitive
       
       // Clamp
-      if (zoom_level_ > 5) zoom_level_ = 5;
-      if (zoom_level_ < -5) zoom_level_ = -5;
+      if (zoom_level_ > 7) zoom_level_ = 7;
+      if (zoom_level_ < -7) zoom_level_ = -7;
 
       RCLCPP_INFO(this->get_logger(), "Zoom Level (Click): %d", zoom_level_);
       this->set_parameter(rclcpp::Parameter("zoom_level", zoom_level_));
@@ -219,13 +223,13 @@ private:
     }
   }
 
-  void obsCallback(const gnss_ros_standardization::msg::GnssObservations::SharedPtr msg) {
-    {
-      std::lock_guard<std::mutex> lock(data_mutex_);
-      last_obs_ = msg;
-    }
-    // Update display synchronized with observation arrival
+  void renderTimerCallback() {
     renderLoop(true);
+  }
+
+  void obsCallback(const gnss_ros_standardization::msg::GnssObservations::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    last_obs_ = msg;
   }
 
   void ephCallback(const gnss_ros_standardization::msg::GnssEphemerides::SharedPtr msg) {
@@ -245,7 +249,16 @@ private:
 
   struct SatAzEl { double az, el; int sys; std::string satid; int sat; };
 
+  std::vector<SatAzEl> cached_sat_azel_;
+  bool is_sat_azel_cached_ = false;
+  int64_t last_sat_azel_time_ns_ = 0;
+
   std::vector<SatAzEl> computeSatAzEl() {
+    auto now = this->now();
+    if (is_sat_azel_cached_ && (now.nanoseconds() - last_sat_azel_time_ns_) < 10000000000LL) {
+      return cached_sat_azel_;
+    }
+
     std::vector<SatAzEl> result;
     double rr[3]={0}, pos_llh[3]={0};
     bool has_pos = false;
@@ -257,7 +270,9 @@ private:
       pos_llh[0]=fixed_pos_lla_[0]*D2R; pos_llh[1]=fixed_pos_lla_[1]*D2R; pos_llh[2]=fixed_pos_lla_[2];
       pos2ecef(pos_llh, rr); has_pos=true;
     }
-    if (!last_obs_ || !has_pos || norm(rr,3) < 1.0) return result;
+    if (!last_obs_ || !has_pos || norm(rr,3) < 1.0) {
+      return is_sat_azel_cached_ ? cached_sat_azel_ : result;
+    }
 
     gtime_t t_obs = gpst2time(last_obs_->week, last_obs_->tow);
     std::set<int> plotted;
@@ -282,6 +297,10 @@ private:
       result.push_back({azel[0], azel[1], sys, obs.satid, obs.sat});
       plotted.insert(obs.sat);
     }
+    
+    cached_sat_azel_ = result;
+    is_sat_azel_cached_ = true;
+    last_sat_azel_time_ns_ = now.nanoseconds();
     return result;
   }
 
@@ -465,10 +484,10 @@ private:
 
     for (int el : {30, 60}) {
       int ri = (int)(r * (1.0 - el / 90.0));
-      std::string lbl = std::to_string(el) + "\xC2\xB0";
+      std::string lbl = std::to_string(el);
       cv::putText(img, lbl, cv::Point(cx+3, cy-ri+13), FONT_LABEL, 0.35, COL_TEXT_DIM);
     }
-    cv::putText(img, "90\xC2\xB0", cv::Point(cx+3, cy+12), FONT_LABEL, 0.3, COL_TEXT_DIM);
+    cv::putText(img, "90", cv::Point(cx+3, cy+12), FONT_LABEL, 0.3, COL_TEXT_DIM);
 
     std::lock_guard<std::mutex> lock(data_mutex_);
     auto sat_azel = computeSatAzEl();
@@ -662,18 +681,25 @@ private:
       // Relaxed clipping: Allow render if part of label is inside ROI x-range
       // Also check bottom boundary
       if (tx + rot.cols > roi.x && tx < roi.x + roi.width && ty + rot.rows < roi.y + roi.height) {
-        for (int ry = 0; ry < rot.rows; ry++) {
-          for (int rx = 0; rx < rot.cols; rx++) {
-             // Boundary check for pixel access
-             int ix = tx + rx;
-             int iy = ty + ry;
-             if (ix >= 0 && ix < width_ && iy >= 0 && iy < height_) {
-               cv::Vec3b pix = rot.at<cv::Vec3b>(ry, rx);
-               if (pix[0] != (unsigned char)COL_BG[0] || pix[1] != (unsigned char)COL_BG[1] || pix[2] != (unsigned char)COL_BG[2]) {
-                 img.at<cv::Vec3b>(iy, ix) = pix;
-               }
-             }
-          }
+        int st_x = std::max(0, tx);
+        int ed_x = std::min(width_, tx + rot.cols);
+        int st_y = std::max(0, ty);
+        int ed_y = std::min(height_, ty + rot.rows);
+        if (st_x < ed_x && st_y < ed_y) {
+          int src_x = st_x - tx;
+          int src_y = st_y - ty;
+          int w = ed_x - st_x;
+          int h = ed_y - st_y;
+          cv::Rect src_rect(src_x, src_y, w, h);
+          cv::Rect dst_rect(st_x, st_y, w, h);
+          
+          cv::Mat src_crop = rot(src_rect);
+          cv::Mat dst_crop = img(dst_rect);
+          
+          cv::Mat mask;
+          cv::inRange(src_crop, COL_BG, COL_BG, mask);
+          cv::bitwise_not(mask, mask);
+          src_crop.copyTo(dst_crop, mask);
         }
       }
     }
