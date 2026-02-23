@@ -197,12 +197,7 @@ private:
     int mid_y = height_ / 2;
     cv::Rect pos_roi(0, mid_y, mid_x, mid_y);
 
-    if (pos_roi.contains(cv::Point(x, y))) {
-      // Check for buttons in the header area of Position plot
-      // Header is ~24px height. Let's put buttons at top right of the plot area or inside header.
-      // Drawn at (roi.x + roi.width - 65, roi.y + 4, 20, 16) for [-]
-      // Drawn at (roi.x + roi.width - 35, roi.y + 4, 20, 16) for [+]
-      
+    if (pos_roi.contains(cv::Point(x, y))) {      
       cv::Rect btn_zoom_out(pos_roi.x + pos_roi.width - 65, pos_roi.y + 4, 20, 16);
       cv::Rect btn_zoom_in (pos_roi.x + pos_roi.width - 35, pos_roi.y + 4, 20, 16);
 
@@ -210,10 +205,7 @@ private:
         zoom_level_--;
       } else if (btn_zoom_in.contains(cv::Point(x, y))) {
         zoom_level_++;
-      }
-      // Removed "split screen" logic as it was unintuitive
-      
-      // Clamp
+      }      
       if (zoom_level_ > 7) zoom_level_ = 7;
       if (zoom_level_ < -7) zoom_level_ = -7;
 

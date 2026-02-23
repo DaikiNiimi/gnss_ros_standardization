@@ -9,6 +9,7 @@
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ubx_protocol.hpp"
+#include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 using namespace std::chrono_literals;
 
@@ -66,6 +67,7 @@ class UbxDecoderNode : public rclcpp::Node {
   void initializePublishers() {
     obs_pub_ = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
     eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
+    sol_pub_ = create_publisher<msg::GnssSolution>("/gnss/nmea_solution", 10);
   }
 
   void initializeDecoder() {
@@ -132,14 +134,37 @@ class UbxDecoderNode : public rclcpp::Node {
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
 
     for (int i = 0; i < bytes_read; ++i) {
-      const int result = input_ubx(&raw_, &rtcm_, buffer[i]);
+      uint8_t byte = buffer[i];
+      
+      // Feed RTKLIB for UBX binary parsing
+      const int result = input_ubx(&raw_, &rtcm_, byte);
       handleDecodeResult(result);
+
+      // Feed NMEA text parser
+      if (byte == '$') {
+        nmea_buffer_.clear();
+        nmea_buffer_.push_back(byte);
+      } else if (!nmea_buffer_.empty()) {
+        nmea_buffer_.push_back(byte);
+        if (byte == '\n') {
+          handleNmeaSentence(nmea_buffer_);
+          nmea_buffer_.clear();
+        } else if (nmea_buffer_.size() > 256) { // Safeguard against missing newlines
+          nmea_buffer_.clear();
+        }
+      }
     }
   }
 
   // ============================================================================
   // Message Handling
   // ============================================================================
+
+  void handleNmeaSentence(const std::string& sentence) {
+    if (nmea_parser_.parseSentence(sentence, current_solution_)) {
+      publishSolution();
+    }
+  }
 
   void handleDecodeResult(int result) {
     switch (result) {
@@ -156,6 +181,76 @@ class UbxDecoderNode : public rclcpp::Node {
       default:
         break;
     }
+  }
+
+  // ============================================================================
+  // Solution Publishing
+  // ============================================================================
+  
+  void publishSolution() {
+    // Determine header timestamp
+    int week = 0;
+    const double tow = time2gpst(raw_.time, &week);
+    if (week != 0) {
+      current_solution_.time_week = static_cast<uint16_t>(week);
+      current_solution_.time_tow = tow;
+    }
+
+    current_solution_.header.stamp = now();
+    current_solution_.header.frame_id = frame_id_;
+
+    // Handle ENU conversion if a reference origin exists or setup if it doesn't
+    if (current_solution_.status == msg::GnssSolution::STATUS_FIX ||
+        current_solution_.status == msg::GnssSolution::STATUS_FLOAT ||
+        current_solution_.status == msg::GnssSolution::STATUS_SINGLE ||
+        current_solution_.status == msg::GnssSolution::STATUS_DGPS) {
+      
+      if (!has_local_origin_) {
+        // Set first valid position as ENU origin
+        local_origin_ecef_[0] = current_solution_.pos_ecef.x;
+        local_origin_ecef_[1] = current_solution_.pos_ecef.y;
+        local_origin_ecef_[2] = current_solution_.pos_ecef.z;
+        ecef2pos(local_origin_ecef_, local_origin_pos_);
+        has_local_origin_ = true;
+        RCLCPP_INFO(get_logger(), "Set local ENU origin: lat=%.6f, lon=%.6f, alt=%.2f",
+                    local_origin_pos_[0] * (180.0/M_PI), local_origin_pos_[1] * (180.0/M_PI), local_origin_pos_[2]);
+      }
+      
+      // Transform position and origin to message
+      current_solution_.org_ecef.x = local_origin_ecef_[0];
+      current_solution_.org_ecef.y = local_origin_ecef_[1];
+      current_solution_.org_ecef.z = local_origin_ecef_[2];
+
+      double ecef[3] = {
+        current_solution_.pos_ecef.x - local_origin_ecef_[0],
+        current_solution_.pos_ecef.y - local_origin_ecef_[1],
+        current_solution_.pos_ecef.z - local_origin_ecef_[2]
+      };
+      double enu[3] = {0};
+      ecef2enu(local_origin_pos_, ecef, enu);
+
+      current_solution_.pos_enu.x = enu[0];
+      current_solution_.pos_enu.y = enu[1];
+      current_solution_.pos_enu.z = enu[2];
+      
+      // Transform velocity
+      double vel_ecef[3] = {current_solution_.vel_ecef.x, current_solution_.vel_ecef.y, current_solution_.vel_ecef.z};
+      double vel_enu[3] = {0};
+      ecef2enu(local_origin_pos_, vel_ecef, vel_enu);
+
+      current_solution_.vel_enu.x = vel_enu[0];
+      current_solution_.vel_enu.y = vel_enu[1];
+      current_solution_.vel_enu.z = vel_enu[2];
+    } else {
+      current_solution_.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
+      current_solution_.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
+      current_solution_.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
+      current_solution_.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
+      current_solution_.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
+      current_solution_.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
+    }
+
+    sol_pub_->publish(current_solution_);
   }
 
   // ============================================================================
@@ -317,6 +412,7 @@ class UbxDecoderNode : public rclcpp::Node {
   // Publishers
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr eph_pub_;
+  rclcpp::Publisher<msg::GnssSolution>::SharedPtr sol_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   // Parameters
@@ -326,6 +422,16 @@ class UbxDecoderNode : public rclcpp::Node {
   stream_t stream_{};
   raw_t raw_{};
   rtcm_t rtcm_{};
+  
+  // NMEA Parsing state
+  gnss_utils::NmeaParser nmea_parser_;
+  std::string nmea_buffer_;
+  msg::GnssSolution current_solution_;
+
+  // ENU Origin state
+  bool has_local_origin_{false};
+  double local_origin_ecef_[3]{0.0};
+  double local_origin_pos_[3]{0.0}; // lat/lon/hgt (rad, rad, m)
 
   // Ephemeris change tracking
   std::unordered_set<EphemerisKey, EphemerisKeyHash> seen_ephemeris_;

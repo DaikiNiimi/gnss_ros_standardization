@@ -11,6 +11,7 @@
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ubx_protocol.hpp"
+#include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 using namespace std::chrono_literals;
 namespace ubx = gnss_ros_standardization::ubx;
@@ -41,7 +42,7 @@ struct UbxConfig {
   bool enable_nmea_gga{false};
   bool enable_nmea_rmc{false};
   bool enable_nmea_gsa{false};
-  bool enable_nmea_gsv{false};
+  bool enable_nmea_gst{false};
   bool nmea_high_precision{false};
   
   // GNSS constellation settings
@@ -56,6 +57,13 @@ struct UbxConfig {
   // Topics
   std::string observation_topic{"/gnss/observation"};
   std::string ephemeris_topic{"/gnss/ephemeris"};
+  std::string solution_topic{"/gnss/solution"};
+
+  // ENU local origin settings
+  bool auto_origin{true};
+  double origin_latitude{0.0};
+  double origin_longitude{0.0};
+  double origin_altitude{0.0};
 };
 
 /// @brief ROS 2 driver node for u-blox GNSS receivers
@@ -109,7 +117,7 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.nmea_gga", config_.enable_nmea_gga);
     declare_parameter<bool>("messages.nmea_rmc", config_.enable_nmea_rmc);
     declare_parameter<bool>("messages.nmea_gsa", config_.enable_nmea_gsa);
-    declare_parameter<bool>("messages.nmea_gsv", config_.enable_nmea_gsv);
+    declare_parameter<bool>("messages.nmea_gst", config_.enable_nmea_gst);
     declare_parameter<bool>("messages.nmea_high_precision", config_.nmea_high_precision);
     
     // GNSS constellation settings
@@ -118,12 +126,16 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<bool>("gnss.galileo", config_.enable_galileo);
     declare_parameter<bool>("gnss.beidou", config_.enable_beidou);
     declare_parameter<bool>("gnss.qzss", config_.enable_qzss);
-    declare_parameter<bool>("gnss.qzss", config_.enable_qzss);
     declare_parameter<bool>("gnss.navic", config_.enable_navic);
     declare_parameter<bool>("gnss.sbas", config_.enable_sbas);
 
     declare_parameter<std::string>("observation_topic", config_.observation_topic);
     declare_parameter<std::string>("ephemeris_topic", config_.ephemeris_topic);
+    declare_parameter<std::string>("solution_topic", config_.solution_topic);
+    declare_parameter<bool>("auto_origin", config_.auto_origin);
+    declare_parameter<double>("origin.latitude", config_.origin_latitude);
+    declare_parameter<double>("origin.longitude", config_.origin_longitude);
+    declare_parameter<double>("origin.altitude", config_.origin_altitude);
 
     // Read parameters
     config_.stream_path = get_parameter("stream_path").as_string();
@@ -139,7 +151,7 @@ class UbxDriverNode : public rclcpp::Node {
     config_.enable_nmea_gga = get_parameter("messages.nmea_gga").as_bool();
     config_.enable_nmea_rmc = get_parameter("messages.nmea_rmc").as_bool();
     config_.enable_nmea_gsa = get_parameter("messages.nmea_gsa").as_bool();
-    config_.enable_nmea_gsv = get_parameter("messages.nmea_gsv").as_bool();
+    config_.enable_nmea_gst = get_parameter("messages.nmea_gst").as_bool();
     config_.nmea_high_precision = get_parameter("messages.nmea_high_precision").as_bool();
     
     config_.enable_gps = get_parameter("gnss.gps").as_bool();
@@ -147,12 +159,16 @@ class UbxDriverNode : public rclcpp::Node {
     config_.enable_galileo = get_parameter("gnss.galileo").as_bool();
     config_.enable_beidou = get_parameter("gnss.beidou").as_bool();
     config_.enable_qzss = get_parameter("gnss.qzss").as_bool();
-    config_.enable_qzss = get_parameter("gnss.qzss").as_bool();
     config_.enable_navic = get_parameter("gnss.navic").as_bool();
     config_.enable_sbas = get_parameter("gnss.sbas").as_bool();
 
     config_.observation_topic = get_parameter("observation_topic").as_string();
     config_.ephemeris_topic = get_parameter("ephemeris_topic").as_string();
+    config_.solution_topic = get_parameter("solution_topic").as_string();
+    config_.auto_origin = get_parameter("auto_origin").as_bool();
+    config_.origin_latitude = get_parameter("origin.latitude").as_double();
+    config_.origin_longitude = get_parameter("origin.longitude").as_double();
+    config_.origin_altitude = get_parameter("origin.altitude").as_double();
 
     // Detect USB connection from path
     is_usb_connection_ = (config_.stream_path.find("ttyACM") != std::string::npos);
@@ -177,6 +193,18 @@ class UbxDriverNode : public rclcpp::Node {
   void initializePublishers() {
     obs_pub_ = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
     eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
+    sol_pub_ = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
+
+    // Pre-configure ENU origin if not auto
+    if (!config_.auto_origin) {
+      local_origin_pos_[0] = config_.origin_latitude * (M_PI / 180.0);
+      local_origin_pos_[1] = config_.origin_longitude * (M_PI / 180.0);
+      local_origin_pos_[2] = config_.origin_altitude;
+      pos2ecef(local_origin_pos_, local_origin_ecef_);
+      has_local_origin_ = true;
+      RCLCPP_INFO(get_logger(), "Configured local ENU origin: lat=%.6f, lon=%.6f, alt=%.2f",
+                  config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
+    }
   }
 
   void initializeDecoder() {
@@ -317,9 +345,107 @@ class UbxDriverNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(), "GNSS configuration: GPS=%d GLO=%d GAL=%d BDS=%d QZS=%d IRN=%d SBAS=%d",
                   config_.enable_gps, config_.enable_glonass, config_.enable_galileo,
                   config_.enable_beidou, config_.enable_qzss, config_.enable_navic, config_.enable_sbas);
-      // Gen 9 CFG-GNSS is complex and receiver-specific. The receiver's defaults
-      // are generally reasonable. Full CFG-GNSS support would require capability detection.
+      setupGnssSignalsLegacy();
     }
+  }
+
+  void setupGnssSignalsLegacy() {
+    RCLCPP_INFO(get_logger(), "Polling CFG-GNSS from receiver...");
+    
+    // Send empty CFG-GNSS to poll current configuration
+    std::vector<uint8_t> req;
+    sendUbxRaw(ubx::CLASS_CFG, ubx::ID_CFG_GNSS, req);
+    
+    auto start = std::chrono::steady_clock::now();
+    uint8_t buffer[256];
+    std::vector<uint8_t> payload;
+    int state = 0;
+    int length = 0;
+    int payload_pos = 0;
+    
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(3000)) {
+        int n = strread(&stream_, buffer, sizeof(buffer));
+        for (int i = 0; i < n; ++i) {
+             uint8_t b = buffer[i];
+             input_ubx(&raw_, &rtcm_, b);
+             checkAckNak(b); // Feed ACK/NAK state machine just in case
+             
+             switch (state) {
+                 case 0: if (b == ubx::SYNC1) state=1; else state=0; break;
+                 case 1: if (b == ubx::SYNC2) state=2; else { state = (b==ubx::SYNC1)?1:0; } break;
+                 case 2: if (b == ubx::CLASS_CFG) state=3; else state=0; break;
+                 case 3: if (b == ubx::ID_CFG_GNSS) state=4; else state=0; break;
+                 case 4: length = b; state=5; break;
+                 case 5: length |= (b << 8); 
+                         if (length > 0 && length < 256) {
+                             state=6; 
+                             payload.resize(length); 
+                             payload_pos=0; 
+                         } else {
+                             state=0;
+                         }
+                         break;
+                 case 6: 
+                     payload[payload_pos++] = b;
+                     if (payload_pos == length) state = 7;
+                     break;
+                 case 7: // ck_a (ignore)
+                     state = 8;
+                     break;
+                 case 8: // ck_b (ignore)
+                     if (applyAndSendCfgGnss(payload)) {
+                         RCLCPP_INFO(get_logger(), "Successfully applied CFG-GNSS settings");
+                         performGnssReset();
+                         return;
+                     } else {
+                         RCLCPP_WARN(get_logger(), "Failed to apply CFG-GNSS settings");
+                         return;
+                     }
+             }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    RCLCPP_WARN(get_logger(), "CFG-GNSS poll timed out");
+  }
+
+  bool applyAndSendCfgGnss(std::vector<uint8_t>& payload) {
+      if (payload.size() < 4) return false;
+      int numBlocks = payload[3];
+      if (payload.size() < static_cast<size_t>(4 + numBlocks * 8)) return false;
+      
+      for (int i = 0; i < numBlocks; ++i) {
+          int offset = 4 + i * 8;
+          uint8_t gnssId = payload[offset];
+          uint32_t flags = payload[offset+4] | (payload[offset+5]<<8) | (payload[offset+6]<<16) | (payload[offset+7]<<24);
+          
+          bool enable = false;
+          switch (gnssId) {
+             case 0: enable = config_.enable_gps; break; // GPS
+             case 1: enable = config_.enable_sbas; break; // SBAS
+             case 2: enable = config_.enable_galileo; break; // Galileo
+             case 3: enable = config_.enable_beidou; break; // BeiDou
+             case 5: enable = config_.enable_qzss; break; // QZSS
+             case 6: enable = config_.enable_glonass; break; // GLONASS
+             case 7: enable = config_.enable_navic; break; // NavIC
+             default: continue;
+          }
+          
+          if (enable) {
+              flags |= 0x01; // set enable bit
+          } else {
+              flags &= ~0x01; // clear enable bit
+          }
+          
+          payload[offset+4] = flags & 0xFF;
+          payload[offset+5] = (flags >> 8) & 0xFF;
+          payload[offset+6] = (flags >> 16) & 0xFF;
+          payload[offset+7] = (flags >> 24) & 0xFF;
+      }
+      
+      RCLCPP_INFO(get_logger(), "Writing modified CFG-GNSS back to receiver...");
+      sendUbxRaw(ubx::CLASS_CFG, ubx::ID_CFG_GNSS, payload);
+      return waitForAck(ubx::CLASS_CFG, ubx::ID_CFG_GNSS);
   }
 
   void setupGnssSignalsG10() {
@@ -335,31 +461,37 @@ class UbxDriverNode : public rclcpp::Node {
     };
 
     // GPS: L1C/A, L2C, L5
+    sendSignal(ubx::CFG_SIGNAL_GPS_ENA, config_.enable_gps, "GPS ENA");
     sendSignal(ubx::CFG_SIGNAL_GPS_L1CA_ENA, config_.enable_gps, "GPS L1C/A");
     sendSignal(ubx::CFG_SIGNAL_GPS_L2C_ENA, config_.enable_gps, "GPS L2C");
     sendSignal(ubx::CFG_SIGNAL_GPS_L5_ENA, config_.enable_gps, "GPS L5");
 
     // SBAS: L1C/A
+    sendSignal(ubx::CFG_SIGNAL_SBAS_ENA, config_.enable_sbas, "SBAS ENA");
     sendSignal(ubx::CFG_SIGNAL_SBAS_L1CA_ENA, config_.enable_sbas, "SBAS L1C/A");
 
     // Galileo: E1, E5a, E5b
+    sendSignal(ubx::CFG_SIGNAL_GAL_ENA, config_.enable_galileo, "Galileo ENA");
     sendSignal(ubx::CFG_SIGNAL_GAL_E1_ENA, config_.enable_galileo, "Galileo E1");
     sendSignal(ubx::CFG_SIGNAL_GAL_E5A_ENA, config_.enable_galileo, "Galileo E5a");
     sendSignal(ubx::CFG_SIGNAL_GAL_E5B_ENA, config_.enable_galileo, "Galileo E5b");
 
-    // BeiDou: B1C, B2a (X20P); reuses B1I/B2I keys for F9P
+    // BeiDou: B1C, B2a (X20P); B1I, B2I (F9P/M10)
+    sendSignal(ubx::CFG_SIGNAL_BDS_ENA, config_.enable_beidou, "BeiDou ENA");
     sendSignal(ubx::CFG_SIGNAL_BDS_B1C_ENA, config_.enable_beidou, "BeiDou B1C");
     sendSignal(ubx::CFG_SIGNAL_BDS_B2A_ENA, config_.enable_beidou, "BeiDou B2a");
+    sendSignal(ubx::CFG_SIGNAL_BDS_B1I_ENA, config_.enable_beidou, "BeiDou B1I");
+    sendSignal(ubx::CFG_SIGNAL_BDS_B2I_ENA, config_.enable_beidou, "BeiDou B2I");
 
     // QZSS: L1C/A, L1S, L2C, L5
+    sendSignal(ubx::CFG_SIGNAL_QZSS_ENA, config_.enable_qzss, "QZSS ENA");
     sendSignal(ubx::CFG_SIGNAL_QZSS_L1CA_ENA, config_.enable_qzss, "QZSS L1C/A");
     sendSignal(ubx::CFG_SIGNAL_QZSS_L1S_ENA, config_.enable_qzss, "QZSS L1S");
     sendSignal(ubx::CFG_SIGNAL_QZSS_L2C_ENA, config_.enable_qzss, "QZSS L2C");
     sendSignal(ubx::CFG_SIGNAL_QZSS_L5_ENA, config_.enable_qzss, "QZSS L5");
 
     // GLONASS: L1, L2
-    // Note: X20P does not support GLONASS, but F9P does.
-    // Keys that are unsupported by the hardware will be NAK'd silently.
+    sendSignal(ubx::CFG_SIGNAL_GLO_ENA, config_.enable_glonass, "GLO ENA");
     sendSignal(ubx::CFG_SIGNAL_GLO_L1_ENA, config_.enable_glonass, "GLO L1");
     sendSignal(ubx::CFG_SIGNAL_GLO_L2_ENA, config_.enable_glonass, "GLO L2");
     
@@ -482,15 +614,40 @@ class UbxDriverNode : public rclcpp::Node {
     }
 
     for (int port : target_ports) {
-      std::vector<ubx::ValsetItem> items = {
+      // 1. Configure standard UBX output messages
+      std::vector<ubx::ValsetItem> items_ubx = {
           {ubx::CFG_MSGOUT_UBX_RXM_RAWX_I2C + port, config_.enable_rawx ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_RXM_SFRBX_I2C + port, config_.enable_sfrbx ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_NAV_PVT_I2C + port, config_.enable_nav_pvt ? 1u : 0u, 1},
       };
-      if (!sendCfgValset(items)) {
-        RCLCPP_DEBUG(get_logger(), "Output config failed on port %d (likely invalid)", port);
+
+      if (!sendCfgValset(items_ubx)) {
+        RCLCPP_DEBUG(get_logger(), "UBX output config failed on port %d", port);
       } else {
-        RCLCPP_INFO(get_logger(), "Output configured on port %d", port);
+        RCLCPP_INFO(get_logger(), "UBX output configured on port %d", port);
+      }
+
+      // 2. Configure NMEA outputs separately to avoid potential receiver firmware bugs
+      std::vector<ubx::ValsetItem> items_nmea = {
+          {ubx::CFG_MSGOUT_NMEA_ID_GGA_I2C + port, config_.enable_nmea_gga ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_NMEA_ID_RMC_I2C + port, config_.enable_nmea_rmc ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_NMEA_ID_GSA_I2C + port, config_.enable_nmea_gsa ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_NMEA_ID_GST_I2C + port, config_.enable_nmea_gst ? 1u : 0u, 1},
+      };
+
+      // Disable unused NMEA to save bandwidth
+      if (!config_.enable_nmea_gga && !config_.enable_nmea_rmc &&
+          !config_.enable_nmea_gsa && !config_.enable_nmea_gst) {
+        items_nmea.push_back({ubx::CFG_MSGOUT_NMEA_ID_GLL_I2C + port, 0u, 1});
+        items_nmea.push_back({ubx::CFG_MSGOUT_NMEA_ID_VTG_I2C + port, 0u, 1});
+        items_nmea.push_back({ubx::CFG_MSGOUT_NMEA_ID_ZDA_I2C + port, 0u, 1});
+        items_nmea.push_back({ubx::CFG_MSGOUT_NMEA_ID_GSV_I2C + port, 0u, 1});
+      }
+
+      if (!sendCfgValset(items_nmea)) {
+        RCLCPP_DEBUG(get_logger(), "NMEA output config failed on port %d", port);
+      } else {
+        RCLCPP_INFO(get_logger(), "NMEA output configured on port %d", port);
       }
     }
 
@@ -530,11 +687,11 @@ class UbxDriverNode : public rclcpp::Node {
     sendNmea(ubx::NMEA_GGA, config_.enable_nmea_gga, "GGA");
     sendNmea(ubx::NMEA_RMC, config_.enable_nmea_rmc, "RMC");
     sendNmea(ubx::NMEA_GSA, config_.enable_nmea_gsa, "GSA");
-    sendNmea(ubx::NMEA_GSV, config_.enable_nmea_gsv, "GSV");
+    sendNmea(ubx::NMEA_GST, config_.enable_nmea_gst, "GST");
 
     // Disable unused NMEA to save bandwidth
     if (!config_.enable_nmea_gga && !config_.enable_nmea_rmc &&
-        !config_.enable_nmea_gsa && !config_.enable_nmea_gsv) {
+        !config_.enable_nmea_gsa && !config_.enable_nmea_gst) {
       sendNmea(ubx::NMEA_GLL, false, "GLL");
       sendNmea(ubx::NMEA_VTG, false, "VTG");
       sendNmea(ubx::NMEA_ZDA, false, "ZDA");
@@ -751,9 +908,25 @@ class UbxDriverNode : public rclcpp::Node {
       }
 
       for (int i = 0; i < bytes_read; ++i) {
-        const int result = input_ubx(&raw_, &rtcm_, buffer[i]);
+        uint8_t byte = buffer[i];
+
+        const int result = input_ubx(&raw_, &rtcm_, byte);
         if (result > 0) {
           handleDecodeResult(result);
+        }
+
+        // Feed NMEA text parser
+        if (byte == '$') {
+          nmea_buffer_.clear();
+          nmea_buffer_.push_back(byte);
+        } else if (!nmea_buffer_.empty()) {
+          nmea_buffer_.push_back(byte);
+          if (byte == '\n') {
+            handleNmeaSentence(nmea_buffer_);
+            nmea_buffer_.clear();
+          } else if (nmea_buffer_.size() > 256) { // Safeguard against missing newlines
+            nmea_buffer_.clear();
+          }
         }
       }
       
@@ -762,6 +935,88 @@ class UbxDriverNode : public rclcpp::Node {
         break;
       }
     }
+  }
+
+  void handleNmeaSentence(const std::string& sentence) {
+    if (nmea_parser_.parseSentence(sentence, current_solution_)) {
+      publishSolution();
+    }
+  }
+
+  // ============================================================================
+  // Solution Publishing
+  // ============================================================================
+
+  void publishSolution() {
+    // Block publishing until configuration is complete, unless configure_on_startup is false
+    if (!is_configured_ && config_.configure_on_startup) {
+        return;
+    }
+
+    // Determine header timestamp
+    int week = 0;
+    const double tow = time2gpst(raw_.time, &week);
+    if (week != 0) {
+      current_solution_.time_week = static_cast<uint16_t>(week);
+      current_solution_.time_tow = tow;
+    }
+
+    current_solution_.header.stamp = now();
+    current_solution_.header.frame_id = config_.frame_id;
+
+    // Handle ENU conversion if a reference origin exists or setup if it doesn't
+    if (current_solution_.status == msg::GnssSolution::STATUS_FIX ||
+        current_solution_.status == msg::GnssSolution::STATUS_FLOAT ||
+        current_solution_.status == msg::GnssSolution::STATUS_SINGLE ||
+        current_solution_.status == msg::GnssSolution::STATUS_DGPS ||
+        current_solution_.status == msg::GnssSolution::STATUS_SBAS) {
+      
+      if (!has_local_origin_) {
+        // Set first valid position as ENU origin
+        local_origin_ecef_[0] = current_solution_.pos_ecef.x;
+        local_origin_ecef_[1] = current_solution_.pos_ecef.y;
+        local_origin_ecef_[2] = current_solution_.pos_ecef.z;
+        ecef2pos(local_origin_ecef_, local_origin_pos_);
+        has_local_origin_ = true;
+        RCLCPP_INFO(get_logger(), "Auto-set local ENU origin: lat=%.6f, lon=%.6f, alt=%.2f",
+                    local_origin_pos_[0] * (180.0/M_PI), local_origin_pos_[1] * (180.0/M_PI), local_origin_pos_[2]);
+      }
+      
+      // Transform position and origin to message
+      current_solution_.org_ecef.x = local_origin_ecef_[0];
+      current_solution_.org_ecef.y = local_origin_ecef_[1];
+      current_solution_.org_ecef.z = local_origin_ecef_[2];
+
+      double ecef[3] = {
+        current_solution_.pos_ecef.x - local_origin_ecef_[0],
+        current_solution_.pos_ecef.y - local_origin_ecef_[1],
+        current_solution_.pos_ecef.z - local_origin_ecef_[2]
+      };
+      double enu[3] = {0};
+      ecef2enu(local_origin_pos_, ecef, enu);
+
+      current_solution_.pos_enu.x = enu[0];
+      current_solution_.pos_enu.y = enu[1];
+      current_solution_.pos_enu.z = enu[2];
+      
+      // Transform velocity
+      double vel_ecef[3] = {current_solution_.vel_ecef.x, current_solution_.vel_ecef.y, current_solution_.vel_ecef.z};
+      double vel_enu[3] = {0};
+      ecef2enu(local_origin_pos_, vel_ecef, vel_enu);
+
+      current_solution_.vel_enu.x = vel_enu[0];
+      current_solution_.vel_enu.y = vel_enu[1];
+      current_solution_.vel_enu.z = vel_enu[2];
+    } else {
+      current_solution_.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
+      current_solution_.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
+      current_solution_.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
+      current_solution_.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
+      current_solution_.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
+      current_solution_.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
+    }
+
+    sol_pub_->publish(current_solution_);
   }
 
   void handleDecodeResult(int result) {
@@ -915,12 +1170,23 @@ class UbxDriverNode : public rclcpp::Node {
   // Publishers
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr eph_pub_;
+  rclcpp::Publisher<msg::GnssSolution>::SharedPtr sol_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   // MALIB structures
   stream_t stream_{};
   raw_t raw_{};
   rtcm_t rtcm_{};
+
+  // NMEA Parsing state
+  gnss_utils::NmeaParser nmea_parser_;
+  std::string nmea_buffer_;
+  msg::GnssSolution current_solution_;
+
+  // ENU Origin state
+  bool has_local_origin_{false};
+  double local_origin_ecef_[3]{0.0};
+  double local_origin_pos_[3]{0.0}; // lat/lon/hgt (rad, rad, m)
 
   // ACK/NAK detection (instance variables instead of function-static)
   uint8_t pending_ack_class_{0};

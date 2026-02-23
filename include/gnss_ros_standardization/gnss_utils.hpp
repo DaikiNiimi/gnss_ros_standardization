@@ -10,6 +10,7 @@
 #include "gnss_ros_standardization/msg/gnss_ephemerides.hpp"
 #include "gnss_ros_standardization/msg/gnss_observation.hpp"
 #include "gnss_ros_standardization/msg/gnss_observations.hpp"
+#include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 extern "C" {
 #include "rtklib.h"
@@ -69,6 +70,15 @@ gnss_ros_standardization::msg::GnssObservation obsToMsg(const obsd_t& o, int kf)
 void rotateCovariance(const double cov_ecef[9], double lat_rad, double lon_rad, double cov_enu[9]);
 
 /**
+ * Rotate 3x3 covariance matrix from ENU to ECEF.
+ * @param cov_enu 3x3 covariance in ENU (row-major: ee, en, eu, ne, nn, nu, ue, un, uu)
+ * @param lat_rad Latitude in radians
+ * @param lon_rad Longitude in radians
+ * @param cov_ecef Output 3x3 covariance in ECEF
+ */
+void rotateCovarianceEnuToEcef(const double cov_enu[9], double lat_rad, double lon_rad, double cov_ecef[9]);
+
+/**
  * Calculate DOPs from current satellite configuration.
  * @param sats List of satellites (obsd_t) used in solution
  * @param ns Number of satellites
@@ -81,6 +91,56 @@ struct Dops {
     double gdop{0.0}, pdop{0.0}, hdop{0.0}, vdop{0.0};
 };
 Dops calculateDops(const ssat_t* ssat, int ns_max, double el_min_rad);
+
+// ---- Lightweight NMEA Parser ----
+
+/**
+ * A lightweight stateful NMEA parser that specifically handles
+ * GGA (position, status), RMC (velocity), and GSA (DOPs).
+ */
+class NmeaParser {
+ public:
+  NmeaParser() = default;
+  ~NmeaParser() = default;
+
+  /**
+   * Parse a single NMEA sentence (starting with $ and ending with \r\n).
+   * @param sentence Single ASCII NMEA sentence string.
+   * @param[out] solution Populated GnssSolution message. May only be partially
+   *             populated depending on the sentences received so far.
+   * @return True if a GGA was parsed and the system should consider the solution
+   *         updated/ready for publishing.
+   */
+  bool parseSentence(const std::string& sentence, gnss_ros_standardization::msg::GnssSolution& solution);
+
+ private:
+  bool parseGga(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution);
+  bool parseRmc(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution);
+  bool parseGsa(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution);
+  bool parseGst(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution);
+  
+  static std::vector<std::string> splitString(const std::string& str, char delimiter);
+  static double parseCoordinate(const std::string& coord_str, const std::string& hem);
+  static double parseDouble(const std::string& str);
+  static int parseInteger(const std::string& str);
+
+  // Buffer state
+  bool has_time_{false};
+  double last_pdop_{0.0};
+  double last_hdop_{0.0};
+  double last_vdop_{0.0};
+  
+  // RMC buffered velocity (EN components)
+  double vel_east_{0.0};
+  double vel_north_{0.0};
+  bool has_velocity_{false};
+  
+  // GST buffered variance
+  double var_lat_{0.0};
+  double var_lon_{0.0};
+  double var_alt_{0.0};
+  bool has_variance_{false};
+};
 
 } // namespace gnss_utils
 

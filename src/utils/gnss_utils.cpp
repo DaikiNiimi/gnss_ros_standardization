@@ -277,6 +277,45 @@ void rotateCovariance(const double cov_ecef[9], double lat_rad, double lon_rad, 
   }
 }
 
+void rotateCovarianceEnuToEcef(const double cov_enu[9], double lat_rad, double lon_rad, double cov_ecef[9]) {
+  // R matrix (ECEF to ENU)
+  // R = [-sin(lon)           cos(lon)          0      ]
+  //     [-sin(lat)cos(lon)  -sin(lat)sin(lon)  cos(lat)]
+  //     [ cos(lat)cos(lon)   cos(lat)sin(lon)  sin(lat)]
+  
+  double sl = sin(lat_rad);
+  double cl = cos(lat_rad);
+  double sL = sin(lon_rad);
+  double cL = cos(lon_rad);
+  
+  double R[9];
+  R[0] = -sL;      R[1] = cL;       R[2] = 0.0;
+  R[3] = -sl*cL;   R[4] = -sl*sL;   R[5] = cl;
+  R[6] = cl*cL;    R[7] = cl*sL;    R[8] = sl;
+  
+  // ECEF to ENU: C_enu = R * C_ecef * R^T
+  // ENU to ECEF: C_ecef = R^T * C_enu * R
+  
+  // T = C_enu * R
+  double T[9];
+  for (int i=0; i<3; ++i) {
+    for (int j=0; j<3; ++j) {
+      T[3*i + j] = cov_enu[3*i + 0] * R[3*j + 0] +
+                   cov_enu[3*i + 1] * R[3*j + 1] +
+                   cov_enu[3*i + 2] * R[3*j + 2];
+    }
+  }
+  
+  // C_ecef = R^T * T
+  for (int i=0; i<3; ++i) {
+    for (int j=0; j<3; ++j) {
+      cov_ecef[3*i + j] = R[3*0 + i] * T[0*3 + j] +
+                          R[3*1 + i] * T[1*3 + j] +
+                          R[3*2 + i] * T[2*3 + j];
+    }
+  }
+}
+
 Dops calculateDops(const ssat_t* ssat, int ns_max, double el_min_rad) {
     Dops d;
     double azel[MAXSAT * 2];
@@ -305,6 +344,257 @@ Dops calculateDops(const ssat_t* ssat, int ns_max, double el_min_rad) {
     }
     
     return d;
+}
+
+// ---- Lightweight NMEA Parser ----
+
+std::vector<std::string> NmeaParser::splitString(const std::string& str, char delimiter) {
+  std::vector<std::string> tokens;
+  size_t start = 0;
+  size_t end = str.find(delimiter);
+  while (end != std::string::npos) {
+    tokens.push_back(str.substr(start, end - start));
+    start = end + 1;
+    end = str.find(delimiter, start);
+  }
+  tokens.push_back(str.substr(start));
+  return tokens;
+}
+
+double NmeaParser::parseDouble(const std::string& str) {
+  if (str.empty()) return 0.0;
+  try {
+    return std::stod(str);
+  } catch (...) {
+    return 0.0;
+  }
+}
+
+int NmeaParser::parseInteger(const std::string& str) {
+  if (str.empty()) return 0;
+  try {
+    return std::stoi(str);
+  } catch (...) {
+    return 0;
+  }
+}
+
+// coordinate: ddmm.mmmmm
+// hemisphere: N/S or E/W
+double NmeaParser::parseCoordinate(const std::string& coord_str, const std::string& hem) {
+  if (coord_str.empty() || hem.empty()) return 0.0;
+
+  double dot_pos = coord_str.find('.');
+  if (dot_pos == std::string::npos || dot_pos < 2) return 0.0;
+
+  std::string deg_str = coord_str.substr(0, dot_pos - 2);
+  std::string min_str = coord_str.substr(dot_pos - 2);
+
+  double deg = parseDouble(deg_str);
+  double min = parseDouble(min_str);
+  double decimal_deg = deg + (min / 60.0);
+
+  if (hem == "S" || hem == "W") {
+    decimal_deg = -decimal_deg;
+  }
+  return decimal_deg;
+}
+
+bool NmeaParser::parseSentence(const std::string& sentence, gnss_ros_standardization::msg::GnssSolution& solution) {
+  if (sentence.empty() || sentence[0] != '$') return false;
+
+  // Verify checksum
+  size_t asterisk_pos = sentence.find('*');
+  if (asterisk_pos != std::string::npos && asterisk_pos + 2 < sentence.length()) {
+    int checksum = 0;
+    for (size_t i = 1; i < asterisk_pos; ++i) {
+      checksum ^= sentence[i];
+    }
+    std::string provided_checksum_str = sentence.substr(asterisk_pos + 1, 2);
+    int provided_checksum = 0;
+    try {
+      provided_checksum = std::stoi(provided_checksum_str, nullptr, 16);
+    } catch (...) {}
+    
+    if (checksum != provided_checksum) {
+      return false; // Invalid checksum
+    }
+  }
+
+  // Extract payload (between $ and *)
+  std::string payload = sentence.substr(1, asterisk_pos != std::string::npos ? asterisk_pos - 1 : std::string::npos);
+  std::vector<std::string> fields = splitString(payload, ',');
+
+  if (fields.empty()) return false;
+
+  std::string type = fields[0];
+  if (type.length() < 3) return false;
+  
+  std::string sentence_id = type.substr(type.length() - 3);
+
+  if (sentence_id == "GGA") {
+    return parseGga(fields, solution);
+  } else if (sentence_id == "RMC") {
+    parseRmc(fields, solution);
+    return false;
+  } else if (sentence_id == "GSA") {
+    parseGsa(fields, solution);
+    return false;
+  } else if (sentence_id == "GST") {
+    parseGst(fields, solution);
+    return false;
+  }
+
+  return false;
+}
+
+bool NmeaParser::parseGga(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution) {
+  if (fields.size() < 15) return false;
+
+  int status = parseInteger(fields[6]);
+  
+  // Set ROS STATUS
+  switch (status) {
+    case 0: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_NONE; break;
+    case 1: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_SINGLE; break;
+    case 2: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_DGPS; break;
+    case 4: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_FIX; break;
+    case 5: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_FLOAT; break;
+    case 6: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_NONE; break; // DR
+    default: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_NONE; break;
+  }
+
+  if (solution.status == gnss_ros_standardization::msg::GnssSolution::STATUS_NONE) {
+    return true; // Still return true so the node emits the un-fixed status
+  }
+
+  // Extract lat, lon, alt
+  double lat = parseCoordinate(fields[2], fields[3]);
+  double lon = parseCoordinate(fields[4], fields[5]);
+  double msl_alt = parseDouble(fields[9]);
+  double geoid_sep = parseDouble(fields[11]);
+  double ell_alt = msl_alt + geoid_sep;
+
+  solution.latitude = lat;
+  solution.longitude = lon;
+  solution.altitude = ell_alt;
+
+  // Convert to ECEF (using MALIB pos2ecef)
+  double pos[3] = {lat * (M_PI/180.0), lon * (M_PI/180.0), ell_alt};
+  double rr[3] = {0};
+  pos2ecef(pos, rr);
+  
+  solution.pos_ecef.x = rr[0];
+  solution.pos_ecef.y = rr[1];
+  solution.pos_ecef.z = rr[2];
+
+  // Other GGA fields
+  solution.num_sats = parseInteger(fields[7]);
+  last_hdop_ = parseDouble(fields[8]);
+  solution.age_diff = parseDouble(fields[13]);
+
+  // Apply buffered DOP / Velocity
+  solution.hdop = last_hdop_;
+  solution.pdop = last_pdop_;
+  solution.vdop = last_vdop_;
+
+  // Apply buffered Covariance (GST) or 0.0 if not available
+  if (has_variance_) {
+    // NMEA GST is: 6=lat(N), 7=lon(E), 8=alt(U). We buffered them as var_lat, var_lon, var_alt
+    solution.pos_enu_cov[0] = var_lon_; // East-East
+    solution.pos_enu_cov[4] = var_lat_; // North-North
+    solution.pos_enu_cov[8] = var_alt_; // Up-Up
+    
+    // ENU Covariance (diagonal only) -> ECEF Covariance
+    double cov_enu[9] = {0};
+    cov_enu[0] = var_lon_;
+    cov_enu[4] = var_lat_;
+    cov_enu[8] = var_alt_;
+
+    double cov_ecef[9] = {0};
+    rotateCovarianceEnuToEcef(cov_enu, lat * (M_PI/180.0), lon * (M_PI/180.0), cov_ecef);
+
+    for (int i = 0; i < 9; ++i) {
+      solution.pos_cov_ecef[i] = cov_ecef[i];
+    }
+  } else {
+    // Zero out covariance
+    for (int i = 0; i < 9; ++i) {
+      solution.pos_enu_cov[i] = 0.0;
+      solution.pos_cov_ecef[i] = 0.0;
+    }
+  }
+
+  if (has_velocity_) {
+    // Note: Since NMEA only gives horizontal velocity component, 
+    // vertical is strictly 0 and accuracy is limited. 
+    // Need ENU to ECEF for vel_ecef using MALIB's enu2ecef.
+    double vel_enu[3] = {vel_east_, vel_north_, 0.0};
+    double vel_ecef[3] = {0};
+    enu2ecef(pos, vel_enu, vel_ecef);
+    
+    solution.vel_ecef.x = vel_ecef[0];
+    solution.vel_ecef.y = vel_ecef[1];
+    solution.vel_ecef.z = vel_ecef[2];
+  } else {
+    solution.vel_ecef.x = 0;
+    solution.vel_ecef.y = 0;
+    solution.vel_ecef.z = 0;
+  }
+
+  return true;
+}
+
+bool NmeaParser::parseRmc(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& /*solution*/) {
+  if (fields.size() < 10) return false;
+  
+  if (fields[2] != "A") { // A = Active, V = Void
+    has_velocity_ = false;
+    return false;
+  }
+
+  double speed_knots = parseDouble(fields[7]);
+  double true_course_deg = parseDouble(fields[8]);
+
+  double speed_ms = speed_knots * 0.514444; // static KNOT2M from RTKLIB
+
+  // Convert course to EN components
+  // Course is clockwise from true North
+  double course_rad = true_course_deg * (M_PI / 180.0);
+  
+  vel_north_ = speed_ms * cos(course_rad);
+  vel_east_ = speed_ms * sin(course_rad);
+  has_velocity_ = true;
+
+  return true;
+}
+
+bool NmeaParser::parseGsa(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& /*solution*/) {
+  if (fields.size() < 18) return false;
+  
+  // NMEA specifies indices: 15=PDOP, 16=HDOP, 17=VDOP
+  last_pdop_ = parseDouble(fields[15]);
+  last_hdop_ = parseDouble(fields[16]);
+  last_vdop_ = parseDouble(fields[17]);
+  
+  return true;
+}
+
+bool gnss_utils::NmeaParser::parseGst(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& /*solution*/) {
+  if (fields.size() < 9) return false;
+  
+  // $xxGST,time,rms_range,std_major,std_minor,orient,std_lat,std_lon,std_alt,cs
+  // 6: std_lat, 7: std_lon, 8: std_alt
+  double std_lat = parseDouble(fields[6]);
+  double std_lon = parseDouble(fields[7]);
+  double std_alt = parseDouble(fields[8]);
+
+  var_lat_ = std_lat * std_lat;
+  var_lon_ = std_lon * std_lon;
+  var_alt_ = std_alt * std_alt;
+  has_variance_ = true;
+
+  return true;
 }
 
 } // namespace gnss_utils

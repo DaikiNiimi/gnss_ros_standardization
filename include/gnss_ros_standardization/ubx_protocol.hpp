@@ -57,6 +57,7 @@ constexpr uint8_t NMEA_GSA = 0x02;
 constexpr uint8_t NMEA_GSV = 0x03;
 constexpr uint8_t NMEA_RMC = 0x04;
 constexpr uint8_t NMEA_VTG = 0x05;
+constexpr uint8_t NMEA_GST = 0x07;
 constexpr uint8_t NMEA_ZDA = 0x08;
 
 // =============================================================================
@@ -115,9 +116,18 @@ constexpr uint32_t CFG_SIGNAL_QZSS_L5_ENA   = 0x10310017;
 
 // --- Output Message Rate (per-port) ---
 // Base addresses (I2C = offset 0). Add port offset for UART1(+1), UART2(+2), USB(+3).
-constexpr uint32_t CFG_MSGOUT_UBX_RXM_RAWX_I2C  = 0x209102A5;
-constexpr uint32_t CFG_MSGOUT_UBX_RXM_SFRBX_I2C = 0x20910232;
-constexpr uint32_t CFG_MSGOUT_UBX_NAV_PVT_I2C   = 0x20910007;
+constexpr uint32_t CFG_MSGOUT_UBX_RXM_RAWX_I2C  = 0x209102A4;
+constexpr uint32_t CFG_MSGOUT_UBX_RXM_SFRBX_I2C = 0x20910231;
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_PVT_I2C   = 0x20910006;
+
+constexpr uint32_t CFG_MSGOUT_NMEA_ID_GGA_I2C   = 0x209100BA;
+constexpr uint32_t CFG_MSGOUT_NMEA_ID_GLL_I2C   = 0x209100C9;
+constexpr uint32_t CFG_MSGOUT_NMEA_ID_GSA_I2C   = 0x209100C0;
+constexpr uint32_t CFG_MSGOUT_NMEA_ID_GSV_I2C   = 0x209100C5;
+constexpr uint32_t CFG_MSGOUT_NMEA_ID_RMC_I2C   = 0x209100AB;
+constexpr uint32_t CFG_MSGOUT_NMEA_ID_VTG_I2C   = 0x209100B0;
+constexpr uint32_t CFG_MSGOUT_NMEA_ID_GST_I2C   = 0x209100D3;
+constexpr uint32_t CFG_MSGOUT_NMEA_ID_ZDA_I2C   = 0x209100D8;
 
 // --- NMEA Configuration ---
 constexpr uint32_t CFG_NMEA_HIGHPREC = 0x10930006;  // L: Enable high-precision NMEA output

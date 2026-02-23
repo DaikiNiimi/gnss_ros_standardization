@@ -18,7 +18,7 @@ ubx_driver_node:
     stream_path: "serial:///dev/ttyACM2:115200"
     
     # Measurement rate in Hz (1-20)
-    rate_hz: 1
+    rate_hz: 10
     
     # ROS settings
     frame_id: "gnss_link"
@@ -26,6 +26,14 @@ ubx_driver_node:
     # Topic Names
     observation_topic: "/gnss/observation"
     ephemeris_topic: "/gnss/ephemeris"
+    solution_topic: "/gnss/nmea_solution"
+    
+    # ENU local origin settings
+    auto_origin: true
+    origin:
+      latitude: 0.0
+      longitude: 0.0
+      altitude: 0.0
     
     # Send configuration commands on startup
     # Set to false to use the receiver's current configuration as-is
@@ -40,7 +48,7 @@ ubx_driver_node:
     # Receiver Generation
     # Options: G9 (F9P/M8 etc.), G10 (X20P etc.)
     # G9 uses legacy CFG commands, G10 uses CFG-VALSET
-    generation: "G9"
+    generation: "G10"
     
     # ==========================================================================
     # Output Messages
@@ -56,10 +64,10 @@ ubx_driver_node:
       nav_pvt: false
       
       # NMEA messages (disable to save bandwidth)
-      nmea_gga: false
+      nmea_gga: true 
       nmea_rmc: false
       nmea_gsa: false
-      nmea_gsv: false
+      nmea_gst: false
       
       # NMEA High Precision mode
       # Enables extra decimal places in lat/lon for GGA, RMC, GLL
