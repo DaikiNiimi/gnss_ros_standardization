@@ -4,6 +4,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <geometry_msgs/msg/twist_with_covariance_stamped.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 #include <Eigen/Dense>
@@ -55,14 +57,6 @@ constexpr int EIDX_AB  = 9;
 constexpr int EIDX_GB  = 12;
 
 /**
- * @brief Lever-arm reference frame convention
- */
-enum class LeverArmRef {
-  IMU_TO_GNSS,  // lever-arm vector from IMU to GNSS antenna (in body frame)
-  GNSS_TO_IMU   // lever-arm vector from GNSS antenna to IMU (in body frame)
-};
-
-/**
  * @brief GNSS observation update mode
  */
 enum class GnssUpdateMode {
@@ -106,14 +100,22 @@ struct EkfConfig {
 
   // GNSS update
   GnssUpdateMode gnss_update_mode = GnssUpdateMode::FIX_ONLY;
+  double gnss_heading_speed_threshold = 0.5;   // [m/s]
 
   // Wheel speed
   bool   use_wheel_speed    = false;
+  std::string wheel_speed_topic_type = "twist_with_covariance"; // or "twist"
+  std::string wheel_speed_mode = "longitudinal_only";           // or "3d"
   double wheel_speed_sigma  = 0.1;  // [m/s]
 
+  // IMU initialization
+  double init_imu_duration = 1.0;  // [s]
+
+  // Output configuration
+  std::string output_reference_frame = "imu";  // "gnss" or "imu"
+
   // IMU mounting
-  Eigen::Vector3d imu_lever_arm = Eigen::Vector3d::Zero();  // [m]
-  LeverArmRef lever_arm_ref = LeverArmRef::IMU_TO_GNSS;
+  Eigen::Vector3d lever_arm = Eigen::Vector3d::Zero();  // [m]
   Eigen::Vector3d imu_orientation_rpy = Eigen::Vector3d::Zero();  // [rad]
 };
 
@@ -191,7 +193,9 @@ class EkfNode : public rclcpp::Node {
   // ---- Callbacks ----
   void onImu(const sensor_msgs::msg::Imu::SharedPtr msg);
   void onGnss(const gnss_ros_standardization::msg::GnssSolution::SharedPtr msg);
-  void onWheelSpeed(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg);
+  void onWheelSpeedWithCov(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg);
+  void onWheelSpeedPoint(const geometry_msgs::msg::TwistStamped::SharedPtr msg);
+  void processWheelSpeed(const Eigen::Vector3d& linear_velocity, const Eigen::Matrix3d& covariance);
 
   // ---- EKF operations ----
 
@@ -322,7 +326,9 @@ class EkfNode : public rclcpp::Node {
   // Cached initial data for initialization
   Eigen::Vector3d init_gnss_pos_ecef_ = Eigen::Vector3d::Zero();
   Eigen::Vector3d init_gnss_pos_enu_  = Eigen::Vector3d::Zero();
-  Eigen::Vector3d init_imu_acc_ = Eigen::Vector3d::Zero();
+  Eigen::Vector3d init_imu_acc_sum_ = Eigen::Vector3d::Zero();
+  int init_imu_acc_count_ = 0;
+  rclcpp::Time init_imu_start_time_{0, 0, RCL_ROS_TIME};
   double init_yaw_ = 0.0;
 
   // Local origin (ECEF, set from first GNSS fix or config)
@@ -347,10 +353,12 @@ class EkfNode : public rclcpp::Node {
   // Subscribers
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<gnss_ros_standardization::msg::GnssSolution>::SharedPtr gnss_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::TwistWithCovarianceStamped>::SharedPtr wheel_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::TwistWithCovarianceStamped>::SharedPtr wheel_sub_cov_;
+  rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr wheel_sub_raw_;
 
   // Publishers
   rclcpp::Publisher<gnss_ros_standardization::msg::GnssSolution>::SharedPtr solution_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
 
   // CSV
   std::ofstream csv_file_;

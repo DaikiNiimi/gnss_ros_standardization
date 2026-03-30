@@ -48,11 +48,7 @@ Eigen::Vector3d EkfNode::applyImuAxisRotation(const Eigen::Vector3d& raw) const 
 
 Eigen::Vector3d EkfNode::computeLeverArmCorrection() const {
   Eigen::Matrix3d C_bn = getRotationMatrix();
-  if (config_.lever_arm_ref == LeverArmRef::IMU_TO_GNSS) {
-    return C_bn * config_.imu_lever_arm;
-  } else {
-    return -C_bn * config_.imu_lever_arm;
-  }
+  return C_bn * config_.lever_arm;
 }
 
 // ============================================================
@@ -144,13 +140,20 @@ EkfNode::EkfNode() : Node("ekf_node") {
     std::bind(&EkfNode::onGnss, this, std::placeholders::_1));
 
   if (config_.use_wheel_speed) {
-    wheel_sub_ = create_subscription<geometry_msgs::msg::TwistWithCovarianceStamped>(
-      config_.topic_wheel_speed, rclcpp::QoS(10),
-      std::bind(&EkfNode::onWheelSpeed, this, std::placeholders::_1));
+    if (config_.wheel_speed_topic_type == "twist") {
+      wheel_sub_raw_ = create_subscription<geometry_msgs::msg::TwistStamped>(
+        config_.topic_wheel_speed, rclcpp::QoS(10),
+        std::bind(&EkfNode::onWheelSpeedPoint, this, std::placeholders::_1));
+    } else {
+      wheel_sub_cov_ = create_subscription<geometry_msgs::msg::TwistWithCovarianceStamped>(
+        config_.topic_wheel_speed, rclcpp::QoS(10),
+        std::bind(&EkfNode::onWheelSpeedWithCov, this, std::placeholders::_1));
+    }
   }
 
   // Publisher
   solution_pub_ = create_publisher<grs::GnssSolution>(config_.topic_ekf_solution, rclcpp::QoS(10));
+  odom_pub_     = create_publisher<nav_msgs::msg::Odometry>(config_.topic_ekf_solution + "_odom", rclcpp::QoS(10));
 
   // CSV
   csv_file_.open(config_.csv_output_path, std::ios::out | std::ios::trunc);
@@ -226,19 +229,27 @@ void EkfNode::loadParameters() {
   else if (mode_str == "all") c.gnss_update_mode = GnssUpdateMode::ALL;
   else c.gnss_update_mode = GnssUpdateMode::FIX_ONLY;
 
+  declare_parameter<double>("gnss_heading_speed_threshold", c.gnss_heading_speed_threshold);
+  get_parameter("gnss_heading_speed_threshold", c.gnss_heading_speed_threshold);
+
   declare_parameter<bool>("use_wheel_speed", c.use_wheel_speed);
+  declare_parameter<std::string>("wheel_speed_topic_type", c.wheel_speed_topic_type);
+  declare_parameter<std::string>("wheel_speed_mode", c.wheel_speed_mode);
   declare_parameter<double>("wheel_speed_sigma", c.wheel_speed_sigma);
   get_parameter("use_wheel_speed", c.use_wheel_speed);
+  get_parameter("wheel_speed_topic_type", c.wheel_speed_topic_type);
+  get_parameter("wheel_speed_mode", c.wheel_speed_mode);
   get_parameter("wheel_speed_sigma", c.wheel_speed_sigma);
 
-  declare_parameter<std::vector<double>>("imu_lever_arm", {0.0, 0.0, 0.0});
-  auto la = get_parameter("imu_lever_arm").as_double_array();
-  if (la.size() >= 3) c.imu_lever_arm = Eigen::Vector3d(la[0], la[1], la[2]);
+  declare_parameter<double>("init_imu_duration", c.init_imu_duration);
+  get_parameter("init_imu_duration", c.init_imu_duration);
+  
+  declare_parameter<std::string>("output_reference_frame", c.output_reference_frame);
+  get_parameter("output_reference_frame", c.output_reference_frame);
 
-  declare_parameter<std::string>("lever_arm_ref", "imu_to_gnss");
-  std::string la_ref;
-  get_parameter("lever_arm_ref", la_ref);
-  c.lever_arm_ref = (la_ref == "gnss_to_imu") ? LeverArmRef::GNSS_TO_IMU : LeverArmRef::IMU_TO_GNSS;
+  declare_parameter<std::vector<double>>("lever_arm", {0.0, 0.0, 0.0});
+  auto la = get_parameter("lever_arm").as_double_array();
+  if (la.size() >= 3) c.lever_arm = Eigen::Vector3d(la[0], la[1], la[2]);
 
   declare_parameter<std::vector<double>>("imu_orientation", {0.0, 0.0, 0.0});
   auto io = get_parameter("imu_orientation").as_double_array();
@@ -253,18 +264,33 @@ bool EkfNode::tryInitialize() {
 
   x_.setZero();
 
-  // Set position
+  // Set position (initial gnss pos is GNSS antenna position)
+  // If output reference frame is "imu", we must translate it to the IMU origin using lever arm.
+  Eigen::Vector3d p_gnss;
   if (config_.coordinate_frame == "enu") {
-    x_.segment<3>(IDX_POS) = ecefToWorkFrame(init_gnss_pos_ecef_);
+    p_gnss = ecefToWorkFrame(init_gnss_pos_ecef_);
   } else {
-    x_.segment<3>(IDX_POS) = init_gnss_pos_ecef_;
+    p_gnss = init_gnss_pos_ecef_;
   }
 
-  // Set attitude from initial IMU acc (roll/pitch) and GNSS heading (yaw)
-  Eigen::Vector3d a = applyImuAxisRotation(init_imu_acc_);
+  // Set attitude from initial averaged IMU acc (roll/pitch) and GNSS heading (yaw)
+  // Gravity vector in nav frame is g = (0, 0, -g).
+  // At rest, a_nav = 0, so a_body = R^T * (a_nav - g) = R^T * (0, 0, g).
+  // Thus, the measured accelerometer vector ideally points "Up" in body frame (e.g. +Z if flat).
+  // a = [ax, ay, az]^T = R(roll, pitch, yaw)^T * [0, 0, g]^T
+  // This yields ax = -g*sin(pitch), ay = g*cos(pitch)*sin(roll), az = g*cos(pitch)*cos(roll).
+  Eigen::Vector3d a = applyImuAxisRotation(init_imu_acc_sum_ / std::max(1, init_imu_acc_count_));
   double roll  = std::atan2(a(1), a(2));
   double pitch = std::atan2(-a(0), std::sqrt(a(1)*a(1) + a(2)*a(2)));
   setQuaternion(eulerToQuaternion(roll, pitch, init_yaw_));
+
+  // Determine initial position depending on output_reference_frame
+  if (config_.output_reference_frame == "imu") {
+    Eigen::Vector3d lever = computeLeverArmCorrection();
+    x_.segment<3>(IDX_POS) = p_gnss - lever;
+  } else {
+    x_.segment<3>(IDX_POS) = p_gnss;
+  }
 
   // Initial covariance
   P_.setZero();
@@ -298,8 +324,18 @@ void EkfNode::predict(const Eigen::Vector3d& acc_body, const Eigen::Vector3d& gy
 
   // State propagation
   Eigen::Vector3d acc_nav = C_bn * acc_corrected + g;
-  x_.segment<3>(IDX_POS) += x_.segment<3>(IDX_VEL) * dt + 0.5 * acc_nav * dt * dt;
-  x_.segment<3>(IDX_VEL) += acc_nav * dt;
+  
+  if (config_.output_reference_frame == "gnss") {
+    // When outputting GNSS antenna position, the IMU acceleration is at the IMU origin.
+    // Strictly, a_gnss = a_imu + alpha x lever + w x (w x lever).
+    // For simplicity, we assume small angular rates/accelerations and approximate a_gnss ~= a_imu
+    // as the primary translation acceleration.
+    x_.segment<3>(IDX_POS) += x_.segment<3>(IDX_VEL) * dt + 0.5 * acc_nav * dt * dt;
+    x_.segment<3>(IDX_VEL) += acc_nav * dt;
+  } else {
+    x_.segment<3>(IDX_POS) += x_.segment<3>(IDX_VEL) * dt + 0.5 * acc_nav * dt * dt;
+    x_.segment<3>(IDX_VEL) += acc_nav * dt;
+  }
 
   // Quaternion propagation
   Eigen::Quaterniond q = getQuaternion();
@@ -356,15 +392,32 @@ void EkfNode::predict(const Eigen::Vector3d& acc_body, const Eigen::Vector3d& gy
 // ============================================================
 void EkfNode::updateGnssPosition(const Eigen::Vector3d& z_pos,
                                   const Eigen::Matrix3d& R_pos) {
-  // Lever-arm correction: GNSS antenna position in nav frame
-  Eigen::Vector3d lever = computeLeverArmCorrection();
-  Eigen::Vector3d z_imu_pos = z_pos - lever;  // position at IMU origin
-
-  Eigen::Vector3d innovation = z_imu_pos - x_.segment<3>(IDX_POS);
-
+  // Observation: GNSS Antenna Position z_pos = p_gnss
+  Eigen::Vector3d innovation;
   Eigen::Matrix<double, 3, ERROR_STATE_DIM> H;
   H.setZero();
-  H.block<3,3>(0, EIDX_POS) = Eigen::Matrix3d::Identity();
+  
+  if (config_.output_reference_frame == "imu") {
+    // EKF state is IMU position: p_gnss = p_imu + R * l^b
+    Eigen::Vector3d lever = computeLeverArmCorrection();
+    Eigen::Vector3d p_gnss_pred = x_.segment<3>(IDX_POS) + lever;
+    innovation = z_pos - p_gnss_pred;
+
+    H.block<3,3>(0, EIDX_POS) = Eigen::Matrix3d::Identity();
+    
+    // Jacobian of R * l^b w.r.t rotation delta theta is -R * [l^b]_x
+    Eigen::Matrix3d C_bn = getRotationMatrix();
+    Eigen::Vector3d lb = config_.lever_arm;
+    Eigen::Matrix3d sk_lb;
+    sk_lb <<     0, -lb(2),  lb(1),
+             lb(2),      0, -lb(0),
+            -lb(1),  lb(0),      0;
+    H.block<3,3>(0, EIDX_ATT) = -C_bn * sk_lb;
+  } else {
+    // EKF state is already GNSS position
+    innovation = z_pos - x_.segment<3>(IDX_POS);
+    H.block<3,3>(0, EIDX_POS) = Eigen::Matrix3d::Identity();
+  }
 
   Eigen::Matrix3d S = H * P_ * H.transpose() + R_pos;
   Eigen::Matrix<double, ERROR_STATE_DIM, 3> K = P_ * H.transpose() * S.inverse();
@@ -394,17 +447,23 @@ void EkfNode::updateGnssPosition(const Eigen::Vector3d& z_pos,
 // GNSS Heading Update (from Doppler velocity)
 // ============================================================
 void EkfNode::updateGnssHeading(double heading_rad, double heading_var) {
-  Eigen::Vector3d euler = quaternionToEuler(getQuaternion());
+  Eigen::Quaterniond q_pred = getQuaternion();
+  Eigen::Vector3d euler = quaternionToEuler(q_pred);
   double yaw_pred = euler(2);
 
-  double innovation = heading_rad - yaw_pred;
+  double yaw_err = heading_rad - yaw_pred;
   // Normalize to [-pi, pi]
-  while (innovation >  M_PI) innovation -= 2.0 * M_PI;
-  while (innovation < -M_PI) innovation += 2.0 * M_PI;
+  while (yaw_err >  M_PI) yaw_err -= 2.0 * M_PI;
+  while (yaw_err < -M_PI) yaw_err += 2.0 * M_PI;
+
+  // Assume the observation is the error rotation delta_theta.
+  // The error vector delta_theta in nav frame corresponds to the actual orientation:
+  // q_true = delta_q * q_pred. We observe the Z-component of delta_theta.
+  double innovation = yaw_err;
 
   Eigen::Matrix<double, 1, ERROR_STATE_DIM> H;
   H.setZero();
-  H(0, EIDX_ATT + 2) = 1.0;  // yaw
+  H(0, EIDX_ATT + 2) = 1.0;  // We observe the yaw component (Z-axis in delta_theta)
 
   double S = (H * P_ * H.transpose())(0,0) + heading_var;
   Eigen::Matrix<double, ERROR_STATE_DIM, 1> K = P_ * H.transpose() / S;
@@ -432,37 +491,125 @@ void EkfNode::updateGnssHeading(double heading_rad, double heading_var) {
 // ============================================================
 // Wheel Speed Update
 // ============================================================
-void EkfNode::updateWheelSpeed(const Eigen::Vector3d& v_body,
-                                const Eigen::Matrix3d& R_vel) {
+void EkfNode::onWheelSpeedWithCov(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg) {
+  Eigen::Vector3d linear(msg->twist.twist.linear.x, msg->twist.twist.linear.y, msg->twist.twist.linear.z);
+  Eigen::Matrix3d R_vel = Eigen::Matrix3d::Identity() * config_.wheel_speed_sigma * config_.wheel_speed_sigma;
+  
+  double cov_sum = 0;
+  for (int i = 0; i < 3; ++i) cov_sum += msg->twist.covariance[i*6+i];
+  if (cov_sum > 1e-10) {
+    for (int r = 0; r < 3; ++r)
+      for (int c = 0; c < 3; ++c)
+        R_vel(r,c) = msg->twist.covariance[r*6+c];
+    R_vel += Eigen::Matrix3d::Identity() * 1e-6;
+  }
+  
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    latest_wheel_.valid = true;
+    latest_wheel_.linear = linear;
+    for (int i = 0; i < 36; ++i) latest_wheel_.covariance[i] = msg->twist.covariance[i];
+  }
+  
+  processWheelSpeed(linear, R_vel);
+}
+
+void EkfNode::onWheelSpeedPoint(const geometry_msgs::msg::TwistStamped::SharedPtr msg) {
+  Eigen::Vector3d linear(msg->twist.linear.x, msg->twist.linear.y, msg->twist.linear.z);
+  Eigen::Matrix3d R_vel = Eigen::Matrix3d::Identity() * config_.wheel_speed_sigma * config_.wheel_speed_sigma;
+  
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    latest_wheel_.valid = true;
+    latest_wheel_.linear = linear;
+    latest_wheel_.covariance.fill(0);
+  }
+  
+  processWheelSpeed(linear, R_vel);
+}
+
+void EkfNode::processWheelSpeed(const Eigen::Vector3d& linear_velocity, const Eigen::Matrix3d& covariance) {
+  std::lock_guard<std::mutex> lock(mtx_);
+  if (!initialized_) return;
+
   Eigen::Matrix3d C_bn = getRotationMatrix();
   Eigen::Vector3d v_nav_pred = x_.segment<3>(IDX_VEL);
-  Eigen::Vector3d v_nav_meas = C_bn * v_body;
-  Eigen::Vector3d innovation = v_nav_meas - v_nav_pred;
+  
+  // Transform predicted nav velocity into body frame to compare directly with linear_velocity
+  Eigen::Vector3d v_body_pred = C_bn.transpose() * v_nav_pred;
+  
+  if (config_.wheel_speed_mode == "longitudinal_only") {
+    // Only constrain longitudinal (X) velocity
+    double innovation = linear_velocity(0) - v_body_pred(0);
+    
+    Eigen::Matrix<double, 1, ERROR_STATE_DIM> H;
+    H.setZero();
+    // Jacobian of v_body_x w.r.t v_nav: First row of C_bn^T
+    H.block<1,3>(0, EIDX_VEL) = C_bn.transpose().row(0);
+    // Jacobian of v_body w.r.t attitude error theta: v_body = C_bn^T * v_nav
+    // dv_body / dtheta = C_bn^T * [v_nav]_x
+    Eigen::Matrix3d sk_v_nav;
+    sk_v_nav <<           0, -v_nav_pred(2),  v_nav_pred(1),
+                 v_nav_pred(2),           0, -v_nav_pred(0),
+                -v_nav_pred(1),  v_nav_pred(0),           0;
+    H.block<1,3>(0, EIDX_ATT) = (C_bn.transpose() * sk_v_nav).row(0);
+    
+    double S = (H * P_ * H.transpose())(0,0) + covariance(0,0);
+    Eigen::Matrix<double, ERROR_STATE_DIM, 1> K = P_ * H.transpose() / S;
+    Eigen::Matrix<double, ERROR_STATE_DIM, 1> dx = K * innovation;
 
-  Eigen::Matrix<double, 3, ERROR_STATE_DIM> H;
-  H.setZero();
-  H.block<3,3>(0, EIDX_VEL) = Eigen::Matrix3d::Identity();
+    x_.segment<3>(IDX_POS) += dx.segment<3>(EIDX_POS);
+    x_.segment<3>(IDX_VEL) += dx.segment<3>(EIDX_VEL);
+    x_.segment<3>(IDX_AB)  += dx.segment<3>(EIDX_AB);
+    x_.segment<3>(IDX_GB)  += dx.segment<3>(EIDX_GB);
 
-  Eigen::Matrix3d R_nav = C_bn * R_vel * C_bn.transpose();
-  Eigen::Matrix3d S = H * P_ * H.transpose() + R_nav;
-  Eigen::Matrix<double, ERROR_STATE_DIM, 3> K = P_ * H.transpose() * S.inverse();
+    Eigen::Vector3d dtheta = dx.segment<3>(EIDX_ATT);
+    double angle = dtheta.norm();
+    if (angle > 1e-12) {
+      Eigen::Quaterniond dq(Eigen::AngleAxisd(angle, dtheta / angle));
+      setQuaternion(dq * getQuaternion());
+    }
 
-  Eigen::Matrix<double, ERROR_STATE_DIM, 1> dx = K * innovation;
+    auto I15 = Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM>::Identity();
+    Eigen::Matrix<double, 1, 1> R_scalar;
+    R_scalar(0,0) = covariance(0,0);
+    P_ = (I15 - K * H) * P_ * (I15 - K * H).transpose() + K * R_scalar * K.transpose();
+    
+  } else {
+    // 3D velocity observation (e.g. [v_body_x, 0, 0])
+    Eigen::Vector3d innovation = linear_velocity - v_body_pred;
+    
+    Eigen::Matrix<double, 3, ERROR_STATE_DIM> H;
+    H.setZero();
+    H.block<3,3>(0, EIDX_VEL) = C_bn.transpose();
+    
+    Eigen::Matrix3d sk_v_nav;
+    sk_v_nav <<           0, -v_nav_pred(2),  v_nav_pred(1),
+                 v_nav_pred(2),           0, -v_nav_pred(0),
+                -v_nav_pred(1),  v_nav_pred(0),           0;
+    H.block<3,3>(0, EIDX_ATT) = C_bn.transpose() * sk_v_nav;
+    
+    Eigen::Matrix3d S = H * P_ * H.transpose() + covariance;
+    Eigen::Matrix<double, ERROR_STATE_DIM, 3> K = P_ * H.transpose() * S.inverse();
+    Eigen::Matrix<double, ERROR_STATE_DIM, 1> dx = K * innovation;
 
-  x_.segment<3>(IDX_POS) += dx.segment<3>(EIDX_POS);
-  x_.segment<3>(IDX_VEL) += dx.segment<3>(EIDX_VEL);
-  x_.segment<3>(IDX_AB)  += dx.segment<3>(EIDX_AB);
-  x_.segment<3>(IDX_GB)  += dx.segment<3>(EIDX_GB);
+    x_.segment<3>(IDX_POS) += dx.segment<3>(EIDX_POS);
+    x_.segment<3>(IDX_VEL) += dx.segment<3>(EIDX_VEL);
+    x_.segment<3>(IDX_AB)  += dx.segment<3>(EIDX_AB);
+    x_.segment<3>(IDX_GB)  += dx.segment<3>(EIDX_GB);
 
-  Eigen::Vector3d dtheta = dx.segment<3>(EIDX_ATT);
-  double angle = dtheta.norm();
-  if (angle > 1e-12) {
-    Eigen::Quaterniond dq(Eigen::AngleAxisd(angle, dtheta / angle));
-    setQuaternion(dq * getQuaternion());
+    Eigen::Vector3d dtheta = dx.segment<3>(EIDX_ATT);
+    double angle = dtheta.norm();
+    if (angle > 1e-12) {
+      Eigen::Quaterniond dq(Eigen::AngleAxisd(angle, dtheta / angle));
+      setQuaternion(dq * getQuaternion());
+    }
+
+    auto I15 = Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM>::Identity();
+    P_ = (I15 - K * H) * P_ * (I15 - K * H).transpose() + K * covariance * K.transpose();
   }
 
-  auto I15 = Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM>::Identity();
-  P_ = (I15 - K * H) * P_ * (I15 - K * H).transpose() + K * R_nav * K.transpose();
+  latest_wheel_.used_for_update = true;
 }
 
 // ============================================================
@@ -490,12 +637,21 @@ void EkfNode::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
     latest_imu_gyr_cov_[i] = msg->angular_velocity_covariance[i];
   }
 
-  // Collect initial IMU for roll/pitch
+  // Collect initial IMU for roll/pitch average
   if (!has_initial_imu_) {
-    init_imu_acc_ = acc_raw;  // save raw, rotation applied in tryInitialize
-    has_initial_imu_ = true;
-    RCLCPP_INFO(get_logger(), "Initial IMU acquired for roll/pitch");
-    tryInitialize();
+    if (init_imu_acc_count_ == 0) {
+      init_imu_start_time_ = msg->header.stamp;
+    }
+    
+    init_imu_acc_sum_ += acc_raw;
+    init_imu_acc_count_++;
+    
+    rclcpp::Time current_time = msg->header.stamp;
+    if ((current_time - init_imu_start_time_).seconds() >= config_.init_imu_duration) {
+      has_initial_imu_ = true;
+      RCLCPP_INFO(get_logger(), "Initial IMU acquired. Averaged %d samples for roll/pitch.", init_imu_acc_count_);
+      tryInitialize();
+    }
     return;
   }
 
@@ -563,7 +719,7 @@ void EkfNode::onGnss(const grs::GnssSolution::SharedPtr msg) {
   // Doppler heading from ENU velocity
   double ve = snap.vel_enu(0), vn = snap.vel_enu(1);
   double horiz_speed = std::sqrt(ve*ve + vn*vn);
-  if (horiz_speed > 0.5) {  // threshold for valid heading
+  if (horiz_speed > config_.gnss_heading_speed_threshold) {
     snap.doppler_heading = std::atan2(ve, vn);  // heading from north, CW
   }
 
@@ -646,12 +802,12 @@ void EkfNode::onGnss(const grs::GnssSolution::SharedPtr msg) {
     updateGnssPosition(z_pos, R_pos);
 
     // Doppler heading update
-    if (!std::isnan(snap.doppler_heading)) {
+    if (!std::isnan(snap.doppler_heading) && horiz_speed > config_.gnss_heading_speed_threshold) {
       double heading_var = 0.1;  // ~18 deg std (conservative)
       if (horiz_speed > 2.0) heading_var = 0.01;  // ~6 deg at decent speed
       double horiz_speed_local = std::sqrt(ve*ve + vn*vn);
       // Derive heading variance from velocity covariance
-      if (horiz_speed_local > 0.5) {
+      if (horiz_speed_local > config_.gnss_heading_speed_threshold) {
         double var_ve = snap.vel_cov_enu[0];
         double var_vn = snap.vel_cov_enu[4];
         double s2 = horiz_speed_local * horiz_speed_local;
@@ -664,41 +820,7 @@ void EkfNode::onGnss(const grs::GnssSolution::SharedPtr msg) {
   }
 }
 
-// ============================================================
-// Wheel Speed Callback
-// ============================================================
-void EkfNode::onWheelSpeed(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg) {
-  std::lock_guard<std::mutex> lock(mtx_);
 
-  WheelSpeedSnapshot snap;
-  snap.valid = true;
-  snap.linear = Eigen::Vector3d(msg->twist.twist.linear.x,
-                                msg->twist.twist.linear.y,
-                                msg->twist.twist.linear.z);
-  snap.angular = Eigen::Vector3d(msg->twist.twist.angular.x,
-                                 msg->twist.twist.angular.y,
-                                 msg->twist.twist.angular.z);
-  for (int i = 0; i < 36; ++i) snap.covariance[i] = msg->twist.covariance[i];
-  latest_wheel_ = snap;
-
-  if (!initialized_) return;
-
-  Eigen::Vector3d v_body = snap.linear;
-  Eigen::Matrix3d R_vel = Eigen::Matrix3d::Identity() *
-                           config_.wheel_speed_sigma * config_.wheel_speed_sigma;
-  // Use covariance from message if available (first 3x3 block)
-  double cov_sum = 0;
-  for (int i = 0; i < 3; ++i) cov_sum += msg->twist.covariance[i*6+i];
-  if (cov_sum > 1e-10) {
-    for (int r = 0; r < 3; ++r)
-      for (int c = 0; c < 3; ++c)
-        R_vel(r,c) = msg->twist.covariance[r*6+c];
-    R_vel += Eigen::Matrix3d::Identity() * 1e-6;
-  }
-
-  updateWheelSpeed(v_body, R_vel);
-  latest_wheel_.used_for_update = true;
-}
 
 // ============================================================
 // Publish Solution
@@ -748,6 +870,50 @@ void EkfNode::publishSolution(const rclcpp::Time& stamp) {
   sol.status = grs::GnssSolution::STATUS_NONE;  // EKF output
 
   solution_pub_->publish(sol);
+
+  // Publish Odometry message
+  auto odom = nav_msgs::msg::Odometry();
+  odom.header.stamp = stamp;
+  odom.header.frame_id = config_.coordinate_frame == "enu" ? "odom" : "earth";
+  odom.child_frame_id = config_.output_reference_frame == "imu" ? "imu_link" : "gnss_antenna";
+
+  // Pos
+  if (config_.coordinate_frame == "enu" && origin_set_) {
+    Eigen::Vector3d enu = ecefToWorkFrame(ecef_pos);
+    odom.pose.pose.position.x = enu(0);
+    odom.pose.pose.position.y = enu(1);
+    odom.pose.pose.position.z = enu(2);
+  } else {
+    odom.pose.pose.position.x = ecef_pos(0);
+    odom.pose.pose.position.y = ecef_pos(1);
+    odom.pose.pose.position.z = ecef_pos(2);
+  }
+
+  // Quat
+  Eigen::Quaterniond q = getQuaternion();
+  odom.pose.pose.orientation.w = q.w();
+  odom.pose.pose.orientation.x = q.x();
+  odom.pose.pose.orientation.y = q.y();
+  odom.pose.pose.orientation.z = q.z();
+
+  // Vel
+  odom.twist.twist.linear.x = vel(0);
+  odom.twist.twist.linear.y = vel(1);
+  odom.twist.twist.linear.z = vel(2);
+  
+  // Covariance arrays: Odometry uses 36-element arrays for 6D pose/twist
+  for (int min_i = 0; min_i < 3; ++min_i) {
+    for (int min_j = 0; min_j < 3; ++min_j) {
+      odom.pose.covariance[min_i * 6 + min_j] = P_(EIDX_POS + min_i, EIDX_POS + min_j);        // pos-pos
+      odom.pose.covariance[(min_i + 3) * 6 + (min_j + 3)] = P_(EIDX_ATT + min_i, EIDX_ATT + min_j); // att-att
+      odom.pose.covariance[min_i * 6 + (min_j + 3)] = P_(EIDX_POS + min_i, EIDX_ATT + min_j);       // pos-att
+      odom.pose.covariance[(min_i + 3) * 6 + min_j] = P_(EIDX_ATT + min_i, EIDX_POS + min_j);       // att-pos
+      
+      odom.twist.covariance[min_i * 6 + min_j] = P_(EIDX_VEL + min_i, EIDX_VEL + min_j);       // vel x/y/z
+    }
+  }
+
+  odom_pub_->publish(odom);
 }
 
 // ============================================================
@@ -755,10 +921,13 @@ void EkfNode::publishSolution(const rclcpp::Time& stamp) {
 // ============================================================
 void EkfNode::writeCSVHeader() {
   if (!csv_file_.is_open()) return;
+  // Write Metadata header line
+  csv_file_ << "# config_coordinate_frame: " << config_.coordinate_frame 
+            << " | output_reference_frame: " << config_.output_reference_frame << "\n";
   csv_file_ << std::setprecision(15);
   csv_file_
     // Time
-    << "ros_time_sec,ros_time_nsec,gnss_tow,gnss_week"
+    << "ros_time_sec,ros_time_nsec,gnss_tow,gnss_week,ekf_frame"
     // EKF estimated position (work frame)
     << ",ekf_pos_0,ekf_pos_1,ekf_pos_2"
     // EKF estimated position (LLH)
@@ -806,7 +975,7 @@ void EkfNode::writeCSVHeader() {
     << ",gnss_status,gnss_num_sats"
     << ",gnss_gdop,gnss_pdop,gnss_hdop,gnss_vdop"
     << ",gnss_ratio,gnss_age_diff"
-    << ",gnss_pos_valid,gnss_valid,gnss_used"
+    << ",gnss_pos_valid,gnss_received,gnss_used"
     << "\n";
   csv_file_.flush();
 }
@@ -832,7 +1001,7 @@ void EkfNode::writeCSVRow(const rclcpp::Time& stamp) {
 
   csv_file_ << std::setprecision(15);
 
-  // Time
+  // Time + Frame
   csv_file_ << stamp.seconds() << "," << stamp.nanoseconds();
   // GNSS TOW/week — only if GNSS valid this row
   if (latest_gnss_.valid) {
@@ -840,6 +1009,7 @@ void EkfNode::writeCSVRow(const rclcpp::Time& stamp) {
   } else {
     csv_file_ << ",NaN,NaN";
   }
+  csv_file_ << "," << config_.coordinate_frame;
 
   // EKF position (work frame)
   csv_file_ << "," << pos(0) << "," << pos(1) << "," << pos(2);

@@ -54,23 +54,48 @@ ekf_node:
     # "fix_float" : Use Fix + Float solutions
     # "all"       : Use all solution types (including Single, SBAS, DGPS, PPP)
     gnss_update_mode: "fix_only"
+    
+    # Minimum valid horizontal speed (from Doppler) to initialize or update yaw [m/s]
+    gnss_heading_speed_threshold_init: 0.5
+    gnss_heading_speed_threshold_update: 0.5
 
     # ==========================================================================
     # Wheel Speed (Optional)
     # ==========================================================================
     use_wheel_speed: false
+    
+    # Topic type: "twist_with_covariance" or "twist"
+    wheel_speed_topic_type: "twist_with_covariance"
+    
+    # Mode: "longitudinal_only" (only X-axis forward velocity) or "3d" (all 3 axes)
+    wheel_speed_mode: "longitudinal_only"
+    
     wheel_speed_sigma: 0.1      # Default velocity noise [m/s]
+    
+    # ==========================================================================
+    # Initial IMU Averaging
+    # ==========================================================================
+    init_imu_duration: 1.0  # Duration to average initial IMU data for Roll/Pitch estimation [s]
 
     # ==========================================================================
-    # IMU Installation
+    # State Update Thresholds
     # ==========================================================================
+    # Minimum valid horizontal speed (from Doppler) to initialize or update yaw [m/s]
+    gnss_heading_speed_threshold: 0.5
+
+    # ==========================================================================
+    # IMU Installation & Lever-Arm
+    # ==========================================================================
+    # EKF Output Reference Frame:
+    #   "imu"  : EKF estimates and outputs the position of the IMU
+    #   "gnss" : EKF estimates and outputs the position of the GNSS antenna
+    output_reference_frame: "imu"
+
     # Lever-arm vector [x, y, z] in body frame [m]
-    imu_lever_arm: [0.0, 0.0, 0.0]
-
-    # Lever-arm reference direction:
-    #   "imu_to_gnss" : vector points from IMU to GNSS antenna
-    #   "gnss_to_imu" : vector points from GNSS antenna to IMU
-    lever_arm_ref: "imu_to_gnss"
+    # This vector MUST point from the 'output_reference_frame' to the other sensor.
+    # - If output_reference_frame is "imu", this points from IMU to GNSS antenna.
+    # - If output_reference_frame is "gnss", this points from GNSS antenna to IMU.
+    lever_arm: [0.0, 0.0, 0.0]
 
     # IMU axis orientation relative to body frame [roll, pitch, yaw] in radians
     # This rotation transforms IMU measurements to body frame
