@@ -183,7 +183,7 @@ private:
       zoom_level_--;
     }
     // Clamp
-    if (zoom_level_ > 7) zoom_level_ = 7;
+    if (zoom_level_ > 10) zoom_level_ = 10;
     if (zoom_level_ < -5) zoom_level_ = -5;
     
     RCLCPP_INFO(this->get_logger(), "Zoom Level (Wheel): %d", zoom_level_);
@@ -206,8 +206,8 @@ private:
       } else if (btn_zoom_in.contains(cv::Point(x, y))) {
         zoom_level_++;
       }      
-      if (zoom_level_ > 7) zoom_level_ = 7;
-      if (zoom_level_ < -7) zoom_level_ = -7;
+      if (zoom_level_ > 10) zoom_level_ = 10;
+      if (zoom_level_ < -5) zoom_level_ = -5;
 
       RCLCPP_INFO(this->get_logger(), "Zoom Level (Click): %d", zoom_level_);
       this->set_parameter(rclcpp::Parameter("zoom_level", zoom_level_));
@@ -501,9 +501,50 @@ private:
       cv::circle(img, cv::Point(sp.px, sp.py), 4, sysColor(sp.sys), -1);
     }
 
+    std::vector<cv::Rect> occupied;
     for (const auto& sp : sat_plots) {
-      int lx = sp.px + 8;
-      int ly = sp.py + 4;
+      occupied.push_back(cv::Rect(sp.px - 8, sp.py - 8, 16, 16));
+    }
+
+    for (const auto& sp : sat_plots) {
+      int baseline = 0;
+      cv::Size tsize = cv::getTextSize(sp.id, FONT_LABEL, 0.38, 1, &baseline);
+      int tw = tsize.width;
+      int th = tsize.height;
+
+      struct Cand { int dx, dy; };
+      Cand cands[] = {
+        {8, 4},
+        {-tw - 8, 4},
+        {-tw / 2, -10},
+        {-tw / 2, th + 10},
+        {8, -10},
+        {-tw - 8, -10},
+        {8, th + 10},
+        {-tw - 8, th + 10}
+      };
+
+      Cand best_cand = cands[0];
+
+      for (auto c : cands) {
+        cv::Rect r(sp.px + c.dx - 2, sp.py + c.dy - th - 2, tw + 4, th + 4);
+        bool collision = false;
+        for (const auto& occ : occupied) {
+          if ((r.x < occ.x + occ.width) && (r.x + r.width > occ.x) &&
+              (r.y < occ.y + occ.height) && (r.y + r.height > occ.y)) {
+            collision = true;
+            break;
+          }
+        }
+        if (!collision) {
+          best_cand = c;
+          break;
+        }
+      }
+
+      int lx = sp.px + best_cand.dx;
+      int ly = sp.py + best_cand.dy;
+      occupied.push_back(cv::Rect(lx - 2, ly - th - 2, tw + 4, th + 4));
       
       // Draw text with outline (halo) for readability
       cv::putText(img, sp.id, cv::Point(lx, ly), FONT_LABEL, 0.38, COL_BG, 3);
@@ -704,15 +745,18 @@ private:
     int cx = roi.x + roi.width / 2;
     int cy = roi.y + hdr_h + (roi.height - hdr_h) / 2;
     double scale = 5.0 * std::pow(2.0, zoom_level_);
-    int grid_m = 10;
+    double grid_m = 10.0;
 
-    if (zoom_level_ >= 3) grid_m = 1;
-    else if (zoom_level_ >= 1) grid_m = 5;
-    else if (zoom_level_ <= -2) grid_m = 50;
-    else if (zoom_level_ <= -1) grid_m = 20;
+    if (zoom_level_ >= 9) grid_m = 0.01;
+    else if (zoom_level_ >= 6) grid_m = 0.1;
+    else if (zoom_level_ >= 3) grid_m = 1.0;
+    else if (zoom_level_ >= 1) grid_m = 5.0;
+    else if (zoom_level_ <= -2) grid_m = 50.0;
+    else if (zoom_level_ <= -1) grid_m = 20.0;
 
     cv::Scalar gridCol(225,225,225);
-    for (int gi = -20; gi <= 20; ++gi) {
+    for (int gi = -100; gi <= 100; ++gi) {
+      if (gi == 0) continue; // Axis is drawn separately
       int off = (int)(gi * grid_m * scale);
       int gy = cy + off;
       if (gy > roi.y + hdr_h && gy < roi.y + roi.height)
@@ -735,7 +779,10 @@ private:
         cv::line(img, cv::Point(sx, sy), cv::Point(sx + bar_px, sy), COL_TEXT, 2);
         cv::line(img, cv::Point(sx, sy-3), cv::Point(sx, sy+3), COL_TEXT, 1);
         cv::line(img, cv::Point(sx+bar_px, sy-3), cv::Point(sx+bar_px, sy+3), COL_TEXT, 1);
-        cv::putText(img, std::to_string(grid_m) + "m", cv::Point(sx + bar_px/2 - 12, sy - 5), FONT_LABEL, 0.38, COL_TEXT);
+        std::stringstream ss;
+        if (grid_m < 1.0) ss << std::fixed << std::setprecision(2) << grid_m << "m";
+        else ss << (int)grid_m << "m";
+        cv::putText(img, ss.str(), cv::Point(sx + bar_px/2 - 12, sy - 5), FONT_LABEL, 0.38, COL_TEXT);
       }
     }
 
@@ -765,11 +812,33 @@ private:
     }
 
     size_t n = pos_history_.size();
+    cv::Point prev_p(-1, -1);
+    uint8_t prev_status = 0;
+
     for (size_t i = 0; i < n; ++i) {
-      cv::Point p(cx + (int)(pos_history_[i].x * scale), cy - (int)(pos_history_[i].y * scale));
-      if (!roi.contains(p)) continue;
+      long px_long = cx + (long)(pos_history_[i].x * scale);
+      long py_long = cy - (long)(pos_history_[i].y * scale);
+      
+      const long MAX_COORD = 30000;
+      if (px_long < -MAX_COORD || px_long > MAX_COORD || py_long < -MAX_COORD || py_long > MAX_COORD) {
+        prev_p = cv::Point(-1,-1);
+        continue;
+      }
+      cv::Point p((int)px_long, (int)py_long);
+      
       cv::Scalar col = statusColor(pos_history_[i].status);
-      cv::circle(img, p, 2, col, -1);
+      
+      if (prev_p.x != -1 && pos_history_[i].status == prev_status) {
+         if (roi.contains(p) || roi.contains(prev_p)) {
+           cv::line(img, prev_p, p, col, 1, cv::LINE_AA);
+         }
+      }
+      if (roi.contains(p)) {
+        cv::circle(img, p, (zoom_level_ >= 6) ? 2 : 1, col, -1, cv::LINE_AA);
+      }
+      
+      prev_p = p;
+      prev_status = pos_history_[i].status;
     }
 
     auto& last = pos_history_.back();

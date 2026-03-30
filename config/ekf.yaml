@@ -1,0 +1,77 @@
+ekf_node:
+  ros__parameters:
+    # ==========================================================================
+    # Coordinate Frame
+    # ==========================================================================
+    # "ecef" : ECEF (Earth-Centered Earth-Fixed)
+    # "enu"  : Local ENU (East-North-Up)
+    coordinate_frame: "enu"
+
+    # Local origin for ENU frame
+    local_origin:
+      # "gnss_fix" : First valid GNSS Fix solution as origin
+      # "manual"   : Use manually specified position below
+      mode: "gnss_fix"
+      # Manual position [lat_deg, lon_deg, alt_m] (used when mode="manual")
+      pos: [35.0, 137.0, 50.0]
+
+    # ==========================================================================
+    # Topic Names
+    # ==========================================================================
+    topics:
+      gnss_solution: "/gnss/solution"
+      imu_raw: "/imu/data_raw"
+      wheel_speed: "/can_twist"
+      ekf_solution: "/ekf/solution"
+
+    # ==========================================================================
+    # CSV Output
+    # ==========================================================================
+    csv:
+      output_path: "/tmp/ekf_log.csv"
+
+    # ==========================================================================
+    # EKF Parameters
+    # ==========================================================================
+    ekf:
+      # Process noise spectral densities
+      sigma_acc: 0.1            # Accelerometer noise [m/s^2/√Hz]
+      sigma_gyr: 0.01           # Gyroscope noise [rad/s/√Hz]
+      sigma_acc_bias: 1.0e-4    # Accelerometer bias random walk [m/s^2/√Hz]
+      sigma_gyr_bias: 1.0e-5    # Gyroscope bias random walk [rad/s/√Hz]
+
+      # Initial state covariance (1-sigma standard deviations)
+      init_pos_std: 10.0        # Position [m]
+      init_vel_std: 1.0         # Velocity [m/s]
+      init_att_std: 0.5         # Attitude [rad]
+      init_acc_bias_std: 0.1    # Accelerometer bias [m/s^2]
+      init_gyr_bias_std: 0.01   # Gyroscope bias [rad/s]
+
+    # ==========================================================================
+    # GNSS Observation Update Mode
+    # ==========================================================================
+    # "fix_only"  : Use only Fix solutions for position update
+    # "fix_float" : Use Fix + Float solutions
+    # "all"       : Use all solution types (including Single, SBAS, DGPS, PPP)
+    gnss_update_mode: "fix_only"
+
+    # ==========================================================================
+    # Wheel Speed (Optional)
+    # ==========================================================================
+    use_wheel_speed: false
+    wheel_speed_sigma: 0.1      # Default velocity noise [m/s]
+
+    # ==========================================================================
+    # IMU Installation
+    # ==========================================================================
+    # Lever-arm vector [x, y, z] in body frame [m]
+    imu_lever_arm: [0.0, 0.0, 0.0]
+
+    # Lever-arm reference direction:
+    #   "imu_to_gnss" : vector points from IMU to GNSS antenna
+    #   "gnss_to_imu" : vector points from GNSS antenna to IMU
+    lever_arm_ref: "imu_to_gnss"
+
+    # IMU axis orientation relative to body frame [roll, pitch, yaw] in radians
+    # This rotation transforms IMU measurements to body frame
+    imu_orientation: [0.0, 0.0, 0.0]

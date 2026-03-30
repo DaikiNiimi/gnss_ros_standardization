@@ -27,6 +27,7 @@
   <!-- Nodes / tools -->
   <depend>rclcpp</depend>
   <depend>rcutils</depend>
+  <build_depend>eigen3_cmake_module</build_depend>
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
   <depend>sensor_msgs</depend>
