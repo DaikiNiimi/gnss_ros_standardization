@@ -302,10 +302,6 @@ elseif(BUILD_EKF_NODE)
   message(WARNING "BUILD_EKF_NODE=ON but src/positioning/ekf_node.cpp not found.")
 endif()
 
-# Export
-ament_export_dependencies(rosidl_default_runtime std_msgs builtin_interfaces)
-ament_package()
-
 # gnss_visualizer
 if(cv_bridge_FOUND AND image_transport_FOUND AND OpenCV_FOUND)
   add_executable(gnss_visualizer src/utils/gnss_visualizer.cpp)
@@ -326,4 +322,8 @@ if(cv_bridge_FOUND AND image_transport_FOUND AND OpenCV_FOUND)
 else()
   message(STATUS "Skipping gnss_visualizer: cv_bridge, image_transport, or OpenCV not found.")
 endif()
+
+# Export
+ament_export_dependencies(rosidl_default_runtime std_msgs builtin_interfaces)
+ament_package()
 
