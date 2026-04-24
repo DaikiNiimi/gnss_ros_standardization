@@ -54,3 +54,16 @@ novatel_driver_node:
       navic_ephem: false    # NAVICEPHEMERISB
 
       ionutc: false          # IONUTCB/GALIONOB/QZSSIONUTCB
+
+      # NMEA output (used for GnssSolution topic via NmeaParser, ONTIME 1 = 1 Hz)
+      nmea_gpgga: true       # GPGGA: position, fix quality, satellites, HDOP, altitude
+      nmea_gprmc: true       # GPRMC: velocity (speed/course)
+      nmea_gpgsa: true       # GPGSA: DOP values
+      nmea_gpgst: true       # GPGST: position standard deviations (for covariance)
+
+      # INS/IMU (requires SPAN-capable receiver, e.g. OEM7 + IMU)
+      # Publishes INSPVA attitude as sensor_msgs/Imu at 10 Hz
+      inspva: false
+
+    solution_topic: "/gnss/solution"
+    imu_topic: "/gnss/imu/data"

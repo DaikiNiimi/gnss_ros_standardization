@@ -21,6 +21,8 @@ constexpr uint8_t CLASS_RXM = 0x02;
 constexpr uint8_t CLASS_ACK = 0x05;
 constexpr uint8_t CLASS_CFG = 0x06;
 constexpr uint8_t CLASS_MON = 0x0A;
+constexpr uint8_t CLASS_ESF = 0x10;  // External Sensor Fusion (ZED-F9R / IMU-enabled)
+constexpr uint8_t CLASS_HNR = 0x28;  // High Navigation Rate (legacy F9R)
 
 // =============================================================================
 // UBX Message IDs
@@ -32,6 +34,10 @@ constexpr uint8_t ID_ACK_ACK = 0x01;
 
 // NAV
 constexpr uint8_t ID_NAV_PVT = 0x07;
+constexpr uint8_t ID_NAV_ATT = 0x05;  // Attitude (roll/pitch/heading) — ZED-F9R
+
+// ESF (External Sensor Fusion)
+constexpr uint8_t ID_ESF_INS = 0x15;  // Calibrated IMU angular rate + acceleration
 
 // MON
 constexpr uint8_t ID_MON_VER = 0x04;
@@ -128,6 +134,12 @@ constexpr uint32_t CFG_MSGOUT_NMEA_ID_RMC_I2C   = 0x209100AB;
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_VTG_I2C   = 0x209100B0;
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_GST_I2C   = 0x209100D3;
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_ZDA_I2C   = 0x209100D8;
+
+// --- IMU / Attitude Output ---
+// ESF-INS (calibrated angular rate + acceleration): base I2C key, +port offset for UART1/2/USB
+constexpr uint32_t CFG_MSGOUT_UBX_ESF_INS_I2C  = 0x20910036;
+// NAV-ATT (attitude roll/pitch/heading): base I2C key
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_ATT_I2C  = 0x2091001F;
 
 // --- NMEA Configuration ---
 constexpr uint32_t CFG_NMEA_HIGHPREC = 0x10930006;  // L: Enable high-precision NMEA output

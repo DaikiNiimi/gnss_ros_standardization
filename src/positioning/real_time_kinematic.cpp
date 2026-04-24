@@ -304,7 +304,7 @@ private:
     if (nav_.n >= nav_.nmax) {
         int newmax = nav_.nmax == 0 ? 64 : nav_.nmax * 2;
         auto *p = (eph_t*)std::realloc(nav_.eph, sizeof(eph_t) * newmax);
-        if (!p) return;
+        if (!p) { RCLCPP_ERROR(get_logger(), "realloc failed for nav_.eph (requested %d entries)", newmax); return; }
         nav_.eph = p; nav_.nmax = newmax;
     }
     nav_.eph[nav_.n++] = e;
@@ -318,7 +318,7 @@ private:
     if (nav_.ng >= nav_.ngmax) {
         int newmax = nav_.ngmax == 0 ? 8 : nav_.ngmax * 2;
         auto *p = (geph_t*)std::realloc(nav_.geph, sizeof(geph_t) * newmax);
-        if (!p) return;
+        if (!p) { RCLCPP_ERROR(get_logger(), "realloc failed for nav_.geph (requested %d entries)", newmax); return; }
         nav_.geph = p; nav_.ngmax = newmax;
     }
     nav_.geph[nav_.ng++] = g;

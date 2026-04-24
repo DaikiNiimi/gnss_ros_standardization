@@ -20,6 +20,10 @@ namespace sbf {
 
 constexpr size_t READ_BUFFER_SIZE = 4096;
 
+// SBF sync bytes — every SBF block starts with these two bytes
+constexpr uint8_t SBF_SYNC1 = 0x24;  // '$'
+constexpr uint8_t SBF_SYNC2 = 0x40;  // '@'
+
 // =============================================================================
 // SBF Block IDs
 // =============================================================================
@@ -75,7 +79,8 @@ constexpr const char* BLOCK_QUALITYIND = "QualityInd";
 // =============================================================================
 // SBF Command Strings
 // =============================================================================
-constexpr const char* CMD_SET_SBF_OUTPUT = "sso"; // setSBFOutput
+constexpr const char* CMD_SET_SBF_OUTPUT  = "sso"; // setSBFOutput
+constexpr const char* CMD_SET_NMEA_OUTPUT = "sno"; // setNMEAOutput
 
 // =============================================================================
 // Stream Type Definition

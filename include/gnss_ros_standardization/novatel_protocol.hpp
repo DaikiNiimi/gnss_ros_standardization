@@ -49,6 +49,17 @@ constexpr uint16_t ID_QZSSIONUTC        = 1347;
 constexpr uint16_t ID_BDSEPHEMERIS      = 1696;
 constexpr uint16_t ID_NAVICEPHEMERIS    = 2123;
 
+// SPAN INS Message IDs (OEM7/6 with IMU integration)
+constexpr uint16_t ID_RAWIMU            = 268;  // Raw IMU data (IMU-type-dependent scale)
+constexpr uint16_t ID_INSPVA            = 507;  // INS position, velocity, attitude
+constexpr uint16_t ID_INSATT            = 263;  // INS attitude only
+
+// OEM4 binary sync bytes
+constexpr uint8_t OEM4_SYNC1 = 0xAA;
+constexpr uint8_t OEM4_SYNC2 = 0x44;
+constexpr uint8_t OEM4_SYNC3 = 0x12;
+constexpr int     OEM4_HEADER_LEN = 28;  // Standard OEM4/7 binary header length
+
 // OEM3 Message IDs
 constexpr uint16_t ID_OEM3_RGEB         = 32;
 constexpr uint16_t ID_OEM3_RGED         = 65;
@@ -78,6 +89,16 @@ constexpr const char* LOG_QZSSEPHEMERIS = "QZSSEPHEMERISB";
 constexpr const char* LOG_QZSSIONUTC    = "QZSSIONUTCB";
 constexpr const char* LOG_BDSEPHEMERIS  = "BDSEPHEMERISB";
 constexpr const char* LOG_NAVICEPHEMERIS = "NAVICEPHEMERISB";
+
+// NMEA Log Names (standard sentences, talker-ID-agnostic naming)
+constexpr const char* LOG_GPGGA         = "GPGGA";
+constexpr const char* LOG_GPRMC         = "GPRMC";
+constexpr const char* LOG_GPGSA         = "GPGSA";
+constexpr const char* LOG_GPGST         = "GPGST";
+
+// SPAN INS Log Names
+constexpr const char* LOG_INSPVAB       = "INSPVAB";  // INS position+velocity+attitude (binary)
+constexpr const char* LOG_INSATTB       = "INSATTB";  // INS attitude only (binary)
 
 // OEM3 Log Names
 constexpr const char* LOG_OEM3_RGEB     = "RGEB"; // Range

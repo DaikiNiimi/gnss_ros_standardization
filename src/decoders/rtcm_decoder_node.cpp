@@ -27,10 +27,17 @@ constexpr double   TOE_EQ_EPS     = 1e-3;      // sec
 class RtcmDecoderNode : public rclcpp::Node {
 public:
   RtcmDecoderNode() : Node("rtcm_decoder_node") {
-    declare_parameter<std::string>("stream_path", "tcpcli://127.0.0.1:28003");
+    declare_parameter<std::string>("stream_path", "");
     declare_parameter<int>("assemble_delay_ms", 200);  // reserved
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
+
+    const auto stream_path = get_parameter("stream_path").as_string();
+    if (stream_path.empty()) {
+      RCLCPP_ERROR(get_logger(), "Parameter 'stream_path' is required but not set. "
+        "Example: --ros-args -p stream_path:=\"ntrip://user:pass@host:port/mountpoint\"");
+      throw std::runtime_error("stream_path parameter is required");
+    }
 
     obs_pub_ = create_publisher<gnss_ros_standardization::msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
     nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());

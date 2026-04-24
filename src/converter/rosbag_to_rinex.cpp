@@ -569,9 +569,8 @@ class ObsWriter {
       std::fflush(fp_);
     }
   
-    ~ObsWriter() { 
-      std::cerr << "ObsWriter Destructor\n";
-      flushAll(); 
+    ~ObsWriter() {
+      flushAll();
     }
 
     void writeEpoch(const GnssObservations &m) {
@@ -645,7 +644,6 @@ class ObsWriter {
     }
   
     void flushAll() {
-      // std::cerr << "FlushAll: " << queue_.size() << " epochs.\n";
       while (!queue_.empty()) { auto e = queue_.top(); queue_.pop(); writeOne(e.msg, e.t); }
       std::fflush(fp_);
     }

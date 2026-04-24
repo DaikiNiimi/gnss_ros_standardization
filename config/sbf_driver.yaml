@@ -58,10 +58,20 @@ sbf_driver_node:
       pvt_cartesian: false   # PVT solution (cartesian)
       pos_cov_cartesian: false # PVT covariance (cartesian)
       
-      # Attitude
-      att_euler: false       # Attitude (Euler angles)
+      # Attitude / INS (requires AsteRx-i or other INS-capable receiver)
+      att_euler: false       # Attitude (Euler angles) → publishes to imu_topic
       att_cov_euler: false   # Attitude covariance
       
       # Status
       receiver_status: false # Receiver status
       quality_ind: false     # Quality indicators
+
+      # NMEA output (used for GnssSolution topic via NmeaParser)
+      # Sentences are output on the same physical port as SBF (Stream2, sec1 = 1 Hz)
+      nmea_gga: true         # GGA: position, fix quality, satellites, HDOP, altitude
+      nmea_rmc: true         # RMC: velocity (speed/course)
+      nmea_gsa: true         # GSA: DOP values
+      nmea_gst: true         # GST: position standard deviations (for covariance)
+
+    solution_topic: "/gnss/solution"
+    imu_topic: "/gnss/imu/data"

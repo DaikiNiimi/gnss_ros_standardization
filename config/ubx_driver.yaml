@@ -72,7 +72,15 @@ ubx_driver_node:
       # NMEA High Precision mode
       # Enables extra decimal places in lat/lon for GGA, RMC, GLL
       nmea_high_precision: false
-    
+
+      # INS/IMU messages (requires F9R or other INS-capable receiver)
+      # ESF-INS: calibrated angular rate + linear acceleration
+      esf_ins: false
+
+    # Topic Names (IMU)
+    imu_raw_topic: "/gnss/imu/data_raw"
+    imu_topic: "/gnss/imu/data"
+
     # ==========================================================================
     # GNSS Constellation Settings
     # ==========================================================================
