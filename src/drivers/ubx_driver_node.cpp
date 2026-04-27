@@ -72,7 +72,7 @@ struct UbxConfig {
   bool enable_esf_ins{false};   // ESF-INS: calibrated angular rate + acceleration
   bool enable_nav_att{false};   // NAV-ATT: attitude (roll/pitch/heading)
   std::string imu_raw_topic{"/gnss/imu/data_raw"};
-  std::string imu_topic{"/gnss/imu/data"};
+  std::string imu_attitude_topic{"/gnss/imu/attitude"};
   
   // GNSS constellation settings
   bool enable_gps{true};
@@ -151,7 +151,7 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.esf_ins", config_.enable_esf_ins);
     declare_parameter<bool>("messages.nav_att", config_.enable_nav_att);
     declare_parameter<std::string>("imu_raw_topic", config_.imu_raw_topic);
-    declare_parameter<std::string>("imu_topic",     config_.imu_topic);
+    declare_parameter<std::string>("imu_attitude_topic",     config_.imu_attitude_topic);
     
     // GNSS constellation settings
     declare_parameter<bool>("gnss.gps", config_.enable_gps);
@@ -189,7 +189,7 @@ class UbxDriverNode : public rclcpp::Node {
     config_.enable_esf_ins      = get_parameter("messages.esf_ins").as_bool();
     config_.enable_nav_att      = get_parameter("messages.nav_att").as_bool();
     config_.imu_raw_topic       = get_parameter("imu_raw_topic").as_string();
-    config_.imu_topic           = get_parameter("imu_topic").as_string();
+    config_.imu_attitude_topic           = get_parameter("imu_attitude_topic").as_string();
     
     config_.enable_gps = get_parameter("gnss.gps").as_bool();
     config_.enable_glonass = get_parameter("gnss.glonass").as_bool();
@@ -232,7 +232,7 @@ class UbxDriverNode : public rclcpp::Node {
     eph_pub_     = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
     sol_pub_     = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
-    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(config_.imu_topic, 10);
+    imu_attitude_pub_     = create_publisher<sensor_msgs::msg::Imu>(config_.imu_attitude_topic, 10);
 
     // Pre-configure ENU origin if not auto
     if (!config_.auto_origin) {
@@ -1049,7 +1049,7 @@ class UbxDriverNode : public rclcpp::Node {
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
-    imu_pub_->publish(imu);
+    imu_attitude_pub_->publish(imu);
   }
 
   // ============================================================================
@@ -1335,7 +1335,7 @@ class UbxDriverNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr   eph_pub_;
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr      sol_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_attitude_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   // MALIB structures

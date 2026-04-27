@@ -31,7 +31,29 @@ constexpr int ATT_EULER_OFFSET_ERROR   = 7;
 constexpr int ATT_EULER_OFFSET_HEADING = 10;
 constexpr int ATT_EULER_OFFSET_PITCH   = 14;
 constexpr int ATT_EULER_OFFSET_ROLL    = 18;
-constexpr int ATT_EULER_MIN_LEN        = 22;  // body must have at least 22 bytes
+constexpr int ATT_EULER_MIN_LEN        = 22;
+
+// SBF ExtSensorMeas (ID 4050) body offsets
+// Body layout: TOW(4) WNc(2) N(1) SBLength(1) [N × ExtSensorMeasSub of size SBLength]
+//
+// ExtSensorMeasSub (SBLength = 28 bytes):
+//   Source(u1) SensorModel(u1) Type(u1) ObsInfo(u1) X(f8) Y(f8) Z(f8)
+//
+// IMPORTANT: Each Type is a 3-axis VECTOR (Type 0 = entire accel 3-vector,
+// Type 1 = entire gyro 3-vector). NOT one axis per Type as in some misreadings.
+constexpr int ESM_OFFSET_N          = 6;
+constexpr int ESM_OFFSET_SB_LENGTH  = 7;
+constexpr int ESM_OFFSET_SUBBLOCKS  = 8;
+constexpr int ESM_SB_OFFSET_TYPE    = 2;   // Type field
+constexpr int ESM_SB_OFFSET_X       = 4;   // float64 X-axis
+constexpr int ESM_SB_OFFSET_Y       = 12;  // float64 Y-axis
+constexpr int ESM_SB_OFFSET_Z       = 20;  // float64 Z-axis
+constexpr int ESM_SB_MIN_LEN        = 28;
+constexpr int ESM_MIN_BODY_LEN      = 8;
+
+// ExtSensorMeas Type values (each Type carries a full 3-vector)
+constexpr uint8_t ESM_TYPE_ACCEL    = 0;   // Accelerations [m/s²]
+constexpr uint8_t ESM_TYPE_GYRO     = 1;   // Angular rates [rad/s]
 
 }  // namespace
 
@@ -70,17 +92,19 @@ class SbfDecoderNode : public rclcpp::Node {
     declare_parameter<std::string>("frame_id", "gnss_link");
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
-    declare_parameter<std::string>("solution_topic", "/gnss/nmea_solution");
-    declare_parameter<std::string>("imu_topic", "/gnss/imu/data");
+    declare_parameter<std::string>("solution_topic",     "/gnss/nmea_solution");
+    declare_parameter<std::string>("imu_attitude_topic", "/gnss/imu/attitude");
+    declare_parameter<std::string>("imu_raw_topic",      "/gnss/imu/data_raw");
 
     frame_id_ = get_parameter("frame_id").as_string();
   }
 
   void initializePublishers() {
-    obs_pub_ = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
-    sol_pub_ = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
-    imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_topic").as_string(), 10);
+    obs_pub_          = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
+    eph_pub_          = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
+    sol_pub_          = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
+    imu_attitude_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_attitude_topic").as_string(), 10);
+    imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
   }
 
   void initializeDecoder() {
@@ -209,7 +233,8 @@ class SbfDecoderNode : public rclcpp::Node {
   }
 
   void handleSbfBlock() {
-    if (sbf_id_ == sbf::ID_ATTEULER) handleAttEuler();
+    if (sbf_id_ == sbf::ID_ATTEULER)      handleAttEuler();
+    if (sbf_id_ == sbf::ID_EXTSENSORMEAS) handleExtSensorMeas();
   }
 
   void handleAttEuler() {
@@ -241,7 +266,73 @@ class SbfDecoderNode : public rclcpp::Node {
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
-    imu_pub_->publish(imu);
+    imu_attitude_pub_->publish(imu);
+  }
+
+  void handleExtSensorMeas() {
+    if (static_cast<int>(sbf_body_.size()) < ESM_MIN_BODY_LEN) return;
+
+    const uint8_t n         = sbf_body_[ESM_OFFSET_N];
+    const uint8_t sb_length = sbf_body_[ESM_OFFSET_SB_LENGTH];
+    if (sb_length < ESM_SB_MIN_LEN) return;
+    if (static_cast<int>(sbf_body_.size()) < ESM_MIN_BODY_LEN + n * sb_length) return;
+
+    // TOW [ms] to detect epoch boundaries
+    uint32_t tow_ms = 0;
+    std::memcpy(&tow_ms, sbf_body_.data(), 4);
+
+    // New epoch: publish accumulated data from the previous epoch, then reset
+    if (tow_ms != esm_tow_ms_ && (esm_has_accel_ || esm_has_gyro_)) {
+      publishEsmAccum();
+    }
+    esm_tow_ms_ = tow_ms;
+
+    // Parse sub-blocks: each Type carries a full 3-vector
+    for (uint8_t i = 0; i < n; ++i) {
+      const int base = ESM_OFFSET_SUBBLOCKS + i * sb_length;
+      const uint8_t type = sbf_body_[base + ESM_SB_OFFSET_TYPE];
+
+      if (type == ESM_TYPE_ACCEL) {
+        std::memcpy(&esm_accel_[0], sbf_body_.data() + base + ESM_SB_OFFSET_X, 8);
+        std::memcpy(&esm_accel_[1], sbf_body_.data() + base + ESM_SB_OFFSET_Y, 8);
+        std::memcpy(&esm_accel_[2], sbf_body_.data() + base + ESM_SB_OFFSET_Z, 8);
+        esm_has_accel_ = true;
+      } else if (type == ESM_TYPE_GYRO) {
+        std::memcpy(&esm_gyro_[0], sbf_body_.data() + base + ESM_SB_OFFSET_X, 8);
+        std::memcpy(&esm_gyro_[1], sbf_body_.data() + base + ESM_SB_OFFSET_Y, 8);
+        std::memcpy(&esm_gyro_[2], sbf_body_.data() + base + ESM_SB_OFFSET_Z, 8);
+        esm_has_gyro_ = true;
+      }
+    }
+
+    // Publish immediately when both accel and gyro are accumulated
+    if (esm_has_accel_ && esm_has_gyro_) publishEsmAccum();
+  }
+
+  void publishEsmAccum() {
+    sensor_msgs::msg::Imu imu;
+    imu.header.stamp    = now();
+    imu.header.frame_id = frame_id_;
+
+    auto unk = ins::makeUnknownCovariance();
+    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
+
+    imu.linear_acceleration.x = esm_accel_[0];
+    imu.linear_acceleration.y = esm_accel_[1];
+    imu.linear_acceleration.z = esm_accel_[2];
+    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
+
+    imu.angular_velocity.x = esm_gyro_[0];
+    imu.angular_velocity.y = esm_gyro_[1];
+    imu.angular_velocity.z = esm_gyro_[2];
+    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+
+    imu_raw_pub_->publish(imu);
+
+    esm_has_accel_ = false;
+    esm_has_gyro_  = false;
+    esm_accel_[0] = esm_accel_[1] = esm_accel_[2] = 0.0;
+    esm_gyro_[0]  = esm_gyro_[1]  = esm_gyro_[2]  = 0.0;
   }
 
   // ============================================================================
@@ -450,7 +541,8 @@ class SbfDecoderNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr  obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr   eph_pub_;
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr      sol_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_attitude_pub_;  // AttEuler orientation
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;       // ExtSensorMeas accel/gyro
   rclcpp::TimerBase::SharedPtr timer_;
 
   stream_t stream_{};
@@ -473,6 +565,13 @@ class SbfDecoderNode : public rclcpp::Node {
   uint16_t             sbf_len_{0};
   int                  sbf_body_pos_{0};
   std::vector<uint8_t> sbf_body_;
+
+  // ExtSensorMeas accumulator (TOW-based, collects accel + gyro 3-vectors across blocks)
+  uint32_t esm_tow_ms_{0xFFFFFFFFu};
+  double   esm_accel_[3]{0.0, 0.0, 0.0};
+  double   esm_gyro_[3]{0.0, 0.0, 0.0};
+  bool     esm_has_accel_{false};
+  bool     esm_has_gyro_{false};
 
   // Ephemeris dedup
   std::unordered_set<EphemerisKey, EphemerisKeyHash> seen_ephemeris_;

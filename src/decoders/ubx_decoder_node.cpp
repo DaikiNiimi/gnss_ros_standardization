@@ -88,7 +88,7 @@ class UbxDecoderNode : public rclcpp::Node {
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
     declare_parameter<std::string>("imu_raw_topic", "/gnss/imu/data_raw");
-    declare_parameter<std::string>("imu_topic", "/gnss/imu/data");
+    declare_parameter<std::string>("imu_attitude_topic", "/gnss/imu/attitude");
 
     frame_id_ = get_parameter("frame_id").as_string();
   }
@@ -98,7 +98,7 @@ class UbxDecoderNode : public rclcpp::Node {
     eph_pub_     = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
     sol_pub_     = create_publisher<msg::GnssSolution>("/gnss/nmea_solution", 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
-    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_topic").as_string(), 10);
+    imu_attitude_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_attitude_topic").as_string(), 10);
   }
 
   void initializeDecoder() {
@@ -328,7 +328,7 @@ class UbxDecoderNode : public rclcpp::Node {
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
-    imu_pub_->publish(imu);
+    imu_attitude_pub_->publish(imu);
   }
 
   // ============================================================================
@@ -536,7 +536,7 @@ class UbxDecoderNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr    eph_pub_;
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr       sol_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr   imu_raw_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr   imu_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr   imu_attitude_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   stream_t stream_{};

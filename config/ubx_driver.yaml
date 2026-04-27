@@ -78,8 +78,8 @@ ubx_driver_node:
       esf_ins: false
 
     # Topic Names (IMU)
-    imu_raw_topic: "/gnss/imu/data_raw"
-    imu_topic: "/gnss/imu/data"
+    imu_raw_topic: "/gnss/imu/data_raw"      # ESF-INS → accel + gyro
+    imu_attitude_topic: "/gnss/imu/attitude" # NAV-ATT → orientation quaternion
 
     # ==========================================================================
     # GNSS Constellation Settings

@@ -33,6 +33,21 @@ constexpr int ATT_EULER_OFFSET_PITCH   = 14;
 constexpr int ATT_EULER_OFFSET_ROLL    = 18;
 constexpr int ATT_EULER_MIN_LEN        = 22;
 
+// SBF ExtSensorMeas (ID 4050) sub-block layout (SBLength = 28):
+//   Source(u1) SensorModel(u1) Type(u1) ObsInfo(u1) X(f8) Y(f8) Z(f8)
+// Type carries a full 3-vector (Type 0 = accel 3-axis, Type 1 = gyro 3-axis).
+constexpr int ESM_OFFSET_N          = 6;
+constexpr int ESM_OFFSET_SB_LENGTH  = 7;
+constexpr int ESM_OFFSET_SUBBLOCKS  = 8;
+constexpr int ESM_SB_OFFSET_TYPE    = 2;
+constexpr int ESM_SB_OFFSET_X       = 4;
+constexpr int ESM_SB_OFFSET_Y       = 12;
+constexpr int ESM_SB_OFFSET_Z       = 20;
+constexpr int ESM_SB_MIN_LEN        = 28;
+constexpr int ESM_MIN_BODY_LEN      = 8;
+constexpr uint8_t ESM_TYPE_ACCEL    = 0;   // Accelerations [m/s²]
+constexpr uint8_t ESM_TYPE_GYRO     = 1;   // Angular rates [rad/s]
+
 }  // namespace
 
 /// @brief Configuration structure for Septentrio driver
@@ -59,6 +74,7 @@ struct SbfConfig {
 
   bool enable_att_euler{false};
   bool enable_att_cov_euler{false};
+  bool enable_ext_sensor_meas{false};  // Raw IMU accel + gyro (AsteRx-i / mosaic-X5 with IMU)
 
   bool enable_receiver_status{false};
   bool enable_quality_ind{false};
@@ -73,7 +89,8 @@ struct SbfConfig {
   std::string observation_topic{"/gnss/observation"};
   std::string ephemeris_topic{"/gnss/ephemeris"};
   std::string solution_topic{"/gnss/solution"};
-  std::string imu_topic{"/gnss/imu/data"};
+  std::string imu_attitude_topic{"/gnss/imu/attitude"};
+  std::string imu_raw_topic{"/gnss/imu/data_raw"};
 };
 
 /// @brief ROS 2 driver node for Septentrio GNSS receivers
@@ -126,6 +143,7 @@ class SbfDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.pos_cov_cartesian",  config_.enable_pos_cov_cartesian);
     declare_parameter<bool>("messages.att_euler",          config_.enable_att_euler);
     declare_parameter<bool>("messages.att_cov_euler",      config_.enable_att_cov_euler);
+    declare_parameter<bool>("messages.ext_sensor_meas",    config_.enable_ext_sensor_meas);
     declare_parameter<bool>("messages.receiver_status",    config_.enable_receiver_status);
     declare_parameter<bool>("messages.quality_ind",        config_.enable_quality_ind);
     declare_parameter<bool>("messages.nmea_gga",           config_.enable_nmea_gga);
@@ -136,7 +154,8 @@ class SbfDriverNode : public rclcpp::Node {
     declare_parameter<std::string>("observation_topic", config_.observation_topic);
     declare_parameter<std::string>("ephemeris_topic",   config_.ephemeris_topic);
     declare_parameter<std::string>("solution_topic",    config_.solution_topic);
-    declare_parameter<std::string>("imu_topic",         config_.imu_topic);
+    declare_parameter<std::string>("imu_attitude_topic", config_.imu_attitude_topic);
+    declare_parameter<std::string>("imu_raw_topic",     config_.imu_raw_topic);
 
     config_.stream_path          = get_parameter("stream_path").as_string();
     config_.frame_id             = get_parameter("frame_id").as_string();
@@ -157,6 +176,7 @@ class SbfDriverNode : public rclcpp::Node {
     config_.enable_pos_cov_cartesian = get_parameter("messages.pos_cov_cartesian").as_bool();
     config_.enable_att_euler         = get_parameter("messages.att_euler").as_bool();
     config_.enable_att_cov_euler     = get_parameter("messages.att_cov_euler").as_bool();
+    config_.enable_ext_sensor_meas   = get_parameter("messages.ext_sensor_meas").as_bool();
     config_.enable_receiver_status   = get_parameter("messages.receiver_status").as_bool();
     config_.enable_quality_ind       = get_parameter("messages.quality_ind").as_bool();
     config_.enable_nmea_gga          = get_parameter("messages.nmea_gga").as_bool();
@@ -167,14 +187,16 @@ class SbfDriverNode : public rclcpp::Node {
     config_.observation_topic = get_parameter("observation_topic").as_string();
     config_.ephemeris_topic   = get_parameter("ephemeris_topic").as_string();
     config_.solution_topic    = get_parameter("solution_topic").as_string();
-    config_.imu_topic         = get_parameter("imu_topic").as_string();
+    config_.imu_attitude_topic = get_parameter("imu_attitude_topic").as_string();
+    config_.imu_raw_topic      = get_parameter("imu_raw_topic").as_string();
   }
 
   void initializePublishers() {
-    obs_pub_ = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
-    sol_pub_ = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
-    imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_topic, 10);
+    obs_pub_          = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
+    eph_pub_          = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
+    sol_pub_          = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
+    imu_attitude_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_attitude_topic, 10);
+    imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
   }
 
   void initializeDecoder() {
@@ -262,6 +284,7 @@ class SbfDriverNode : public rclcpp::Node {
     if (config_.enable_pos_cov_cartesian)blocks.push_back(sbf::BLOCK_POSCOVCARTESIAN);
     if (config_.enable_att_euler)        blocks.push_back(sbf::BLOCK_ATTEULER);
     if (config_.enable_att_cov_euler)    blocks.push_back(sbf::BLOCK_ATTCOVEULER);
+    if (config_.enable_ext_sensor_meas)  blocks.push_back(sbf::BLOCK_EXTSENSORMEAS);
     if (config_.enable_receiver_status)  blocks.push_back(sbf::BLOCK_RECEIVERSTATUS);
     if (config_.enable_quality_ind)      blocks.push_back(sbf::BLOCK_QUALITYIND);
 
@@ -386,7 +409,8 @@ class SbfDriverNode : public rclcpp::Node {
   }
 
   void handleSbfBlock() {
-    if (sbf_id_ == sbf::ID_ATTEULER) handleAttEuler();
+    if (sbf_id_ == sbf::ID_ATTEULER)      handleAttEuler();
+    if (sbf_id_ == sbf::ID_EXTSENSORMEAS) handleExtSensorMeas();
   }
 
   void handleAttEuler() {
@@ -414,7 +438,70 @@ class SbfDriverNode : public rclcpp::Node {
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
-    imu_pub_->publish(imu);
+    imu_attitude_pub_->publish(imu);
+  }
+
+  void handleExtSensorMeas() {
+    if (!config_.enable_ext_sensor_meas) return;
+    if (static_cast<int>(sbf_body_.size()) < ESM_MIN_BODY_LEN) return;
+
+    const uint8_t n         = sbf_body_[ESM_OFFSET_N];
+    const uint8_t sb_length = sbf_body_[ESM_OFFSET_SB_LENGTH];
+    if (sb_length < ESM_SB_MIN_LEN) return;
+    if (static_cast<int>(sbf_body_.size()) < ESM_MIN_BODY_LEN + n * sb_length) return;
+
+    uint32_t tow_ms = 0;
+    std::memcpy(&tow_ms, sbf_body_.data(), 4);
+
+    if (tow_ms != esm_tow_ms_ && (esm_has_accel_ || esm_has_gyro_)) {
+      publishEsmAccum();
+    }
+    esm_tow_ms_ = tow_ms;
+
+    for (uint8_t i = 0; i < n; ++i) {
+      const int base = ESM_OFFSET_SUBBLOCKS + i * sb_length;
+      const uint8_t type = sbf_body_[base + ESM_SB_OFFSET_TYPE];
+
+      if (type == ESM_TYPE_ACCEL) {
+        std::memcpy(&esm_accel_[0], sbf_body_.data() + base + ESM_SB_OFFSET_X, 8);
+        std::memcpy(&esm_accel_[1], sbf_body_.data() + base + ESM_SB_OFFSET_Y, 8);
+        std::memcpy(&esm_accel_[2], sbf_body_.data() + base + ESM_SB_OFFSET_Z, 8);
+        esm_has_accel_ = true;
+      } else if (type == ESM_TYPE_GYRO) {
+        std::memcpy(&esm_gyro_[0], sbf_body_.data() + base + ESM_SB_OFFSET_X, 8);
+        std::memcpy(&esm_gyro_[1], sbf_body_.data() + base + ESM_SB_OFFSET_Y, 8);
+        std::memcpy(&esm_gyro_[2], sbf_body_.data() + base + ESM_SB_OFFSET_Z, 8);
+        esm_has_gyro_ = true;
+      }
+    }
+
+    if (esm_has_accel_ && esm_has_gyro_) publishEsmAccum();
+  }
+
+  void publishEsmAccum() {
+    sensor_msgs::msg::Imu imu;
+    imu.header.stamp    = now();
+    imu.header.frame_id = config_.frame_id;
+
+    auto unk = ins::makeUnknownCovariance();
+    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
+
+    imu.linear_acceleration.x = esm_accel_[0];
+    imu.linear_acceleration.y = esm_accel_[1];
+    imu.linear_acceleration.z = esm_accel_[2];
+    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
+
+    imu.angular_velocity.x = esm_gyro_[0];
+    imu.angular_velocity.y = esm_gyro_[1];
+    imu.angular_velocity.z = esm_gyro_[2];
+    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+
+    imu_raw_pub_->publish(imu);
+
+    esm_has_accel_ = false;
+    esm_has_gyro_  = false;
+    esm_accel_[0] = esm_accel_[1] = esm_accel_[2] = 0.0;
+    esm_gyro_[0]  = esm_gyro_[1]  = esm_gyro_[2]  = 0.0;
   }
 
   // ============================================================================
@@ -627,7 +714,8 @@ class SbfDriverNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr  obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr   eph_pub_;
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr      sol_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_attitude_pub_;  // AttEuler orientation
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;       // ExtSensorMeas accel/gyro
   rclcpp::TimerBase::SharedPtr timer_;
 
   stream_t stream_{};
@@ -641,6 +729,13 @@ class SbfDriverNode : public rclcpp::Node {
   uint16_t             sbf_len_{0};
   int                  sbf_body_pos_{0};
   std::vector<uint8_t> sbf_body_;
+
+  // ExtSensorMeas accumulator (TOW-based, collects accel + gyro 3-vectors)
+  uint32_t esm_tow_ms_{0xFFFFFFFFu};
+  double   esm_accel_[3]{0.0, 0.0, 0.0};
+  double   esm_gyro_[3]{0.0, 0.0, 0.0};
+  bool     esm_has_accel_{false};
+  bool     esm_has_gyro_{false};
 
   // NMEA parsing state
   gnss_utils::NmeaParser nmea_parser_;

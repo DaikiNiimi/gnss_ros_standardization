@@ -53,6 +53,7 @@ constexpr uint16_t ID_NAVICEPHEMERIS    = 2123;
 constexpr uint16_t ID_RAWIMU            = 268;  // Raw IMU data (IMU-type-dependent scale)
 constexpr uint16_t ID_INSPVA            = 507;  // INS position, velocity, attitude
 constexpr uint16_t ID_INSATT            = 263;  // INS attitude only
+constexpr uint16_t ID_CORRIMUDATA       = 812;  // Bias/gravity/earth-rate corrected IMU data (SI increments)
 
 // OEM4 binary sync bytes
 constexpr uint8_t OEM4_SYNC1 = 0xAA;
@@ -99,6 +100,7 @@ constexpr const char* LOG_GPGST         = "GPGST";
 // SPAN INS Log Names
 constexpr const char* LOG_INSPVAB       = "INSPVAB";  // INS position+velocity+attitude (binary)
 constexpr const char* LOG_INSATTB       = "INSATTB";  // INS attitude only (binary)
+constexpr const char* LOG_CORRIMUDATAB  = "CORRIMUDATAB";  // Corrected IMU (long header, ONNEW@IMU rate)
 
 // OEM3 Log Names
 constexpr const char* LOG_OEM3_RGEB     = "RGEB"; // Range

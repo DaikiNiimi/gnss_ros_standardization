@@ -64,6 +64,10 @@ novatel_driver_node:
       # INS/IMU (requires SPAN-capable receiver, e.g. OEM7 + IMU)
       # Publishes INSPVA attitude as sensor_msgs/Imu at 10 Hz
       inspva: false
+      # CORRIMUDATA: corrected accel/gyro at IMU rate (ONNEW)
+      # Published as sensor_msgs/Imu (linear_acceleration [m/s²] + angular_velocity [rad/s])
+      corrimudata: false
 
     solution_topic: "/gnss/solution"
-    imu_topic: "/gnss/imu/data"
+    imu_attitude_topic: "/gnss/imu/attitude"  # INSPVA → orientation quaternion
+    imu_raw_topic: "/gnss/imu/data_raw"       # CORRIMUDATA → accel + gyro

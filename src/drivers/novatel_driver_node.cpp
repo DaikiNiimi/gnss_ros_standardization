@@ -66,12 +66,14 @@ struct NovatelConfig {
 
   // INS/IMU messages (requires SPAN-capable receiver)
   bool enable_inspva{false};
+  bool enable_corrimudata{false};
 
   // Topics
   std::string observation_topic{"/gnss/observation"};
   std::string ephemeris_topic{"/gnss/ephemeris"};
   std::string solution_topic{"/gnss/solution"};
-  std::string imu_topic{"/gnss/imu/data"};
+  std::string imu_attitude_topic{"/gnss/imu/attitude"};
+  std::string imu_raw_topic{"/gnss/imu/data_raw"};
 };
 
 /// @brief ROS 2 driver node for NovAtel GNSS receivers
@@ -127,11 +129,13 @@ class NovatelDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.nmea_gpgsa",  config_.enable_nmea_gpgsa);
     declare_parameter<bool>("messages.nmea_gpgst",  config_.enable_nmea_gpgst);
     declare_parameter<bool>("messages.inspva",      config_.enable_inspva);
+    declare_parameter<bool>("messages.corrimudata", config_.enable_corrimudata);
 
     declare_parameter<std::string>("observation_topic", config_.observation_topic);
     declare_parameter<std::string>("ephemeris_topic",   config_.ephemeris_topic);
     declare_parameter<std::string>("solution_topic",    config_.solution_topic);
-    declare_parameter<std::string>("imu_topic",         config_.imu_topic);
+    declare_parameter<std::string>("imu_attitude_topic", config_.imu_attitude_topic);
+    declare_parameter<std::string>("imu_raw_topic",      config_.imu_raw_topic);
 
     config_.stream_path          = get_parameter("stream_path").as_string();
     config_.frame_id             = get_parameter("frame_id").as_string();
@@ -161,18 +165,21 @@ class NovatelDriverNode : public rclcpp::Node {
     config_.enable_nmea_gpgsa  = get_parameter("messages.nmea_gpgsa").as_bool();
     config_.enable_nmea_gpgst  = get_parameter("messages.nmea_gpgst").as_bool();
     config_.enable_inspva      = get_parameter("messages.inspva").as_bool();
+    config_.enable_corrimudata = get_parameter("messages.corrimudata").as_bool();
 
-    config_.observation_topic = get_parameter("observation_topic").as_string();
-    config_.ephemeris_topic   = get_parameter("ephemeris_topic").as_string();
-    config_.solution_topic    = get_parameter("solution_topic").as_string();
-    config_.imu_topic         = get_parameter("imu_topic").as_string();
+    config_.observation_topic  = get_parameter("observation_topic").as_string();
+    config_.ephemeris_topic    = get_parameter("ephemeris_topic").as_string();
+    config_.solution_topic     = get_parameter("solution_topic").as_string();
+    config_.imu_attitude_topic = get_parameter("imu_attitude_topic").as_string();
+    config_.imu_raw_topic      = get_parameter("imu_raw_topic").as_string();
   }
 
   void initializePublishers() {
     obs_pub_ = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
     eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
     sol_pub_ = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
-    imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_topic, 10);
+    imu_attitude_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_attitude_topic, 10);
+    imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
   }
 
   void initializeDecoder() {
@@ -304,8 +311,12 @@ class NovatelDriverNode : public rclcpp::Node {
     else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPGST);
 
     // INS/IMU (SPAN-capable receivers)
-    if (config_.enable_inspva) sendCommand("LOG " + port_pfx + "INSPVAB ONTIME 0.1");
-    else                       sendCommand("UNLOG " + port_pfx + "INSPVAB");
+    if (config_.enable_inspva) sendCommand("LOG " + port_pfx + novatel::LOG_INSPVAB + " ONTIME 0.1");
+    else                       sendCommand("UNLOG " + port_pfx + novatel::LOG_INSPVAB);
+
+    // Raw IMU (CORRIMUDATA: corrected accel/gyro increments at IMU rate)
+    if (config_.enable_corrimudata) sendCommand(std::string("LOG ") + port_pfx + novatel::LOG_CORRIMUDATAB + " ONNEW");
+    else                            sendCommand(std::string("UNLOG ") + port_pfx + novatel::LOG_CORRIMUDATAB);
   }
 
   void configureReceiverOem3(const std::string& port_pfx, const std::string& ontime, const std::string& onchanged) {
@@ -452,7 +463,54 @@ class NovatelDriverNode : public rclcpp::Node {
   }
 
   void handleOem4Frame() {
-    if (oem4_msg_id_ == novatel::ID_INSPVA) handleInsPva();
+    if (oem4_msg_id_ == novatel::ID_INSPVA)      handleInsPva();
+    if (oem4_msg_id_ == novatel::ID_CORRIMUDATA) handleCorrImuData();
+  }
+
+  // CORRIMUDATA body (60 B): Week(4) Seconds(8) PitchRate(8) RollRate(8) YawRate(8)
+  //                          LateralAcc(8) LongitudinalAcc(8) VerticalAcc(8)
+  // Rates and accelerations are SI increments accumulated over the IMU sampling
+  // period; divide by dt (from successive Seconds fields) to recover rad/s and m/s².
+  void handleCorrImuData() {
+    if (oem4_body_.size() < 60) return;
+
+    double seconds = 0.0, pitch_rate = 0.0, roll_rate = 0.0, yaw_rate = 0.0;
+    double lat_acc = 0.0, lon_acc = 0.0, vert_acc = 0.0;
+    std::memcpy(&seconds,    oem4_body_.data() +  4, 8);
+    std::memcpy(&pitch_rate, oem4_body_.data() + 12, 8);
+    std::memcpy(&roll_rate,  oem4_body_.data() + 20, 8);
+    std::memcpy(&yaw_rate,   oem4_body_.data() + 28, 8);
+    std::memcpy(&lat_acc,    oem4_body_.data() + 36, 8);
+    std::memcpy(&lon_acc,    oem4_body_.data() + 44, 8);
+    std::memcpy(&vert_acc,   oem4_body_.data() + 52, 8);
+
+    if (!has_corrimu_prev_) {
+      corrimu_prev_seconds_ = seconds;
+      has_corrimu_prev_     = true;
+      return;
+    }
+    const double dt = seconds - corrimu_prev_seconds_;
+    corrimu_prev_seconds_ = seconds;
+    if (dt <= 0.0 || dt > 1.0) return;  // sanity: skip across-week wraps and outliers
+
+    sensor_msgs::msg::Imu imu;
+    imu.header.stamp    = now();
+    imu.header.frame_id = config_.frame_id;
+
+    // SPAN body frame: roll=X, pitch=Y, yaw=Z; longitudinal=X, lateral=Y, vertical=Z
+    imu.angular_velocity.x    = roll_rate / dt;
+    imu.angular_velocity.y    = pitch_rate / dt;
+    imu.angular_velocity.z    = yaw_rate / dt;
+    imu.linear_acceleration.x = lon_acc / dt;
+    imu.linear_acceleration.y = lat_acc / dt;
+    imu.linear_acceleration.z = vert_acc / dt;
+
+    auto unk = ins::makeUnknownCovariance();
+    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
+    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
+
+    imu_raw_pub_->publish(imu);
   }
 
   void handleInsPva() {
@@ -479,7 +537,7 @@ class NovatelDriverNode : public rclcpp::Node {
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
-    imu_pub_->publish(imu);
+    imu_attitude_pub_->publish(imu);
   }
 
   // ============================================================================
@@ -679,7 +737,8 @@ class NovatelDriverNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr  eph_pub_;
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr     sol_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_attitude_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_raw_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   stream_t stream_{};
@@ -709,6 +768,10 @@ class NovatelDriverNode : public rclcpp::Node {
   int      oem4_hdr_rem_{0};
   int      oem4_body_pos_{0};
   std::vector<uint8_t> oem4_body_;
+
+  // CORRIMUDATA dt tracking (SI-increment → rate conversion)
+  double corrimu_prev_seconds_{0.0};
+  bool   has_corrimu_prev_{false};
 };
 
 }  // namespace gnss_ros_standardization
