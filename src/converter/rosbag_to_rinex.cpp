@@ -740,7 +740,15 @@ private:
       else if (a=="--nav") o.out_nav_path = next();
       else if (a=="--topic-obs") o.topic_obs = next();
       else if (a=="--topic-nav") o.topic_nav = next();
-      else if (a=="--rnx-version") o.rinex_version = std::stod(next());
+      else if (a=="--rnx-version") {
+        o.rinex_version = std::stod(next());
+        const double v = std::lround(o.rinex_version * 100.0) / 100.0;
+        if (v < 3.00 || v > 3.05) {
+          throw std::runtime_error(
+            "--rnx-version must be in [3.00, 3.05] (supported: 3.00, 3.01, 3.02, 3.03, 3.04, 3.05)");
+        }
+        o.rinex_version = v;
+      }
       else if (a=="--nav-systems") o.nav_systems = next();
       else if (a=="--no-flush") o.flush_immediately=false;
       else if (a=="--pgm") o.program_name = next();

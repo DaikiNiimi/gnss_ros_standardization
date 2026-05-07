@@ -319,7 +319,7 @@ ros2 run gnss_ros_standardization novatel_driver_node --ros-args \
 
 ### ROS 2 Bag → RINEX Converter
 
-Convert a recorded ROS 2 bag file to RINEX 3.x observation and navigation files:
+Convert a recorded ROS 2 bag file to RINEX observation and navigation files:
 
 ```bash
 ros2 run gnss_ros_standardization rosbag_to_rinex \
@@ -331,6 +331,42 @@ ros2 run gnss_ros_standardization rosbag_to_rinex \
   --rnx-version 3.04 \
   --nav-systems "GREJC"
 ```
+
+**Supported RINEX versions (write):** 3.00 – 3.05. Values outside this range
+are rejected by `--rnx-version`. RINEX 2.xx and 4.xx are not supported on the
+write path.
+
+### RINEX → ROS 2 Bag Converter
+
+Convert RINEX observation/navigation files to a ROS 2 bag with
+`/gnss/observation` and `/gnss/ephemeris` topics:
+
+```bash
+ros2 run gnss_ros_standardization rinex_to_rosbag \
+  --obs input.obs \
+  --nav input.nav \
+  --out my_bag
+```
+
+**Supported RINEX versions (read):** 2.10 – 3.05. RINEX 4.xx is not supported; decompress with
+`crx2rnx` before conversion.
+
+### ROS 2 Bag ↔ RTKLIB .pos Solution Converter
+
+Convert between `/gnss/solution` (`GnssSolution`) and the RTKLIB `.pos`
+solution format produced by `rnx2rtkp` / `rtkpost`:
+
+```bash
+# rosbag -> .pos
+ros2 run gnss_ros_standardization rosbag_to_pos \
+  --bag bag.db3 --topic /gnss/solution --out output.pos
+
+# .pos -> rosbag
+ros2 run gnss_ros_standardization pos_to_rosbag \
+  --pos input.pos --out my_bag --topic /gnss/solution
+```
+
+Both LLH (`lat/lon/height`) and ECEF (`x/y/z`) `.pos` formats are supported.
 
 ---
 

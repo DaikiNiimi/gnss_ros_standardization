@@ -258,6 +258,28 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/rinex_to_rosbag.cpp")
   install(TARGETS rinex_to_rosbag DESTINATION lib/${PROJECT_NAME})
 endif()
 
+# rosbag_to_pos (GnssSolution -> RTKLIB .pos)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/rosbag_to_pos.cpp")
+  add_executable(rosbag_to_pos src/converter/rosbag_to_pos.cpp)
+  target_include_directories(rosbag_to_pos PUBLIC ${_gen_include})
+  target_include_directories(rosbag_to_pos PRIVATE "${MALIB_ROOT}/src")
+  ament_target_dependencies(rosbag_to_pos rclcpp rosbag2_cpp rosbag2_storage std_msgs geometry_msgs builtin_interfaces)
+  target_link_libraries(rosbag_to_pos gnss_utils)
+  add_dependencies(rosbag_to_pos ${_rosidl_deps})
+  install(TARGETS rosbag_to_pos DESTINATION lib/${PROJECT_NAME})
+endif()
+
+# pos_to_rosbag (RTKLIB .pos -> GnssSolution bag)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/pos_to_rosbag.cpp")
+  add_executable(pos_to_rosbag src/converter/pos_to_rosbag.cpp)
+  target_include_directories(pos_to_rosbag PUBLIC ${_gen_include})
+  target_include_directories(pos_to_rosbag PRIVATE "${MALIB_ROOT}/src")
+  ament_target_dependencies(pos_to_rosbag rclcpp rosbag2_cpp rosbag2_storage std_msgs geometry_msgs builtin_interfaces)
+  target_link_libraries(pos_to_rosbag gnss_utils)
+  add_dependencies(pos_to_rosbag ${_rosidl_deps})
+  install(TARGETS pos_to_rosbag DESTINATION lib/${PROJECT_NAME})
+endif()
+
 # single point positioning
 option(BUILD_SPP_EXAMPLE "Build single point positioning example (pntpos)" ON)
 
