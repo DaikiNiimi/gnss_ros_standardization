@@ -13,6 +13,7 @@
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
+#include "gnss_ros_standardization/novatel_imu_scales.hpp"
 #include "gnss_ros_standardization/novatel_protocol.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
@@ -25,12 +26,6 @@ namespace {
 
 constexpr auto kTimerInterval  = 10ms;
 constexpr size_t kNmeaMaxLineLen = 256;
-
-// INSPVA body offsets (body starts after 28-byte OEM4 header is consumed)
-constexpr int INSPVA_OFFSET_ROLL    = 60;
-constexpr int INSPVA_OFFSET_PITCH   = 68;
-constexpr int INSPVA_OFFSET_AZIMUTH = 76;
-constexpr int INSPVA_MIN_LEN        = 84;
 
 }  // namespace
 
@@ -64,16 +59,20 @@ struct NovatelConfig {
   bool enable_nmea_gpgsa{true};
   bool enable_nmea_gpgst{true};
 
-  // INS/IMU messages (requires SPAN-capable receiver)
-  bool enable_inspva{false};
-  bool enable_corrimudata{false};
+  // IMU messages (requires NovAtel receiver with IMU connection)
+  bool enable_rawimusx{true};      // RAWIMUSX: raw uncalibrated IMU → /gnss/imu/data_raw
+  bool enable_corrimudata{false};  // CORRIMUDATA: SPAN-corrected IMU → /gnss/imu/data (SPAN required)
+
+  // IMU scale override (used when IMU type is unknown to the table; both must be non-zero to apply)
+  double imu_scale_override_accel{0.0};  // counts → m/s per sample
+  double imu_scale_override_gyro{0.0};   // counts → rad per sample
 
   // Topics
   std::string observation_topic{"/gnss/observation"};
   std::string ephemeris_topic{"/gnss/ephemeris"};
   std::string solution_topic{"/gnss/solution"};
-  std::string imu_attitude_topic{"/gnss/imu/attitude"};
-  std::string imu_raw_topic{"/gnss/imu/data_raw"};
+  std::string imu_topic{"/gnss/imu/data"};         // CORRIMUDATA (calibrated)
+  std::string imu_raw_topic{"/gnss/imu/data_raw"}; // RAWIMUSX (uncalibrated)
 };
 
 /// @brief ROS 2 driver node for NovAtel GNSS receivers
@@ -128,14 +127,16 @@ class NovatelDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.nmea_gprmc",  config_.enable_nmea_gprmc);
     declare_parameter<bool>("messages.nmea_gpgsa",  config_.enable_nmea_gpgsa);
     declare_parameter<bool>("messages.nmea_gpgst",  config_.enable_nmea_gpgst);
-    declare_parameter<bool>("messages.inspva",      config_.enable_inspva);
+    declare_parameter<bool>("messages.rawimusx",    config_.enable_rawimusx);
     declare_parameter<bool>("messages.corrimudata", config_.enable_corrimudata);
+    declare_parameter<double>("imu_scale_override.accel", config_.imu_scale_override_accel);
+    declare_parameter<double>("imu_scale_override.gyro",  config_.imu_scale_override_gyro);
 
     declare_parameter<std::string>("observation_topic", config_.observation_topic);
     declare_parameter<std::string>("ephemeris_topic",   config_.ephemeris_topic);
     declare_parameter<std::string>("solution_topic",    config_.solution_topic);
-    declare_parameter<std::string>("imu_attitude_topic", config_.imu_attitude_topic);
-    declare_parameter<std::string>("imu_raw_topic",      config_.imu_raw_topic);
+    declare_parameter<std::string>("imu_topic",         config_.imu_topic);
+    declare_parameter<std::string>("imu_raw_topic",     config_.imu_raw_topic);
 
     config_.stream_path          = get_parameter("stream_path").as_string();
     config_.frame_id             = get_parameter("frame_id").as_string();
@@ -164,13 +165,15 @@ class NovatelDriverNode : public rclcpp::Node {
     config_.enable_nmea_gprmc  = get_parameter("messages.nmea_gprmc").as_bool();
     config_.enable_nmea_gpgsa  = get_parameter("messages.nmea_gpgsa").as_bool();
     config_.enable_nmea_gpgst  = get_parameter("messages.nmea_gpgst").as_bool();
-    config_.enable_inspva      = get_parameter("messages.inspva").as_bool();
+    config_.enable_rawimusx    = get_parameter("messages.rawimusx").as_bool();
     config_.enable_corrimudata = get_parameter("messages.corrimudata").as_bool();
+    config_.imu_scale_override_accel = get_parameter("imu_scale_override.accel").as_double();
+    config_.imu_scale_override_gyro  = get_parameter("imu_scale_override.gyro").as_double();
 
     config_.observation_topic  = get_parameter("observation_topic").as_string();
     config_.ephemeris_topic    = get_parameter("ephemeris_topic").as_string();
     config_.solution_topic     = get_parameter("solution_topic").as_string();
-    config_.imu_attitude_topic = get_parameter("imu_attitude_topic").as_string();
+    config_.imu_topic          = get_parameter("imu_topic").as_string();
     config_.imu_raw_topic      = get_parameter("imu_raw_topic").as_string();
   }
 
@@ -178,8 +181,8 @@ class NovatelDriverNode : public rclcpp::Node {
     obs_pub_ = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
     eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
     sol_pub_ = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
-    imu_attitude_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_attitude_topic, 10);
-    imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
+    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(config_.imu_topic, 10);
+    imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
   }
 
   void initializeDecoder() {
@@ -310,12 +313,11 @@ class NovatelDriverNode : public rclcpp::Node {
     if (config_.enable_nmea_gpgst) sendCommand("LOG " + port_pfx + novatel::LOG_GPGST + " ONTIME 1");
     else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPGST);
 
-    // INS/IMU (SPAN-capable receivers)
-    if (config_.enable_inspva) sendCommand("LOG " + port_pfx + novatel::LOG_INSPVAB + " ONTIME 0.1");
-    else                       sendCommand("UNLOG " + port_pfx + novatel::LOG_INSPVAB);
+    // IMU outputs (require IMU-connected receiver; CORRIMUDATA additionally requires SPAN)
+    if (config_.enable_rawimusx)    sendCommand(std::string("LOG ")   + port_pfx + novatel::LOG_RAWIMUSXB    + " ONNEW");
+    else                            sendCommand(std::string("UNLOG ") + port_pfx + novatel::LOG_RAWIMUSXB);
 
-    // Raw IMU (CORRIMUDATA: corrected accel/gyro increments at IMU rate)
-    if (config_.enable_corrimudata) sendCommand(std::string("LOG ") + port_pfx + novatel::LOG_CORRIMUDATAB + " ONNEW");
+    if (config_.enable_corrimudata) sendCommand(std::string("LOG ")   + port_pfx + novatel::LOG_CORRIMUDATAB + " ONNEW");
     else                            sendCommand(std::string("UNLOG ") + port_pfx + novatel::LOG_CORRIMUDATAB);
   }
 
@@ -385,7 +387,7 @@ class NovatelDriverNode : public rclcpp::Node {
       int result = (config_.format == "oem3") ? input_oem3(&raw_, byte) : input_oem4(&raw_, byte);
       handleDecodeResult(result);
 
-      // Parallel OEM4 mini-framer for INSPVA (OEM4 only)
+      // Parallel OEM4 mini-framer for CORRIMUDATA (OEM4 only)
       if (config_.format == "oem4") parseOem4Byte(byte);
 
       // NMEA sentences (interleaved with NovAtel binary)
@@ -423,7 +425,7 @@ class NovatelDriverNode : public rclcpp::Node {
   }
 
   // ============================================================================
-  // OEM4 Mini-Framer (parallel to RTKLIB, for INSPVA)
+  // OEM4 Mini-Framer (parallel to RTKLIB, for CORRIMUDATA)
   //
   // OEM4 binary frame: SYNC(0xAA,0x44,0x12) HDRLEN(1) MSGID(2,LE) MSGTYPE(1)
   //                    PORT(1) MSGLEN(2,LE) ... rest of header ... BODY CRC32
@@ -463,8 +465,72 @@ class NovatelDriverNode : public rclcpp::Node {
   }
 
   void handleOem4Frame() {
-    if (oem4_msg_id_ == novatel::ID_INSPVA)      handleInsPva();
+    if (oem4_msg_id_ == novatel::ID_RAWIMUSX)    handleRawImuSx();
     if (oem4_msg_id_ == novatel::ID_CORRIMUDATA) handleCorrImuData();
+  }
+
+  // RAWIMUSX body (60 B):
+  //   HealthBytes(u2) IMUType(u1) Reserved1(u1) Week(u2) Reserved2(u2) Seconds(f8)
+  //   IMUStatus(u4)
+  //   ZAccel(i4) -YAccel(i4) XAccel(i4)  ZGyro(i4) -YGyro(i4) XGyro(i4)
+  // Counts × IMU-type-specific scale = SI increments per IMU sample;
+  // divide by dt (Seconds delta) to get m/s² and rad/s.
+  // Note: -Y fields are the actual Y-axis value already negated by the receiver,
+  // so reading them as int32 gives -Y; we negate again to recover the +Y reading.
+  void handleRawImuSx() {
+    if (oem4_body_.size() < 60) return;
+
+    const uint8_t  imu_type = oem4_body_[2];
+    double seconds = 0.0;
+    int32_t z_acc = 0, ny_acc = 0, x_acc = 0, z_gyr = 0, ny_gyr = 0, x_gyr = 0;
+    std::memcpy(&seconds, oem4_body_.data() +  8, 8);
+    std::memcpy(&z_acc,   oem4_body_.data() + 20, 4);
+    std::memcpy(&ny_acc,  oem4_body_.data() + 24, 4);
+    std::memcpy(&x_acc,   oem4_body_.data() + 28, 4);
+    std::memcpy(&z_gyr,   oem4_body_.data() + 32, 4);
+    std::memcpy(&ny_gyr,  oem4_body_.data() + 36, 4);
+    std::memcpy(&x_gyr,   oem4_body_.data() + 40, 4);
+
+    // Resolve scale: yaml override takes precedence if both fields are non-zero.
+    novatel::ImuScale scale = novatel::getImuScale(imu_type);
+    if (config_.imu_scale_override_accel != 0.0 && config_.imu_scale_override_gyro != 0.0) {
+      scale = {config_.imu_scale_override_accel, config_.imu_scale_override_gyro};
+    }
+    if (scale.accel == 0.0 || scale.gyro == 0.0) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        "Unknown NovAtel IMU type %u — RAWIMUSX skipped. Set imu_scale_override.{accel,gyro} "
+        "in yaml or add this type to novatel_imu_scales.hpp.", imu_type);
+      return;
+    }
+
+    if (!has_rawimu_prev_) {
+      rawimu_prev_seconds_ = seconds;
+      has_rawimu_prev_     = true;
+      return;
+    }
+    const double dt = seconds - rawimu_prev_seconds_;
+    rawimu_prev_seconds_ = seconds;
+    if (dt <= 0.0 || dt > 1.0) return;  // sanity: skip across-week wraps
+
+    // Recover +Y by negating the -Y fields, then scale and divide by dt.
+    sensor_msgs::msg::Imu imu;
+    imu.header.stamp    = now();
+    imu.header.frame_id = config_.frame_id;
+
+    imu.orientation_covariance[0] = -1.0;  // unknown
+
+    imu.angular_velocity.x =  x_gyr  * scale.gyro / dt;
+    imu.angular_velocity.y = -ny_gyr * scale.gyro / dt;
+    imu.angular_velocity.z =  z_gyr  * scale.gyro / dt;
+    imu.linear_acceleration.x =  x_acc  * scale.accel / dt;
+    imu.linear_acceleration.y = -ny_acc * scale.accel / dt;
+    imu.linear_acceleration.z =  z_acc  * scale.accel / dt;
+
+    auto unk = ins::makeUnknownCovariance();
+    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
+
+    imu_raw_pub_->publish(imu);
   }
 
   // CORRIMUDATA body (60 B): Week(4) Seconds(8) PitchRate(8) RollRate(8) YawRate(8)
@@ -505,39 +571,14 @@ class NovatelDriverNode : public rclcpp::Node {
     imu.linear_acceleration.y = lat_acc / dt;
     imu.linear_acceleration.z = vert_acc / dt;
 
+    // orientation: not provided by CORRIMUDATA — leave identity, mark unknown
+    imu.orientation_covariance[0] = -1.0;
+
     auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
-    imu_raw_pub_->publish(imu);
-  }
-
-  void handleInsPva() {
-    if (static_cast<int>(oem4_body_.size()) < INSPVA_MIN_LEN) return;
-
-    double roll = 0.0, pitch = 0.0, azimuth = 0.0;
-    std::memcpy(&roll,    oem4_body_.data() + INSPVA_OFFSET_ROLL,    8);
-    std::memcpy(&pitch,   oem4_body_.data() + INSPVA_OFFSET_PITCH,   8);
-    std::memcpy(&azimuth, oem4_body_.data() + INSPVA_OFFSET_AZIMUTH, 8);
-
-    const double deg2rad = M_PI / 180.0;
-
-    sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
-    imu.header.frame_id = config_.frame_id;
-
-    imu.orientation = ins::eulerToQuaternion(
-        roll    * deg2rad,
-        pitch   * deg2rad,
-        azimuth * deg2rad);
-
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
-    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
-    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
-
-    imu_attitude_pub_->publish(imu);
+    imu_pub_->publish(imu);
   }
 
   // ============================================================================
@@ -737,8 +778,8 @@ class NovatelDriverNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr  eph_pub_;
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr     sol_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_attitude_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_raw_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;       // CORRIMUDATA (calibrated)
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_raw_pub_;   // RAWIMUSX (uncalibrated)
   rclcpp::TimerBase::SharedPtr timer_;
 
   stream_t stream_{};
@@ -760,7 +801,7 @@ class NovatelDriverNode : public rclcpp::Node {
   std::unordered_map<int, int> last_glo_iode_;
   bool first_ephemeris_{true};
 
-  // OEM4 mini-framer state (for INSPVA)
+  // OEM4 mini-framer state (for CORRIMUDATA / RAWIMUSX)
   int      oem4_state_{0};
   uint8_t  oem4_hdr_len_{0};
   uint16_t oem4_msg_id_{0};
@@ -772,6 +813,8 @@ class NovatelDriverNode : public rclcpp::Node {
   // CORRIMUDATA dt tracking (SI-increment → rate conversion)
   double corrimu_prev_seconds_{0.0};
   bool   has_corrimu_prev_{false};
+  double rawimu_prev_seconds_{0.0};
+  bool   has_rawimu_prev_{false};
 };
 
 }  // namespace gnss_ros_standardization

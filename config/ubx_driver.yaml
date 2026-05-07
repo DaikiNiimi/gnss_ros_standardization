@@ -73,13 +73,16 @@ ubx_driver_node:
       # Enables extra decimal places in lat/lon for GGA, RMC, GLL
       nmea_high_precision: false
 
-      # INS/IMU messages (requires F9R or other INS-capable receiver)
-      # ESF-INS: calibrated angular rate + linear acceleration
+      # IMU messages (requires F9R or other IMU-enabled receiver)
+      # ESF-RAW: uncalibrated raw IMU sensor measurements → /gnss/imu/data_raw
+      # ESF-INS: receiver-calibrated angular rate + linear acceleration → /gnss/imu/data
+      # Both can be enabled simultaneously; they publish to different topics.
+      esf_raw: true
       esf_ins: false
 
     # Topic Names (IMU)
-    imu_raw_topic: "/gnss/imu/data_raw"      # ESF-INS → accel + gyro
-    imu_attitude_topic: "/gnss/imu/attitude" # NAV-ATT → orientation quaternion
+    imu_topic:     "/gnss/imu/data"      # ESF-INS (calibrated)
+    imu_raw_topic: "/gnss/imu/data_raw"  # ESF-RAW (uncalibrated)
 
     # ==========================================================================
     # GNSS Constellation Settings

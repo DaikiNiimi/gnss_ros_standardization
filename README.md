@@ -18,6 +18,30 @@ By providing standardized ROS 2 / RTKLIB-based tools, this project enables devel
 
 ---
 
+## Scope
+
+This package focuses on **GNSS raw data standardization across receiver brands**.
+A minimal IMU passthrough is included for timestamp consistency with GNSS messages,
+limited to two ROS-standard topics:
+
+- `/gnss/imu/data_raw` — uncalibrated raw IMU (`sensor_msgs/Imu`)
+- `/gnss/imu/data` — calibrated IMU when the receiver provides it (`sensor_msgs/Imu`)
+
+**Out of scope**: orientation/attitude topics, INS solutions, sensor fusion,
+`nav_msgs/Odometry` outputs. For full IMU/INS support including attitude
+estimation, please use the receiver-vendor's dedicated drivers:
+
+- u-blox: [`ublox_gps`](https://github.com/KumarRobotics/ublox)
+- Septentrio: [`septentrio_gnss_driver`](https://github.com/septentrio-gnss/septentrio_gnss_driver)
+- NovAtel: [`novatel_oem7_driver`](https://github.com/novatel/novatel_oem7_driver)
+
+These can be run alongside this package — the GNSS topics from here will align
+in time with the IMU topics from the vendor drivers, and ROS-standard fusion
+nodes (`imu_filter_madgwick`, `robot_localization`) work on the topics from
+either source.
+
+---
+
 ## Supported ROS 2 Distributions
 
 | Distribution | Ubuntu | Status |
@@ -30,11 +54,11 @@ By providing standardized ROS 2 / RTKLIB-based tools, this project enables devel
 
 ## Supported Receivers & Features
 
-| Receiver | Raw Observations | Navigation / Ephemeris | GNSS Solution (NMEA) | IMU / INS Topics |
+| Receiver | Raw Observations | Navigation / Ephemeris | GNSS Solution (NMEA) | IMU Topics |
 |---|---|---|---|---|
-| u-blox (UBX) | GnssObservations | GnssEphemerides | GnssSolution | sensor_msgs/Imu (ESF-INS, NAV-ATT) |
-| Septentrio (SBF) | GnssObservations | GnssEphemerides | GnssSolution | sensor_msgs/Imu (AttEuler, ExtSensorMeas) |
-| NovAtel (OEM) | GnssObservations | GnssEphemerides | GnssSolution | sensor_msgs/Imu (INSPVA, CORRIMUDATA) |
+| u-blox (UBX) | GnssObservations | GnssEphemerides | GnssSolution | `/gnss/imu/data_raw` (ESF-RAW), `/gnss/imu/data` (ESF-INS) |
+| Septentrio (SBF) | GnssObservations | GnssEphemerides | GnssSolution | `/gnss/imu/data_raw` (ExtSensorMeas) |
+| NovAtel (OEM) | GnssObservations | GnssEphemerides | GnssSolution | `/gnss/imu/data_raw` (RAWIMUSX), `/gnss/imu/data` (CORRIMUDATA, SPAN required) |
 | RTCM3 (input) | GnssObservations | GnssEphemerides | — | — |
 
 ---
@@ -61,17 +85,17 @@ RTKLIB decoder: `input_ubx()` / `STRFMT_UBX`
 |---|---|---|
 | `UBX-RXM-SFRBX` | `0x02` / `0x13` | Raw navigation subframe/string/page for GPS, GLONASS, Galileo, BeiDou, QZSS, NavIC, SBAS |
 
-#### `/gnss/imu/attitude` — Attitude (orientation quaternion)
+#### `/gnss/imu/data_raw` — Uncalibrated raw IMU
 
 | UBX Message | Class/ID | Description | Requirement |
 |---|---|---|---|
-| `UBX-NAV-ATT` | `0x01` / `0x05` | Roll, pitch, heading → orientation quaternion | ZED-F9R or IMU-enabled module |
+| `UBX-ESF-RAW` | `0x10` / `0x03` | Raw IMU sensor measurements (accel + gyro, IMU-internal scale) | ZED-F9R or IMU-enabled module |
 
-#### `/gnss/imu/data_raw` — Raw IMU (accel + gyro)
+#### `/gnss/imu/data` — Calibrated IMU
 
 | UBX Message | Class/ID | Description | Requirement |
 |---|---|---|---|
-| `UBX-ESF-INS` | `0x10` / `0x15` | Calibrated angular rate [rad/s] + linear acceleration [m/s²] | ZED-F9R or IMU-enabled module |
+| `UBX-ESF-INS` | `0x10` / `0x15` | Receiver-calibrated angular rate [rad/s] + linear acceleration [m/s²] | ZED-F9R or IMU-enabled module |
 
 ---
 
@@ -110,17 +134,13 @@ RTKLIB decoder: `input_sbf()` / `STRFMT_SEPT`
 | `QZSRawL1CA` | 4066 | QZSS L1 C/A navigation subframe |
 | `NAVICRaw` | 4093 | NavIC navigation message |
 
-#### `/gnss/imu/attitude` — Attitude (orientation quaternion)
-
-| SBF Block | ID | Description | Requirement |
-|---|---|---|---|
-| `AttEuler` | 5938 | Heading, pitch, roll → orientation quaternion | AsteRx-i / mosaic-X5 with dual-antenna or IMU |
-
-#### `/gnss/imu/data_raw` — Raw IMU (accel + gyro)
+#### `/gnss/imu/data_raw` — Uncalibrated raw IMU
 
 | SBF Block | ID | Description | Requirement |
 |---|---|---|---|
 | `ExtSensorMeas` | 4050 | Linear acceleration [m/s²] (Type 0) and angular velocity [rad/s] (Type 1) as 3-axis vectors | AsteRx-i / mosaic-X5 with integrated IMU |
+
+> Septentrio does not provide a separate calibrated IMU output — `/gnss/imu/data` is not advertised by the SBF driver/decoder.
 
 ---
 
@@ -151,20 +171,51 @@ IMU/INS messages decoded by a parallel OEM4 mini-framer (RTKLIB does not handle 
 | `GALIONOB` | 1127 | Galileo ionosphere parameters |
 | `QZSSIONUTCB` | 1347 | QZSS ionosphere + UTC parameters |
 
-#### `/gnss/imu/attitude` — Attitude (orientation quaternion)
+#### `/gnss/imu/data_raw` — Uncalibrated raw IMU
 
 | NovAtel Log | Message ID | Description | Requirement |
 |---|---|---|---|
-| `INSPVAB` | 507 | INS position, velocity, attitude — roll/pitch/azimuth → orientation quaternion, output at 10 Hz | SPAN-capable receiver + IMU |
+| `RAWIMUSXB` | 1462 | Raw IMU delta-velocity / delta-angle counts × IMU-type-specific scale factor (ONNEW) | NovAtel receiver with IMU connection |
 
-#### `/gnss/imu/data_raw` — Raw IMU (accel + gyro)
+#### `/gnss/imu/data` — Calibrated IMU
 
 | NovAtel Log | Message ID | Description | Requirement |
 |---|---|---|---|
 | `CORRIMUDATAB` | 812 | Bias/gravity/earth-rate corrected accel [m/s²] and angular velocity [rad/s] at full IMU rate (ONNEW) | SPAN-capable receiver + IMU |
 
+> **Note on RAWIMUSX scale factors**: The receiver embeds an `IMUType` byte in each
+> message identifying the connected IMU. The driver / decoder looks up the per-sample
+> count→SI scale factor (delta-velocity in m/s, delta-angle in rad) from a table in
+> [`novatel_imu_scales.hpp`](include/gnss_ros_standardization/novatel_imu_scales.hpp)
+> and divides by the inter-sample `dt` (from successive `Seconds` fields) to recover
+> rates and accelerations. See *Supported NovAtel IMUs* below.
+
 > **Note on CORRIMUDATA**: The log outputs SI-unit *increments* accumulated over one IMU sampling period.
 > The driver/decoder divides each increment by the interval between successive timestamps (`dt`) to recover instantaneous rates and accelerations.
+
+#### Supported NovAtel IMUs (RAWIMUSX scale table)
+
+| IMUType | IMU Model | accel scale (counts → m/s) | gyro scale (counts → rad) |
+|---------|-----------|---------------------------|---------------------------|
+| 4 | Honeywell HG1700-AG11 | 2⁻²² | 2⁻³³ |
+| 5 | Honeywell HG1700-AG17 | 2⁻²² | 2⁻³³ |
+| 8 | Honeywell HG1700-AG58 | 2⁻²² | 2⁻³³ |
+| 11 | Honeywell HG1700-AG62 | 2⁻²² | 2⁻³³ |
+| 13 | Honeywell HG1900-CA50 | 2⁻²¹ | 2⁻³³ |
+| 16 | Northrop Grumman LN200 | 2⁻¹⁴ | 2⁻¹⁹ |
+| 19 | Honeywell HG1930 | 2⁻²² | 2⁻³³ |
+| 26, 28 | Analog Devices ADIS16488 | 2⁻¹² | 2⁻²¹ |
+| 31 | Sensonor STIM 300 | 2⁻²¹ | 2⁻²⁵ |
+| 41 | Epson G320N | 2⁻¹⁵ | 2⁻²¹ |
+| 56 | KVH 1750 | 2⁻¹⁵ | 2⁻²¹ |
+| 58, 68, 69 | Epson G370N / G382PR | 2⁻¹⁵ | 2⁻²¹ |
+
+If your IMU type is not in the table, set `imu_scale_override.{accel,gyro}` in
+`config/novatel_driver.yaml` to the per-sample SI scale factors from the IMU
+datasheet. To contribute permanent support for a new IMU, add a `case` branch
+to `getImuScale()` in
+[`novatel_imu_scales.hpp`](include/gnss_ros_standardization/novatel_imu_scales.hpp)
+and update this table — please open a PR.
 
 ---
 
@@ -293,8 +344,8 @@ Default topic names (all can be overridden via YAML parameters):
 | `/gnss/ephemeris` | `GnssEphemerides` | All drivers / RTCM3 decoder |
 | `/gnss/solution` | `GnssSolution` | u-blox, Septentrio, NovAtel drivers (via NMEA) |
 | `/gnss/nmea_solution` | `GnssSolution` | Decoder nodes (raw stream decoding) |
-| `/gnss/imu/attitude` | `sensor_msgs/Imu` | Attitude quaternion — u-blox (NAV-ATT), Septentrio (AttEuler), NovAtel (INSPVA) |
-| `/gnss/imu/data_raw` | `sensor_msgs/Imu` | Raw accel + gyro — u-blox (ESF-INS), Septentrio (ExtSensorMeas), NovAtel (CORRIMUDATA) |
+| `/gnss/imu/data_raw` | `sensor_msgs/Imu` | Uncalibrated raw IMU — u-blox (ESF-RAW), Septentrio (ExtSensorMeas), NovAtel (RAWIMUSX) |
+| `/gnss/imu/data` | `sensor_msgs/Imu` | Calibrated IMU — u-blox (ESF-INS), NovAtel (CORRIMUDATA, SPAN required); Septentrio: not provided |
 
 ## Message Reference
 
@@ -312,9 +363,10 @@ Default topic names (all can be overridden via YAML parameters):
 ## Roadmap
 
 - **v0.1** (current): Raw observation/ephemeris output for all three receivers; RINEX conversion; RTCM3 input
-- **v0.2** (current): GnssSolution via NMEA for Septentrio & NovAtel; IMU/INS topic output (`sensor_msgs/Imu`) for all receivers
-- **v0.3** (planned): `nav_msgs/Odometry` from full INS solutions (INSPVA, INSNavGeod, ESF-INS fusion)
+- **v0.2** (current): GnssSolution via NMEA for Septentrio & NovAtel; minimal IMU passthrough (`sensor_msgs/Imu`) on `/gnss/imu/data_raw` and `/gnss/imu/data`
 - **v1.0** (planned): Launch file templates, CI-tested multi-distro Docker images, extended RTK/PPP tooling
+
+> Attitude / INS / sensor-fusion outputs are intentionally out of scope — see *Scope* above.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) if you would like to contribute.
 

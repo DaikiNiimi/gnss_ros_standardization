@@ -39,22 +39,13 @@ constexpr int ESF_INS_OFFSET_YACCEL    = 28;
 constexpr int ESF_INS_OFFSET_ZACCEL    = 32;
 constexpr int ESF_INS_MIN_LEN          = 36;
 
-// UBX-NAV-ATT payload offsets (32 bytes)
-constexpr int NAV_ATT_OFFSET_ROLL      = 8;
-constexpr int NAV_ATT_OFFSET_PITCH     = 12;
-constexpr int NAV_ATT_OFFSET_HEADING   = 16;
-constexpr int NAV_ATT_OFFSET_ACCROLL   = 20;
-constexpr int NAV_ATT_OFFSET_ACCPITCH  = 24;
-constexpr int NAV_ATT_OFFSET_ACCHEADING= 28;
-constexpr int NAV_ATT_MIN_LEN          = 32;
-
 }  // namespace
 
 /// @brief ROS 2 node for decoding u-blox UBX protocol messages
 ///
 /// Decodes UBX-RXM-RAWX (raw observations) and UBX-RXM-SFRBX (navigation data)
 /// messages from u-blox receivers and publishes them as standardized ROS messages.
-/// Also parses NMEA sentences for GnssSolution and UBX-ESF-INS / UBX-NAV-ATT for IMU data.
+/// Also parses NMEA sentences for GnssSolution and UBX-ESF-INS for calibrated IMU data.
 class UbxDecoderNode : public rclcpp::Node {
  public:
   UbxDecoderNode() : Node("ubx_decoder_node") {
@@ -87,8 +78,8 @@ class UbxDecoderNode : public rclcpp::Node {
     declare_parameter<std::string>("frame_id", "gnss_link");
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
+    declare_parameter<std::string>("imu_topic",     "/gnss/imu/data");
     declare_parameter<std::string>("imu_raw_topic", "/gnss/imu/data_raw");
-    declare_parameter<std::string>("imu_attitude_topic", "/gnss/imu/attitude");
 
     frame_id_ = get_parameter("frame_id").as_string();
   }
@@ -97,8 +88,8 @@ class UbxDecoderNode : public rclcpp::Node {
     obs_pub_     = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
     eph_pub_     = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
     sol_pub_     = create_publisher<msg::GnssSolution>("/gnss/nmea_solution", 10);
+    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_topic").as_string(), 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
-    imu_attitude_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_attitude_topic").as_string(), 10);
   }
 
   void initializeDecoder() {
@@ -159,10 +150,6 @@ class UbxDecoderNode : public rclcpp::Node {
   void pollStream() {
     uint8_t buffer[ubx::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
-
-    if (bytes_read > 0) {
-      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Stream: read %d bytes", bytes_read);
-    }
 
     for (int i = 0; i < bytes_read; ++i) {
       uint8_t byte = buffer[i];
@@ -237,15 +224,75 @@ class UbxDecoderNode : public rclcpp::Node {
   }
 
   void handleUbxFrame() {
-    if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_INS) {
-      handleEsfIns();
-    } else if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_ATT) {
-      handleNavAtt();
-    } else {
-      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-                           "UBX: received unhandled frame class=0x%02x id=0x%02x len=%d",
-                           ubx_cls_, ubx_id_, ubx_len_);
+    if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_RAW) handleEsfRaw();
+    if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_INS) handleEsfIns();
+  }
+
+  // Sign-extend the lower 24 bits of a uint32 into an int32.
+  static int32_t signExtend24(uint32_t v) {
+    return (v & 0x00800000u) ? static_cast<int32_t>(v | 0xFF000000u)
+                             : static_cast<int32_t>(v & 0x00FFFFFFu);
+  }
+
+  // UBX-ESF-RAW: 4-byte reserved header + N × { data(u4) + sTtag(u4) }.
+  // data low 24 bits = signed measurement, high 8 bits = data type.
+  void handleEsfRaw() {
+    constexpr int kHeaderLen = 4;
+    constexpr int kBlockLen  = 8;
+    const int n = (static_cast<int>(ubx_payload_.size()) - kHeaderLen) / kBlockLen;
+    if (n <= 0) return;
+
+    double accel[3] = {0, 0, 0};
+    double gyro[3]  = {0, 0, 0};
+    bool   has_accel[3] = {false, false, false};
+    bool   has_gyro[3]  = {false, false, false};
+    const double deg2rad = M_PI / 180.0;
+
+    for (int i = 0; i < n; ++i) {
+      const uint8_t* p = ubx_payload_.data() + kHeaderLen + i * kBlockLen;
+      uint32_t data = 0;
+      std::memcpy(&data, p, 4);
+      const uint8_t type = static_cast<uint8_t>((data >> 24) & 0xFFu);
+      const int32_t val  = signExtend24(data);
+
+      switch (type) {
+        case ubx::esf_raw::TYPE_GYRO_X:
+          gyro[0] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[0] = true; break;
+        case ubx::esf_raw::TYPE_GYRO_Y:
+          gyro[1] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[1] = true; break;
+        case ubx::esf_raw::TYPE_GYRO_Z:
+          gyro[2] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[2] = true; break;
+        case ubx::esf_raw::TYPE_ACCEL_X:
+          accel[0] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[0] = true; break;
+        case ubx::esf_raw::TYPE_ACCEL_Y:
+          accel[1] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[1] = true; break;
+        case ubx::esf_raw::TYPE_ACCEL_Z:
+          accel[2] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[2] = true; break;
+        default: break;
+      }
     }
+
+    if (!(has_accel[0] || has_accel[1] || has_accel[2] ||
+          has_gyro[0]  || has_gyro[1]  || has_gyro[2])) return;
+
+    sensor_msgs::msg::Imu imu;
+    imu.header.stamp    = now();
+    imu.header.frame_id = frame_id_;
+
+    imu.orientation_covariance[0] = -1.0;
+
+    imu.angular_velocity.x = gyro[0];
+    imu.angular_velocity.y = gyro[1];
+    imu.angular_velocity.z = gyro[2];
+    imu.linear_acceleration.x = accel[0];
+    imu.linear_acceleration.y = accel[1];
+    imu.linear_acceleration.z = accel[2];
+
+    auto unk = ins::makeUnknownCovariance();
+    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
+
+    imu_raw_pub_->publish(imu);
   }
 
   void handleEsfIns() {
@@ -268,78 +315,27 @@ class UbxDecoderNode : public rclcpp::Node {
 
     // Scale: angular rate 1e-3 deg/s → rad/s; acceleration 1e-2 m/s²
     const double deg2rad = M_PI / 180.0;
-    last_ang_x_ = xAngRate_raw * 1e-3 * deg2rad;
-    last_ang_y_ = yAngRate_raw * 1e-3 * deg2rad;
-    last_ang_z_ = zAngRate_raw * 1e-3 * deg2rad;
-    last_acc_x_ = xAccel_raw   * 1e-2;
-    last_acc_y_ = yAccel_raw   * 1e-2;
-    last_acc_z_ = zAccel_raw   * 1e-2;
 
     sensor_msgs::msg::Imu imu;
     imu.header.stamp    = now();
     imu.header.frame_id = frame_id_;
 
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
+    // orientation: not provided by ESF-INS — leave identity, mark unknown
+    imu.orientation_covariance[0] = -1.0;
 
-    imu.angular_velocity.x = last_ang_x_;
-    imu.angular_velocity.y = last_ang_y_;
-    imu.angular_velocity.z = last_ang_z_;
+    imu.angular_velocity.x = xAngRate_raw * 1e-3 * deg2rad;
+    imu.angular_velocity.y = yAngRate_raw * 1e-3 * deg2rad;
+    imu.angular_velocity.z = zAngRate_raw * 1e-3 * deg2rad;
     auto ang_cov = ang_valid ? ins::makeDiagCovariance(1e-4, 1e-4, 1e-4) : ins::makeUnknownCovariance();
     std::copy(ang_cov.begin(), ang_cov.end(), imu.angular_velocity_covariance.begin());
 
-    imu.linear_acceleration.x = last_acc_x_;
-    imu.linear_acceleration.y = last_acc_y_;
-    imu.linear_acceleration.z = last_acc_z_;
+    imu.linear_acceleration.x = xAccel_raw * 1e-2;
+    imu.linear_acceleration.y = yAccel_raw * 1e-2;
+    imu.linear_acceleration.z = zAccel_raw * 1e-2;
     auto acc_cov = acc_valid ? ins::makeDiagCovariance(1e-3, 1e-3, 1e-3) : ins::makeUnknownCovariance();
     std::copy(acc_cov.begin(), acc_cov.end(), imu.linear_acceleration_covariance.begin());
 
-    imu_raw_pub_->publish(imu);
-  }
-
-  void handleNavAtt() {
-    if (static_cast<int>(ubx_payload_.size()) < NAV_ATT_MIN_LEN) return;
-
-    int32_t roll_raw = 0, pitch_raw = 0, heading_raw = 0;
-    uint32_t acc_roll = 0, acc_pitch = 0, acc_heading = 0;
-    std::memcpy(&roll_raw,    ubx_payload_.data() + NAV_ATT_OFFSET_ROLL,       4);
-    std::memcpy(&pitch_raw,   ubx_payload_.data() + NAV_ATT_OFFSET_PITCH,      4);
-    std::memcpy(&heading_raw, ubx_payload_.data() + NAV_ATT_OFFSET_HEADING,    4);
-    std::memcpy(&acc_roll,    ubx_payload_.data() + NAV_ATT_OFFSET_ACCROLL,    4);
-    std::memcpy(&acc_pitch,   ubx_payload_.data() + NAV_ATT_OFFSET_ACCPITCH,   4);
-    std::memcpy(&acc_heading, ubx_payload_.data() + NAV_ATT_OFFSET_ACCHEADING, 4);
-
-    // Scale: 1e-5 degrees → radians
-    const double scale = 1e-5 * M_PI / 180.0;
-    const double roll    = roll_raw    * scale;
-    const double pitch   = pitch_raw   * scale;
-    const double heading = heading_raw * scale;  // 0..2π, clockwise from North
-
-    const double sig_roll    = acc_roll    * scale;
-    const double sig_pitch   = acc_pitch   * scale;
-    const double sig_heading = acc_heading * scale;
-
-    sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
-    imu.header.frame_id = frame_id_;
-
-    imu.orientation = ins::eulerToQuaternion(roll, pitch, heading);
-    auto ori_cov = ins::makeDiagCovariance(sig_roll, sig_pitch, sig_heading);
-    std::copy(ori_cov.begin(), ori_cov.end(), imu.orientation_covariance.begin());
-
-    // Populate angular velocity and acceleration from latest ESF-INS if available
-    imu.angular_velocity.x = last_ang_x_;
-    imu.angular_velocity.y = last_ang_y_;
-    imu.angular_velocity.z = last_ang_z_;
-    imu.linear_acceleration.x = last_acc_x_;
-    imu.linear_acceleration.y = last_acc_y_;
-    imu.linear_acceleration.z = last_acc_z_;
-
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
-    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
-
-    imu_attitude_pub_->publish(imu);
+    imu_pub_->publish(imu);
   }
 
   // ============================================================================
@@ -356,11 +352,7 @@ class UbxDecoderNode : public rclcpp::Node {
     switch (result) {
       case 1:  publishObservations(); break;
       case 2:  publishEphemerides();  break;
-      case 0:  break; // No message complete
-      default:
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-                             "RTKLIB: input_ubx returned result=%d", result);
-        break;
+      default: break;
     }
   }
 
@@ -550,8 +542,8 @@ class UbxDecoderNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr   obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr    eph_pub_;
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr       sol_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr   imu_raw_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr   imu_attitude_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr   imu_pub_;       // ESF-INS (calibrated)
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr   imu_raw_pub_;   // ESF-RAW (uncalibrated)
   rclcpp::TimerBase::SharedPtr timer_;
 
   stream_t stream_{};
@@ -568,17 +560,13 @@ class UbxDecoderNode : public rclcpp::Node {
   double local_origin_ecef_[3]{0.0};
   double local_origin_pos_[3]{0.0};
 
-  // UBX mini-framer state
+  // UBX mini-framer state (ESF-INS / ESF-RAW)
   int                  ubx_state_{0};
   uint8_t              ubx_cls_{0};
   uint8_t              ubx_id_{0};
   uint16_t             ubx_len_{0};
   uint16_t             ubx_pos_{0};
   std::vector<uint8_t> ubx_payload_;
-
-  // Latest ESF-INS values (merged into NAV-ATT message)
-  double last_ang_x_{0.0}, last_ang_y_{0.0}, last_ang_z_{0.0};
-  double last_acc_x_{0.0}, last_acc_y_{0.0}, last_acc_z_{0.0};
 
   // Ephemeris dedup
   std::unordered_set<EphemerisKey, EphemerisKeyHash> seen_ephemeris_;

@@ -13,6 +13,7 @@
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
+#include "gnss_ros_standardization/novatel_imu_scales.hpp"
 #include "gnss_ros_standardization/novatel_protocol.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
@@ -31,23 +32,13 @@ constexpr size_t kNmeaMaxLineLen = 256;
 constexpr int OEM4_MSGID_OFFSET  = 4;   // bytes 4-5 from SYNC1
 constexpr int OEM4_MSGLEN_OFFSET = 8;   // bytes 8-9 from SYNC1
 
-// INSPVA body offsets (body starts after 28-byte header is consumed)
-// Body: Week(4) + Seconds(8) + Lat(8) + Lon(8) + Hgt(8) + VN(8) + VE(8) + VU(8) + Roll(8) + Pitch(8) + Azimuth(8) + Status(4)
-constexpr int INSPVA_OFFSET_LAT     = 12;   // bytes 12-19
-constexpr int INSPVA_OFFSET_LON     = 20;
-constexpr int INSPVA_OFFSET_HGT     = 28;
-constexpr int INSPVA_OFFSET_ROLL    = 60;
-constexpr int INSPVA_OFFSET_PITCH   = 68;
-constexpr int INSPVA_OFFSET_AZIMUTH = 76;
-constexpr int INSPVA_MIN_LEN        = 84;
-
 }  // namespace
 
 /// @brief ROS 2 node for decoding NovAtel receiver protocol messages
 ///
 /// Decodes NovAtel binary format (OEM3/OEM4/OEM7) raw observations and navigation
 /// data messages from NovAtel receivers and publishes them as standardized ROS messages.
-/// Also parses NMEA sentences for GnssSolution and OEM4 INSPVA for IMU attitude data.
+/// Also parses NMEA sentences for GnssSolution and OEM4 IMU logs (RAWIMUSX, CORRIMUDATA).
 ///
 /// Supported formats:
 ///   - oem4: OEM4/OEM6/OEM7 binary format (default)
@@ -83,8 +74,10 @@ class NovatelDecoderNode : public rclcpp::Node {
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
     declare_parameter<std::string>("solution_topic", "/gnss/nmea_solution");
-    declare_parameter<std::string>("imu_attitude_topic", "/gnss/imu/attitude");
-    declare_parameter<std::string>("imu_raw_topic",      "/gnss/imu/data_raw");
+    declare_parameter<std::string>("imu_topic",      "/gnss/imu/data");
+    declare_parameter<std::string>("imu_raw_topic",  "/gnss/imu/data_raw");
+    declare_parameter<double>("imu_scale_override.accel", 0.0);
+    declare_parameter<double>("imu_scale_override.gyro",  0.0);
 
     format_   = get_parameter("format").as_string();
     frame_id_ = get_parameter("frame_id").as_string();
@@ -99,8 +92,10 @@ class NovatelDecoderNode : public rclcpp::Node {
     obs_pub_ = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
     eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
     sol_pub_ = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
-    imu_attitude_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_attitude_topic").as_string(), 10);
-    imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
+    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_topic").as_string(), 10);
+    imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
+    imu_scale_override_accel_ = get_parameter("imu_scale_override.accel").as_double();
+    imu_scale_override_gyro_  = get_parameter("imu_scale_override.gyro").as_double();
   }
 
   void initializeDecoder() {
@@ -166,7 +161,7 @@ class NovatelDecoderNode : public rclcpp::Node {
       int result = (format_ == "oem3") ? input_oem3(&raw_, byte) : input_oem4(&raw_, byte);
       handleDecodeResult(result);
 
-      // Parallel OEM4 mini-framer for INSPVA (OEM4 only)
+      // Parallel OEM4 mini-framer for CORRIMUDATA (OEM4 only)
       if (format_ == "oem4") parseOem4Byte(byte);
 
       // Feed NMEA text parser (NovAtel binary and NMEA are interleaved)
@@ -186,7 +181,7 @@ class NovatelDecoderNode : public rclcpp::Node {
   }
 
   // ============================================================================
-  // OEM4 Mini-Framer (parallel to RTKLIB, for INSPVA)
+  // OEM4 Mini-Framer (parallel to RTKLIB, for CORRIMUDATA)
   //
   // OEM4 binary frame: SYNC(0xAA,0x44,0x12) HDRLEN(1) MSGID(2,LE) MSGTYPE(1)
   //                    PORT(1) MSGLEN(2,LE) ... rest of header ... BODY CRC32
@@ -226,8 +221,62 @@ class NovatelDecoderNode : public rclcpp::Node {
   }
 
   void handleOem4Frame() {
-    if (oem4_msg_id_ == novatel::ID_INSPVA)      handleInsPva();
+    if (oem4_msg_id_ == novatel::ID_RAWIMUSX)    handleRawImuSx();
     if (oem4_msg_id_ == novatel::ID_CORRIMUDATA) handleCorrImuData();
+  }
+
+  // RAWIMUSX body (60 B): see novatel_driver_node.cpp::handleRawImuSx for layout.
+  void handleRawImuSx() {
+    if (oem4_body_.size() < 60) return;
+
+    const uint8_t imu_type = oem4_body_[2];
+    double seconds = 0.0;
+    int32_t z_acc = 0, ny_acc = 0, x_acc = 0, z_gyr = 0, ny_gyr = 0, x_gyr = 0;
+    std::memcpy(&seconds, oem4_body_.data() +  8, 8);
+    std::memcpy(&z_acc,   oem4_body_.data() + 20, 4);
+    std::memcpy(&ny_acc,  oem4_body_.data() + 24, 4);
+    std::memcpy(&x_acc,   oem4_body_.data() + 28, 4);
+    std::memcpy(&z_gyr,   oem4_body_.data() + 32, 4);
+    std::memcpy(&ny_gyr,  oem4_body_.data() + 36, 4);
+    std::memcpy(&x_gyr,   oem4_body_.data() + 40, 4);
+
+    novatel::ImuScale scale = novatel::getImuScale(imu_type);
+    if (imu_scale_override_accel_ != 0.0 && imu_scale_override_gyro_ != 0.0) {
+      scale = {imu_scale_override_accel_, imu_scale_override_gyro_};
+    }
+    if (scale.accel == 0.0 || scale.gyro == 0.0) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        "Unknown NovAtel IMU type %u — RAWIMUSX skipped. Set imu_scale_override.{accel,gyro} "
+        "in yaml or add this type to novatel_imu_scales.hpp.", imu_type);
+      return;
+    }
+
+    if (!has_rawimu_prev_) {
+      rawimu_prev_seconds_ = seconds;
+      has_rawimu_prev_     = true;
+      return;
+    }
+    const double dt = seconds - rawimu_prev_seconds_;
+    rawimu_prev_seconds_ = seconds;
+    if (dt <= 0.0 || dt > 1.0) return;
+
+    sensor_msgs::msg::Imu imu;
+    imu.header.stamp    = now();
+    imu.header.frame_id = frame_id_;
+    imu.orientation_covariance[0] = -1.0;
+
+    imu.angular_velocity.x =  x_gyr  * scale.gyro / dt;
+    imu.angular_velocity.y = -ny_gyr * scale.gyro / dt;
+    imu.angular_velocity.z =  z_gyr  * scale.gyro / dt;
+    imu.linear_acceleration.x =  x_acc  * scale.accel / dt;
+    imu.linear_acceleration.y = -ny_acc * scale.accel / dt;
+    imu.linear_acceleration.z =  z_acc  * scale.accel / dt;
+
+    auto unk = ins::makeUnknownCovariance();
+    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
+
+    imu_raw_pub_->publish(imu);
   }
 
   // CORRIMUDATA body (60 B): Week(4) Seconds(8) PitchRate(8) RollRate(8) YawRate(8)
@@ -268,46 +317,14 @@ class NovatelDecoderNode : public rclcpp::Node {
     imu.linear_acceleration.y = lat_acc / dt;
     imu.linear_acceleration.z = vert_acc / dt;
 
+    // orientation: not provided by CORRIMUDATA — leave identity, mark unknown
+    imu.orientation_covariance[0] = -1.0;
+
     auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
-    imu_raw_pub_->publish(imu);
-  }
-
-  void handleInsPva() {
-    if (static_cast<int>(oem4_body_.size()) < INSPVA_MIN_LEN) return;
-
-    double lat = 0.0, lon = 0.0, hgt = 0.0;
-    double roll = 0.0, pitch = 0.0, azimuth = 0.0;
-    std::memcpy(&lat,     oem4_body_.data() + INSPVA_OFFSET_LAT,     8);
-    std::memcpy(&lon,     oem4_body_.data() + INSPVA_OFFSET_LON,     8);
-    std::memcpy(&hgt,     oem4_body_.data() + INSPVA_OFFSET_HGT,     8);
-    std::memcpy(&roll,    oem4_body_.data() + INSPVA_OFFSET_ROLL,    8);
-    std::memcpy(&pitch,   oem4_body_.data() + INSPVA_OFFSET_PITCH,   8);
-    std::memcpy(&azimuth, oem4_body_.data() + INSPVA_OFFSET_AZIMUTH, 8);
-
-    const double deg2rad = M_PI / 180.0;
-
-    sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
-    imu.header.frame_id = frame_id_;
-
-    // NovAtel INSPVA uses NED frame: azimuth = clockwise from North (heading)
-    imu.orientation = ins::eulerToQuaternion(
-        roll    * deg2rad,
-        pitch   * deg2rad,
-        azimuth * deg2rad);
-
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
-    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
-    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
-
-    imu_attitude_pub_->publish(imu);
-
-    (void)lat; (void)lon; (void)hgt;  // position available for future odometry topic
+    imu_pub_->publish(imu);
   }
 
   // ============================================================================
@@ -517,8 +534,10 @@ class NovatelDecoderNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr  obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr   eph_pub_;
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr      sol_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_attitude_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_pub_;       // CORRIMUDATA (calibrated)
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;   // RAWIMUSX (uncalibrated)
+  double imu_scale_override_accel_{0.0};
+  double imu_scale_override_gyro_{0.0};
   rclcpp::TimerBase::SharedPtr timer_;
 
   stream_t stream_{};
@@ -551,6 +570,8 @@ class NovatelDecoderNode : public rclcpp::Node {
   // CORRIMUDATA dt tracking (SI-increment → rate conversion)
   double corrimu_prev_seconds_{0.0};
   bool   has_corrimu_prev_{false};
+  double rawimu_prev_seconds_{0.0};
+  bool   has_rawimu_prev_{false};
 };
 
 }  // namespace gnss_ros_standardization

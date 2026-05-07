@@ -37,15 +37,6 @@ constexpr int ESF_INS_OFFSET_YACCEL    = 28;
 constexpr int ESF_INS_OFFSET_ZACCEL    = 32;
 constexpr int ESF_INS_MIN_LEN          = 36;
 
-// UBX-NAV-ATT payload offsets (32 bytes)
-constexpr int NAV_ATT_OFFSET_ROLL      = 8;
-constexpr int NAV_ATT_OFFSET_PITCH     = 12;
-constexpr int NAV_ATT_OFFSET_HEADING   = 16;
-constexpr int NAV_ATT_OFFSET_ACCROLL   = 20;
-constexpr int NAV_ATT_OFFSET_ACCPITCH  = 24;
-constexpr int NAV_ATT_OFFSET_ACCHEADING= 28;
-constexpr int NAV_ATT_MIN_LEN          = 32;
-
 }  // namespace
 
 /// @brief Configuration structure for u-blox driver
@@ -69,11 +60,12 @@ struct UbxConfig {
   bool nmea_high_precision{false};
 
   // IMU settings (ZED-F9R / IMU-enabled receivers)
-  bool enable_esf_ins{false};   // ESF-INS: calibrated angular rate + acceleration
-  bool enable_nav_att{false};   // NAV-ATT: attitude (roll/pitch/heading)
+  bool enable_esf_raw{true};    // ESF-RAW: uncalibrated raw IMU       → /gnss/imu/data_raw
+  bool enable_esf_ins{false};   // ESF-INS: calibrated angular rate + acceleration → /gnss/imu/data
+  std::string imu_topic{"/gnss/imu/data"};
   std::string imu_raw_topic{"/gnss/imu/data_raw"};
-  std::string imu_attitude_topic{"/gnss/imu/attitude"};
-  
+
+
   // GNSS constellation settings
   bool enable_gps{true};
   bool enable_glonass{true};
@@ -148,10 +140,10 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.nmea_gsa", config_.enable_nmea_gsa);
     declare_parameter<bool>("messages.nmea_gst", config_.enable_nmea_gst);
     declare_parameter<bool>("messages.nmea_high_precision", config_.nmea_high_precision);
+    declare_parameter<bool>("messages.esf_raw", config_.enable_esf_raw);
     declare_parameter<bool>("messages.esf_ins", config_.enable_esf_ins);
-    declare_parameter<bool>("messages.nav_att", config_.enable_nav_att);
+    declare_parameter<std::string>("imu_topic",     config_.imu_topic);
     declare_parameter<std::string>("imu_raw_topic", config_.imu_raw_topic);
-    declare_parameter<std::string>("imu_attitude_topic",     config_.imu_attitude_topic);
     
     // GNSS constellation settings
     declare_parameter<bool>("gnss.gps", config_.enable_gps);
@@ -186,10 +178,10 @@ class UbxDriverNode : public rclcpp::Node {
     config_.enable_nmea_gsa = get_parameter("messages.nmea_gsa").as_bool();
     config_.enable_nmea_gst = get_parameter("messages.nmea_gst").as_bool();
     config_.nmea_high_precision = get_parameter("messages.nmea_high_precision").as_bool();
+    config_.enable_esf_raw      = get_parameter("messages.esf_raw").as_bool();
     config_.enable_esf_ins      = get_parameter("messages.esf_ins").as_bool();
-    config_.enable_nav_att      = get_parameter("messages.nav_att").as_bool();
+    config_.imu_topic           = get_parameter("imu_topic").as_string();
     config_.imu_raw_topic       = get_parameter("imu_raw_topic").as_string();
-    config_.imu_attitude_topic           = get_parameter("imu_attitude_topic").as_string();
     
     config_.enable_gps = get_parameter("gnss.gps").as_bool();
     config_.enable_glonass = get_parameter("gnss.glonass").as_bool();
@@ -231,8 +223,8 @@ class UbxDriverNode : public rclcpp::Node {
     obs_pub_     = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
     eph_pub_     = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
     sol_pub_     = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
+    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(config_.imu_topic, 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
-    imu_attitude_pub_     = create_publisher<sensor_msgs::msg::Imu>(config_.imu_attitude_topic, 10);
 
     // Pre-configure ENU origin if not auto
     if (!config_.auto_origin) {
@@ -658,8 +650,8 @@ class UbxDriverNode : public rclcpp::Node {
           {ubx::CFG_MSGOUT_UBX_RXM_RAWX_I2C  + port, config_.enable_rawx    ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_RXM_SFRBX_I2C + port, config_.enable_sfrbx   ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_NAV_PVT_I2C   + port, config_.enable_nav_pvt ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_ESF_RAW_I2C   + port, config_.enable_esf_raw ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_ESF_INS_I2C   + port, config_.enable_esf_ins ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_ATT_I2C   + port, config_.enable_nav_att ? 1u : 0u, 1},
       };
 
       if (!sendCfgValset(items_ubx)) {
@@ -724,8 +716,8 @@ class UbxDriverNode : public rclcpp::Node {
     sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_RAWX,  config_.enable_rawx,    "RXM-RAWX");
     sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_SFRBX, config_.enable_sfrbx,   "RXM-SFRBX");
     sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_PVT,   config_.enable_nav_pvt, "NAV-PVT");
+    sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_RAW,   config_.enable_esf_raw, "ESF-RAW");
     sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_INS,   config_.enable_esf_ins, "ESF-INS");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_ATT,   config_.enable_nav_att, "NAV-ATT");
 
     sendNmea(ubx::NMEA_GGA, config_.enable_nmea_gga, "GGA");
     sendNmea(ubx::NMEA_RMC, config_.enable_nmea_rmc, "RMC");
@@ -963,8 +955,77 @@ class UbxDriverNode : public rclcpp::Node {
   }
 
   void handleUbxFrame() {
+    if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_RAW) handleEsfRaw();
     if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_INS) handleEsfIns();
-    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_ATT) handleNavAtt();
+  }
+
+  // Sign-extend the lower 24 bits of a uint32 into an int32.
+  static int32_t signExtend24(uint32_t v) {
+    return (v & 0x00800000u) ? static_cast<int32_t>(v | 0xFF000000u)
+                             : static_cast<int32_t>(v & 0x00FFFFFFu);
+  }
+
+  // UBX-ESF-RAW: 4-byte reserved header + N × { data(u4) + sTtag(u4) }.
+  // data low 24 bits = signed measurement, high 8 bits = data type.
+  // Accumulate accel x/y/z + gyro x/y/z found in this message; publish if any axis was set.
+  void handleEsfRaw() {
+    constexpr int kHeaderLen = 4;
+    constexpr int kBlockLen  = 8;
+    const int n = (static_cast<int>(ubx_frm_payload_.size()) - kHeaderLen) / kBlockLen;
+    if (n <= 0) return;
+
+    double accel[3] = {0, 0, 0};
+    double gyro[3]  = {0, 0, 0};
+    bool   has_accel[3] = {false, false, false};
+    bool   has_gyro[3]  = {false, false, false};
+    const double deg2rad = M_PI / 180.0;
+
+    for (int i = 0; i < n; ++i) {
+      const uint8_t* p = ubx_frm_payload_.data() + kHeaderLen + i * kBlockLen;
+      uint32_t data = 0;
+      std::memcpy(&data, p, 4);
+      const uint8_t type = static_cast<uint8_t>((data >> 24) & 0xFFu);
+      const int32_t val  = signExtend24(data);
+
+      switch (type) {
+        case ubx::esf_raw::TYPE_GYRO_X:
+          gyro[0] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[0] = true; break;
+        case ubx::esf_raw::TYPE_GYRO_Y:
+          gyro[1] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[1] = true; break;
+        case ubx::esf_raw::TYPE_GYRO_Z:
+          gyro[2] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[2] = true; break;
+        case ubx::esf_raw::TYPE_ACCEL_X:
+          accel[0] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[0] = true; break;
+        case ubx::esf_raw::TYPE_ACCEL_Y:
+          accel[1] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[1] = true; break;
+        case ubx::esf_raw::TYPE_ACCEL_Z:
+          accel[2] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[2] = true; break;
+        default: break;  // ignore other sensor types (temp, wheel speed, etc.)
+      }
+    }
+
+    if (!(has_accel[0] || has_accel[1] || has_accel[2] ||
+          has_gyro[0]  || has_gyro[1]  || has_gyro[2])) return;
+
+    sensor_msgs::msg::Imu imu;
+    imu.header.stamp    = now();
+    imu.header.frame_id = config_.frame_id;
+
+    // orientation: not provided by ESF-RAW — leave identity, mark unknown
+    imu.orientation_covariance[0] = -1.0;
+
+    imu.angular_velocity.x = gyro[0];
+    imu.angular_velocity.y = gyro[1];
+    imu.angular_velocity.z = gyro[2];
+    imu.linear_acceleration.x = accel[0];
+    imu.linear_acceleration.y = accel[1];
+    imu.linear_acceleration.z = accel[2];
+
+    auto unk = ins::makeUnknownCovariance();
+    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
+
+    imu_raw_pub_->publish(imu);
   }
 
   void handleEsfIns() {
@@ -984,72 +1045,27 @@ class UbxDriverNode : public rclcpp::Node {
     std::memcpy(&zAcc, ubx_frm_payload_.data() + ESF_INS_OFFSET_ZACCEL,   4);
 
     const double deg2rad = M_PI / 180.0;
-    last_ang_x_ = xAng * 1e-3 * deg2rad;
-    last_ang_y_ = yAng * 1e-3 * deg2rad;
-    last_ang_z_ = zAng * 1e-3 * deg2rad;
-    last_acc_x_ = xAcc * 1e-2;
-    last_acc_y_ = yAcc * 1e-2;
-    last_acc_z_ = zAcc * 1e-2;
 
     sensor_msgs::msg::Imu imu;
     imu.header.stamp    = now();
     imu.header.frame_id = config_.frame_id;
 
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
+    // orientation: not provided by ESF-INS — leave identity, mark unknown
+    imu.orientation_covariance[0] = -1.0;
 
-    imu.angular_velocity.x = last_ang_x_;
-    imu.angular_velocity.y = last_ang_y_;
-    imu.angular_velocity.z = last_ang_z_;
+    imu.angular_velocity.x = xAng * 1e-3 * deg2rad;
+    imu.angular_velocity.y = yAng * 1e-3 * deg2rad;
+    imu.angular_velocity.z = zAng * 1e-3 * deg2rad;
     auto ang_cov = ang_valid ? ins::makeDiagCovariance(1e-4, 1e-4, 1e-4) : ins::makeUnknownCovariance();
     std::copy(ang_cov.begin(), ang_cov.end(), imu.angular_velocity_covariance.begin());
 
-    imu.linear_acceleration.x = last_acc_x_;
-    imu.linear_acceleration.y = last_acc_y_;
-    imu.linear_acceleration.z = last_acc_z_;
+    imu.linear_acceleration.x = xAcc * 1e-2;
+    imu.linear_acceleration.y = yAcc * 1e-2;
+    imu.linear_acceleration.z = zAcc * 1e-2;
     auto acc_cov = acc_valid ? ins::makeDiagCovariance(1e-3, 1e-3, 1e-3) : ins::makeUnknownCovariance();
     std::copy(acc_cov.begin(), acc_cov.end(), imu.linear_acceleration_covariance.begin());
 
-    imu_raw_pub_->publish(imu);
-  }
-
-  void handleNavAtt() {
-    if (static_cast<int>(ubx_frm_payload_.size()) < NAV_ATT_MIN_LEN) return;
-
-    int32_t  roll_raw = 0, pitch_raw = 0, heading_raw = 0;
-    uint32_t acc_roll = 0, acc_pitch = 0, acc_heading = 0;
-    std::memcpy(&roll_raw,    ubx_frm_payload_.data() + NAV_ATT_OFFSET_ROLL,       4);
-    std::memcpy(&pitch_raw,   ubx_frm_payload_.data() + NAV_ATT_OFFSET_PITCH,      4);
-    std::memcpy(&heading_raw, ubx_frm_payload_.data() + NAV_ATT_OFFSET_HEADING,    4);
-    std::memcpy(&acc_roll,    ubx_frm_payload_.data() + NAV_ATT_OFFSET_ACCROLL,    4);
-    std::memcpy(&acc_pitch,   ubx_frm_payload_.data() + NAV_ATT_OFFSET_ACCPITCH,   4);
-    std::memcpy(&acc_heading, ubx_frm_payload_.data() + NAV_ATT_OFFSET_ACCHEADING, 4);
-
-    const double scale   = 1e-5 * M_PI / 180.0;
-    const double roll    = roll_raw    * scale;
-    const double pitch   = pitch_raw   * scale;
-    const double heading = heading_raw * scale;
-
-    sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
-    imu.header.frame_id = config_.frame_id;
-
-    imu.orientation = ins::eulerToQuaternion(roll, pitch, heading);
-    auto ori_cov = ins::makeDiagCovariance(acc_roll * scale, acc_pitch * scale, acc_heading * scale);
-    std::copy(ori_cov.begin(), ori_cov.end(), imu.orientation_covariance.begin());
-
-    imu.angular_velocity.x = last_ang_x_;
-    imu.angular_velocity.y = last_ang_y_;
-    imu.angular_velocity.z = last_ang_z_;
-    imu.linear_acceleration.x = last_acc_x_;
-    imu.linear_acceleration.y = last_acc_y_;
-    imu.linear_acceleration.z = last_acc_z_;
-
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
-    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
-
-    imu_attitude_pub_->publish(imu);
+    imu_pub_->publish(imu);
   }
 
   // ============================================================================
@@ -1334,8 +1350,8 @@ class UbxDriverNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr  obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr   eph_pub_;
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr      sol_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_attitude_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_pub_;       // ESF-INS (calibrated)
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;   // ESF-RAW (uncalibrated)
   rclcpp::TimerBase::SharedPtr timer_;
 
   // MALIB structures
@@ -1353,17 +1369,13 @@ class UbxDriverNode : public rclcpp::Node {
   double local_origin_ecef_[3]{0.0};
   double local_origin_pos_[3]{0.0}; // lat/lon/hgt (rad, rad, m)
 
-  // UBX mini-framer state (for ESF-INS and NAV-ATT)
+  // UBX mini-framer state (for ESF-INS / ESF-RAW)
   int                  ubx_frm_state_{0};
   uint8_t              ubx_frm_cls_{0};
   uint8_t              ubx_frm_id_{0};
   uint16_t             ubx_frm_len_{0};
   uint16_t             ubx_frm_pos_{0};
   std::vector<uint8_t> ubx_frm_payload_;
-
-  // Latest ESF-INS values (merged into NAV-ATT message)
-  double last_ang_x_{0.0}, last_ang_y_{0.0}, last_ang_z_{0.0};
-  double last_acc_x_{0.0}, last_acc_y_{0.0}, last_acc_z_{0.0};
 
   // ACK/NAK detection (instance variables instead of function-static)
   uint8_t pending_ack_class_{0};

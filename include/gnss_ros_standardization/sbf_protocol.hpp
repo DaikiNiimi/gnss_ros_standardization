@@ -55,8 +55,6 @@ constexpr uint16_t ID_PVTCARTESIAN      = 4006;
 constexpr uint16_t ID_PVTGEODETIC       = 4007;
 constexpr uint16_t ID_POSCOVCARTESIAN   = 5905;
 constexpr uint16_t ID_POSCOVGEODETIC    = 5906;
-constexpr uint16_t ID_ATTEULER          = 5938;
-constexpr uint16_t ID_ATTCOVEULER       = 5939;
 
 // INS / IMU Blocks (AsteRx-i / mosaic-X5 with integrated IMU)
 constexpr uint16_t ID_EXTSENSORMEAS     = 4050;  // Raw accelerometer + gyro measurements
@@ -93,8 +91,6 @@ constexpr const char* BLOCK_PVTGEODETIC = "PVTGeodetic";
 constexpr const char* BLOCK_POSCOVGEODETIC = "PosCovGeodetic";
 constexpr const char* BLOCK_PVTCARTESIAN = "PVTCartesian";
 constexpr const char* BLOCK_POSCOVCARTESIAN = "PosCovCartesian";
-constexpr const char* BLOCK_ATTEULER = "AttEuler";
-constexpr const char* BLOCK_ATTCOVEULER = "AttCovEuler";
 constexpr const char* BLOCK_EXTSENSORMEAS = "ExtSensorMeas";
 constexpr const char* BLOCK_RECEIVERSTATUS = "ReceiverStatus";
 constexpr const char* BLOCK_QUALITYIND = "QualityInd";

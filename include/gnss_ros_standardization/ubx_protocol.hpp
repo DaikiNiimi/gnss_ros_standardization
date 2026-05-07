@@ -34,10 +34,22 @@ constexpr uint8_t ID_ACK_ACK = 0x01;
 
 // NAV
 constexpr uint8_t ID_NAV_PVT = 0x07;
-constexpr uint8_t ID_NAV_ATT = 0x05;  // Attitude (roll/pitch/heading) — ZED-F9R
 
 // ESF (External Sensor Fusion)
+constexpr uint8_t ID_ESF_RAW = 0x03;  // Raw IMU measurements (uncalibrated, IMU-internal scale)
 constexpr uint8_t ID_ESF_INS = 0x15;  // Calibrated IMU angular rate + acceleration
+
+// ESF-RAW data types (per ZED-F9R Interface Description)
+namespace esf_raw {
+  constexpr uint8_t TYPE_GYRO_Z = 5;   // Z-axis gyroscope angular rate, deg/s, scale 2^-12
+  constexpr uint8_t TYPE_GYRO_Y = 13;  // Y-axis gyroscope angular rate, deg/s, scale 2^-12
+  constexpr uint8_t TYPE_GYRO_X = 14;  // X-axis gyroscope angular rate, deg/s, scale 2^-12
+  constexpr uint8_t TYPE_ACCEL_X = 16; // X-axis accel specific force,    m/s², scale 2^-10
+  constexpr uint8_t TYPE_ACCEL_Y = 17; // Y-axis accel specific force,    m/s², scale 2^-10
+  constexpr uint8_t TYPE_ACCEL_Z = 18; // Z-axis accel specific force,    m/s², scale 2^-10
+  constexpr double  GYRO_SCALE   = 0.000244140625;  // 2^-12 (deg/s) — convert to rad/s by × π/180
+  constexpr double  ACCEL_SCALE  = 0.0009765625;    // 2^-10 (m/s²)
+}
 
 // MON
 constexpr uint8_t ID_MON_VER = 0x04;
@@ -135,11 +147,11 @@ constexpr uint32_t CFG_MSGOUT_NMEA_ID_VTG_I2C   = 0x209100B0;
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_GST_I2C   = 0x209100D3;
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_ZDA_I2C   = 0x209100D8;
 
-// --- IMU / Attitude Output ---
+// --- IMU Output ---
 // ESF-INS (calibrated angular rate + acceleration): base I2C key, +port offset for UART1/2/USB
 constexpr uint32_t CFG_MSGOUT_UBX_ESF_INS_I2C  = 0x20910036;
-// NAV-ATT (attitude roll/pitch/heading): base I2C key
-constexpr uint32_t CFG_MSGOUT_UBX_NAV_ATT_I2C  = 0x2091001F;
+// ESF-RAW (uncalibrated raw IMU measurements): base I2C key
+constexpr uint32_t CFG_MSGOUT_UBX_ESF_RAW_I2C  = 0x209102BC;
 
 // --- NMEA Configuration ---
 constexpr uint32_t CFG_NMEA_HIGHPREC = 0x10930006;  // L: Enable high-precision NMEA output

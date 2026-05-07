@@ -61,13 +61,21 @@ novatel_driver_node:
       nmea_gpgsa: true       # GPGSA: DOP values
       nmea_gpgst: true       # GPGST: position standard deviations (for covariance)
 
-      # INS/IMU (requires SPAN-capable receiver, e.g. OEM7 + IMU)
-      # Publishes INSPVA attitude as sensor_msgs/Imu at 10 Hz
-      inspva: false
-      # CORRIMUDATA: corrected accel/gyro at IMU rate (ONNEW)
-      # Published as sensor_msgs/Imu (linear_acceleration [m/s²] + angular_velocity [rad/s])
+      # IMU output (requires NovAtel receiver with IMU connection)
+      # RAWIMUSX:    uncalibrated counts × IMU-type-specific scale → /gnss/imu/data_raw
+      # CORRIMUDATA: SPAN-corrected delta-velocity / delta-angle    → /gnss/imu/data
+      # CORRIMUDATA additionally requires SPAN (Synchronized Position Attitude Navigation).
+      rawimusx: true
       corrimudata: false
 
     solution_topic: "/gnss/solution"
-    imu_attitude_topic: "/gnss/imu/attitude"  # INSPVA → orientation quaternion
-    imu_raw_topic: "/gnss/imu/data_raw"       # CORRIMUDATA → accel + gyro
+    imu_topic:     "/gnss/imu/data"      # CORRIMUDATA (calibrated)
+    imu_raw_topic: "/gnss/imu/data_raw"  # RAWIMUSX (uncalibrated)
+
+    # IMU scale override (applies when IMU type is unknown to novatel_imu_scales.hpp).
+    # Both fields must be non-zero to take effect; otherwise the built-in table is used.
+    # Units: counts → SI per IMU sample (delta-velocity in m/s, delta-angle in rad).
+    # See README "Supported NovAtel IMUs" for the type → scale mapping.
+    imu_scale_override:
+      accel: 0.0
+      gyro:  0.0

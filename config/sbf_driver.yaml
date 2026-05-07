@@ -70,10 +70,8 @@ sbf_driver_node:
       pvt_cartesian: false   # PVT solution (cartesian)
       pos_cov_cartesian: false # PVT covariance (cartesian)
       
-      # Attitude / INS (requires AsteRx-i / mosaic-X5 or other INS-capable receiver)
-      att_euler: false         # Attitude (Euler angles) → publishes orientation to imu_attitude_topic
-      att_cov_euler: false     # Attitude covariance
-      ext_sensor_meas: false   # Raw IMU accel [m/s²] + gyro [rad/s] → publishes to imu_raw_topic
+      # IMU output (requires AsteRx-i / mosaic-X5 or other receiver with integrated IMU)
+      ext_sensor_meas: false   # Uncalibrated raw IMU accel + gyro → /gnss/imu/data_raw
       
       # Status
       receiver_status: false # Receiver status
@@ -87,5 +85,4 @@ sbf_driver_node:
       nmea_gst: true         # GST: position standard deviations (for covariance)
 
     solution_topic: "/gnss/solution"
-    imu_attitude_topic: "/gnss/imu/attitude"  # AttEuler → orientation quaternion
-    imu_raw_topic: "/gnss/imu/data_raw"       # ExtSensorMeas → accel + gyro
+    imu_raw_topic: "/gnss/imu/data_raw"       # ExtSensorMeas (uncalibrated)

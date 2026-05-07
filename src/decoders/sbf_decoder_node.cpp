@@ -27,13 +27,6 @@ namespace {
 constexpr auto kTimerInterval  = 10ms;
 constexpr size_t kNmeaMaxLineLen = 256;
 
-// SBF AttEuler (ID 5938) body offsets (after 8-byte SBF header consumed by mini-framer)
-constexpr int ATT_EULER_OFFSET_ERROR   = 7;
-constexpr int ATT_EULER_OFFSET_HEADING = 10;
-constexpr int ATT_EULER_OFFSET_PITCH   = 14;
-constexpr int ATT_EULER_OFFSET_ROLL    = 18;
-constexpr int ATT_EULER_MIN_LEN        = 22;
-
 // SBF ExtSensorMeas (ID 4050) body offsets
 // Body layout: TOW(4) WNc(2) N(1) SBLength(1) [N × ExtSensorMeasSub of size SBLength]
 //
@@ -62,7 +55,7 @@ constexpr uint8_t ESM_TYPE_GYRO     = 1;   // Angular rates [rad/s]
 ///
 /// Decodes Septentrio Binary Format (SBF) raw observations and navigation data
 /// messages from Septentrio receivers and publishes them as standardized ROS messages.
-/// Also parses NMEA sentences for GnssSolution and SBF AttEuler blocks for IMU data.
+/// Also parses NMEA sentences for GnssSolution and SBF ExtSensorMeas for raw IMU data.
 class SbfDecoderNode : public rclcpp::Node {
  public:
   SbfDecoderNode() : Node("sbf_decoder_node") {
@@ -94,7 +87,6 @@ class SbfDecoderNode : public rclcpp::Node {
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
     declare_parameter<std::string>("solution_topic",     "/gnss/nmea_solution");
-    declare_parameter<std::string>("imu_attitude_topic", "/gnss/imu/attitude");
     declare_parameter<std::string>("imu_raw_topic",      "/gnss/imu/data_raw");
 
     frame_id_ = get_parameter("frame_id").as_string();
@@ -104,7 +96,6 @@ class SbfDecoderNode : public rclcpp::Node {
     obs_pub_          = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
     eph_pub_          = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
     sol_pub_          = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
-    imu_attitude_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_attitude_topic").as_string(), 10);
     imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
   }
 
@@ -235,7 +226,6 @@ class SbfDecoderNode : public rclcpp::Node {
 
   void handleSbfBlock() {
     switch (sbf_id_) {
-      case sbf::ID_ATTEULER:      handleAttEuler();      break;
       case sbf::ID_EXTSENSORMEAS: handleExtSensorMeas(); break;
       case sbf::ID_GPSNAV:        handleGpsNav();        break;
       case sbf::ID_GLONAV:        handleGloNav();        break;
@@ -245,38 +235,6 @@ class SbfDecoderNode : public rclcpp::Node {
       case sbf::ID_NAVICNAV:      handleNavicNav();      break;
       default: break;
     }
-  }
-
-  void handleAttEuler() {
-    if (static_cast<int>(sbf_body_.size()) < ATT_EULER_MIN_LEN) return;
-
-    // Byte 7 (Error): non-zero means attitude not valid
-    if (sbf_body_[ATT_EULER_OFFSET_ERROR] != 0) return;
-
-    // Heading, Pitch, Roll: float32 (4 bytes each), in degrees
-    float heading_deg = 0.0f, pitch_deg = 0.0f, roll_deg = 0.0f;
-    std::memcpy(&heading_deg, sbf_body_.data() + ATT_EULER_OFFSET_HEADING, 4);
-    std::memcpy(&pitch_deg,   sbf_body_.data() + ATT_EULER_OFFSET_PITCH,   4);
-    std::memcpy(&roll_deg,    sbf_body_.data() + ATT_EULER_OFFSET_ROLL,    4);
-
-    const double deg2rad = M_PI / 180.0;
-
-    sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
-    imu.header.frame_id = frame_id_;
-
-    imu.orientation = ins::eulerToQuaternion(
-        roll_deg    * deg2rad,
-        pitch_deg   * deg2rad,
-        heading_deg * deg2rad);
-
-    // Septentrio AttEuler does not provide per-axis accuracy in the basic block
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
-    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
-    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
-
-    imu_attitude_pub_->publish(imu);
   }
 
   void handleExtSensorMeas() {
@@ -614,8 +572,7 @@ class SbfDecoderNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr  obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr   eph_pub_;
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr      sol_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_attitude_pub_;  // AttEuler orientation
-  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;       // ExtSensorMeas accel/gyro
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;       // ExtSensorMeas accel/gyro (uncalibrated)
   rclcpp::TimerBase::SharedPtr timer_;
 
   stream_t stream_{};
