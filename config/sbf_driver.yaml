@@ -45,12 +45,24 @@ sbf_driver_node:
     # ==========================================================================
     messages:
       meas_epoch: true       # Raw observations (MeasEpoch)
-      gps_nav: true          # GPS Navigation data
-      glo_nav: true          # GLONASS Navigation data
-      gal_nav: true          # Galileo Navigation data
-      bds_nav: true          # BeiDou Navigation data
-      qzs_nav: true          # QZSS Navigation data
-      navic_nav: true        # NavIC Navigation data
+
+      # Decoded navigation blocks (receiver-assembled; GPSNav/GLONav/GALNav/BDSNav/QZSNav/NavICNav)
+      # These arrive as a single complete ephemeris per block — faster than raw subframe accumulation.
+      gps_nav: true          # GPSNav    (ID 5891) — GPS decoded ephemeris
+      glo_nav: true          # GLONav    (ID 4004) — GLONASS decoded state vector
+      gal_nav: true          # GALNav    (ID 4002) — Galileo decoded ephemeris
+      bds_nav: true          # BDSNav    (ID 4081) — BeiDou decoded ephemeris
+      qzs_nav: true          # QZSNav    (ID 4095) — QZSS decoded ephemeris
+      navic_nav: true        # NavICNav  (ID 4099) — NavIC decoded ephemeris
+
+      # Raw navigation subframe blocks (decoded by RTKLIB input_sbf())
+      # Both decoded and raw can be enabled simultaneously; duplicates are filtered by IODE/IODC.
+      gps_nav_raw: false      # GPSRawCA    (ID 4017) — GPS L1 C/A subframe
+      glo_nav_raw: false      # GLORawCA    (ID 4026) — GLONASS L1 C/A string
+      gal_nav_raw: false      # GALRawINAV+GALRawFNAV (ID 4023+4022) — Galileo I/F-NAV
+      bds_nav_raw: false      # BDSRaw      (ID 4047) — BeiDou navigation frame
+      qzs_nav_raw: false      # QZSRawL1CA  (ID 4066) — QZSS L1 C/A subframe
+      navic_nav_raw: false    # NAVICRaw    (ID 4093) — NavIC subframe
       
       # Position / Velocity / Time
       pvt_geodetic: false    # PVT solution (geodetic)

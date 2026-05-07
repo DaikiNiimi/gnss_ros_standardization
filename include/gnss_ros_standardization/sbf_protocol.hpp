@@ -31,7 +31,7 @@ constexpr uint8_t SBF_SYNC2 = 0x40;  // '@'
 constexpr uint16_t ID_MEASEPOCH   = 4027;
 constexpr uint16_t ID_MEASEXTRA   = 4000;
 
-// Navigation Blocks
+// Raw Navigation Subframe Blocks (decoded by RTKLIB input_sbf())
 constexpr uint16_t ID_GPSRAWCA    = 4017;
 constexpr uint16_t ID_GLORAWCA    = 4026;
 constexpr uint16_t ID_GALRAWFNAV  = 4022;
@@ -41,6 +41,14 @@ constexpr uint16_t ID_BDSRAW      = 4047;
 constexpr uint16_t ID_QZSRAWL1CA  = 4066;
 constexpr uint16_t ID_QZSRAWL6    = 4069;
 constexpr uint16_t ID_NAVICRAW    = 4093;
+
+// Decoded Navigation Blocks (receiver-assembled, complete ephemeris per block)
+constexpr uint16_t ID_GPSNAV      = 5891;
+constexpr uint16_t ID_GLONAV      = 4004;
+constexpr uint16_t ID_GALNAV      = 4002;
+constexpr uint16_t ID_BDSNAV      = 4081;
+constexpr uint16_t ID_QZSNAV      = 4095;
+constexpr uint16_t ID_NAVICNAV    = 4099;
 
 // PVT Blocks
 constexpr uint16_t ID_PVTCARTESIAN      = 4006;
@@ -64,12 +72,23 @@ constexpr uint16_t ID_CHANSTATUS        = 4013;
 // =============================================================================
 // Used in setSBFOutput command
 constexpr const char* BLOCK_MEASEPOCH = "MeasEpoch";
-constexpr const char* BLOCK_GPSNAV    = "GPSRawCA";
-constexpr const char* BLOCK_GLONAV    = "GLORawCA";
-constexpr const char* BLOCK_GALNAV    = "GALRawINAV+GALRawFNAV";
-constexpr const char* BLOCK_BDSNAV    = "BDSRaw";
-constexpr const char* BLOCK_QZSNAV    = "QZSRawL1CA";
-constexpr const char* BLOCK_NAVICNAV  = "NAVICRaw";
+
+// Raw navigation subframe block names (decoded by RTKLIB input_sbf())
+constexpr const char* BLOCK_GPSNAV_RAW    = "GPSRawCA";
+constexpr const char* BLOCK_GLONAV_RAW    = "GLORawCA";
+constexpr const char* BLOCK_GALNAV_RAW    = "GALRawINAV+GALRawFNAV";
+constexpr const char* BLOCK_BDSNAV_RAW    = "BDSRaw";
+constexpr const char* BLOCK_QZSNAV_RAW    = "QZSRawL1CA";
+constexpr const char* BLOCK_NAVICNAV_RAW  = "NAVICRaw";
+
+// Decoded navigation block names (receiver-assembled, complete ephemeris per block)
+constexpr const char* BLOCK_GPSNAV    = "GPSNav";
+constexpr const char* BLOCK_GLONAV    = "GLONav";
+constexpr const char* BLOCK_GALNAV    = "GALNav";
+constexpr const char* BLOCK_BDSNAV    = "BDSNav";
+constexpr const char* BLOCK_QZSNAV    = "QZSNav";
+constexpr const char* BLOCK_NAVICNAV  = "NavICNav";
+
 constexpr const char* BLOCK_PVTGEODETIC = "PVTGeodetic";
 constexpr const char* BLOCK_POSCOVGEODETIC = "PosCovGeodetic";
 constexpr const char* BLOCK_PVTCARTESIAN = "PVTCartesian";
