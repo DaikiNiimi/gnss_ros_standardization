@@ -160,6 +160,10 @@ class UbxDecoderNode : public rclcpp::Node {
     uint8_t buffer[ubx::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
 
+    if (bytes_read > 0) {
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Stream: read %d bytes", bytes_read);
+    }
+
     for (int i = 0; i < bytes_read; ++i) {
       uint8_t byte = buffer[i];
 
@@ -233,8 +237,15 @@ class UbxDecoderNode : public rclcpp::Node {
   }
 
   void handleUbxFrame() {
-    if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_INS) handleEsfIns();
-    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_ATT) handleNavAtt();
+    if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_INS) {
+      handleEsfIns();
+    } else if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_ATT) {
+      handleNavAtt();
+    } else {
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "UBX: received unhandled frame class=0x%02x id=0x%02x len=%d",
+                           ubx_cls_, ubx_id_, ubx_len_);
+    }
   }
 
   void handleEsfIns() {
@@ -345,7 +356,11 @@ class UbxDecoderNode : public rclcpp::Node {
     switch (result) {
       case 1:  publishObservations(); break;
       case 2:  publishEphemerides();  break;
-      default: break;
+      case 0:  break; // No message complete
+      default:
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "RTKLIB: input_ubx returned result=%d", result);
+        break;
     }
   }
 

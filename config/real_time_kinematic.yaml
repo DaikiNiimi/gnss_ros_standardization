@@ -24,7 +24,7 @@ rtk_position_node:
       # Base station position type (ecef, llh, or rtcm)
       postype: "llh"
       # Base position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
-      pos: [35.134709472, 136.977574273, 104.7180]
+      pos: [35.70494444, 139.72169444, 74.380]
 
     # Fixed Origin for Local Position (ENU)
     # If 'pos' is set to non-zero, this position is used as the origin for 'local_position' and 'local_origin_ecef'.
@@ -33,7 +33,7 @@ rtk_position_node:
       # Position type (ecef or llh)
       postype: "llh"
       # Position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
-      pos: [35.134709472, 136.977574273, 104.7180]
+      pos: [0.0, 0.0, 0.0]
 
     # ==========================================================================
     # Setting 1 (pos1)

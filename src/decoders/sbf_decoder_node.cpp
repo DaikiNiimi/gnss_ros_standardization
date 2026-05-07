@@ -13,6 +13,7 @@
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
+#include "gnss_ros_standardization/sbf_nav_decoder.hpp"
 #include "gnss_ros_standardization/sbf_protocol.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
@@ -233,8 +234,17 @@ class SbfDecoderNode : public rclcpp::Node {
   }
 
   void handleSbfBlock() {
-    if (sbf_id_ == sbf::ID_ATTEULER)      handleAttEuler();
-    if (sbf_id_ == sbf::ID_EXTSENSORMEAS) handleExtSensorMeas();
+    switch (sbf_id_) {
+      case sbf::ID_ATTEULER:      handleAttEuler();      break;
+      case sbf::ID_EXTSENSORMEAS: handleExtSensorMeas(); break;
+      case sbf::ID_GPSNAV:        handleGpsNav();        break;
+      case sbf::ID_GLONAV:        handleGloNav();        break;
+      case sbf::ID_GALNAV:        handleGalNav();        break;
+      case sbf::ID_BDSNAV:        handleBdsNav();        break;
+      case sbf::ID_QZSNAV:        handleQzsNav();        break;
+      case sbf::ID_NAVICNAV:      handleNavicNav();      break;
+      default: break;
+    }
   }
 
   void handleAttEuler() {
@@ -333,6 +343,65 @@ class SbfDecoderNode : public rclcpp::Node {
     esm_has_gyro_  = false;
     esm_accel_[0] = esm_accel_[1] = esm_accel_[2] = 0.0;
     esm_gyro_[0]  = esm_gyro_[1]  = esm_gyro_[2]  = 0.0;
+  }
+
+  // ============================================================================
+  // Decoded *Nav block handlers
+  // ============================================================================
+
+  void handleGpsNav() {
+    eph_t eph{};
+    if (!sbf::nav::parseGPSNav(sbf_body_, eph)) return;
+    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
+    if (!seen_ephemeris_.insert(key).second) return;
+    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+    flushPendingEphemerides();
+  }
+
+  void handleGloNav() {
+    geph_t geph{};
+    if (!sbf::nav::parseGLONav(sbf_body_, geph)) return;
+    auto it = last_glo_iode_.find(geph.sat);
+    if (it != last_glo_iode_.end() && it->second == geph.iode) return;
+    last_glo_iode_[geph.sat] = geph.iode;
+    pending_glonass_eph_.push_back(gnss_utils::gephToMsg(geph));
+    flushPendingEphemerides();
+  }
+
+  void handleGalNav() {
+    eph_t eph{};
+    if (!sbf::nav::parseGALNav(sbf_body_, eph)) return;
+    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
+    if (!seen_ephemeris_.insert(key).second) return;
+    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+    flushPendingEphemerides();
+  }
+
+  void handleBdsNav() {
+    eph_t eph{};
+    if (!sbf::nav::parseBDSNav(sbf_body_, eph)) return;
+    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
+    if (!seen_ephemeris_.insert(key).second) return;
+    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+    flushPendingEphemerides();
+  }
+
+  void handleQzsNav() {
+    eph_t eph{};
+    if (!sbf::nav::parseQZSNav(sbf_body_, eph)) return;
+    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
+    if (!seen_ephemeris_.insert(key).second) return;
+    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+    flushPendingEphemerides();
+  }
+
+  void handleNavicNav() {
+    eph_t eph{};
+    if (!sbf::nav::parseNavICNav(sbf_body_, eph)) return;
+    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
+    if (!seen_ephemeris_.insert(key).second) return;
+    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+    flushPendingEphemerides();
   }
 
   // ============================================================================
@@ -464,21 +533,19 @@ class SbfDecoderNode : public rclcpp::Node {
   }
 
   // ============================================================================
-  // Ephemeris Publishing
+  // Ephemeris Publishing (pending queue style — shared by raw and decoded paths)
   // ============================================================================
 
-  void publishEphemerides() {
-    bool has_new = false;
-    std::vector<msg::GnssEphemeris> gnss_eph;
-    std::vector<msg::GlonassEphemeris> glo_eph;
-
+  void accumulateRtklibEphemerides() {
     for (int i = 0; i < raw_.nav.n; ++i) {
       const eph_t& eph = raw_.nav.eph[i];
       if (eph.sat == 0) continue;
       int prn = 0;
       if (satsys(eph.sat, &prn) == SYS_GLO) continue;
       EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
-      if (seen_ephemeris_.insert(key).second) { gnss_eph.push_back(gnss_utils::ephToMsg(eph)); has_new = true; }
+      if (seen_ephemeris_.insert(key).second) {
+        pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+      }
     }
     for (int i = 0; i < raw_.nav.ng; ++i) {
       const geph_t& geph = raw_.nav.geph[i];
@@ -486,21 +553,27 @@ class SbfDecoderNode : public rclcpp::Node {
       auto it = last_glo_iode_.find(geph.sat);
       if (it == last_glo_iode_.end() || it->second != geph.iode) {
         last_glo_iode_[geph.sat] = geph.iode;
-        glo_eph.push_back(gnss_utils::gephToMsg(geph)); has_new = true;
+        pending_glonass_eph_.push_back(gnss_utils::gephToMsg(geph));
       }
     }
+  }
 
-    if (!has_new && !first_ephemeris_) return;
-    first_ephemeris_ = false;
+  void flushPendingEphemerides() {
+    if (pending_gnss_eph_.empty() && pending_glonass_eph_.empty()) return;
 
     msg::GnssEphemerides msg;
-    msg.header.stamp = now();
-    msg.gnss_ephemeris    = std::move(gnss_eph);
-    msg.glonass_ephemeris = std::move(glo_eph);
+    msg.header.stamp      = now();
+    msg.gnss_ephemeris    = std::move(pending_gnss_eph_);
+    msg.glonass_ephemeris = std::move(pending_glonass_eph_);
     eph_pub_->publish(msg);
 
-    RCLCPP_INFO(get_logger(), "Published ephemerides: GNSS=%zu GLO=%zu (new=%s)",
-      msg.gnss_ephemeris.size(), msg.glonass_ephemeris.size(), has_new ? "yes" : "no");
+    RCLCPP_INFO(get_logger(), "Published ephemerides: GNSS=%zu GLO=%zu",
+      msg.gnss_ephemeris.size(), msg.glonass_ephemeris.size());
+  }
+
+  void publishEphemerides() {
+    accumulateRtklibEphemerides();
+    flushPendingEphemerides();
   }
 
   // ============================================================================
@@ -573,10 +646,13 @@ class SbfDecoderNode : public rclcpp::Node {
   bool     esm_has_accel_{false};
   bool     esm_has_gyro_{false};
 
-  // Ephemeris dedup
+  // Ephemeris dedup (shared between raw RTKLIB path and decoded *Nav path)
   std::unordered_set<EphemerisKey, EphemerisKeyHash> seen_ephemeris_;
   std::unordered_map<int, int> last_glo_iode_;
-  bool first_ephemeris_{true};
+
+  // Pending ephemeris queues (populated by both paths, flushed together)
+  std::vector<msg::GnssEphemeris>    pending_gnss_eph_;
+  std::vector<msg::GlonassEphemeris> pending_glonass_eph_;
 };
 
 }  // namespace gnss_ros_standardization

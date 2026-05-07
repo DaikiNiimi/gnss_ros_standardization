@@ -13,6 +13,7 @@
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
+#include "gnss_ros_standardization/sbf_nav_decoder.hpp"
 #include "gnss_ros_standardization/sbf_protocol.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
@@ -60,12 +61,22 @@ struct SbfConfig {
 
   // SBF message settings
   bool enable_meas_epoch{true};
+
+  // Decoded *Nav blocks (receiver-assembled, GPSNav/GLONav/GALNav/BDSNav/QZSNav/NavICNav)
   bool enable_gps_nav{true};
   bool enable_glo_nav{true};
   bool enable_gal_nav{true};
   bool enable_bds_nav{true};
   bool enable_qzs_nav{true};
   bool enable_navic_nav{true};
+
+  // Raw subframe blocks decoded by RTKLIB (GPSRawCA/GLORawCA/GALRawINAV+FNAV/BDSRaw/QZSRawL1CA/NAVICRaw)
+  bool enable_gps_nav_raw{true};
+  bool enable_glo_nav_raw{true};
+  bool enable_gal_nav_raw{true};
+  bool enable_bds_nav_raw{true};
+  bool enable_qzs_nav_raw{true};
+  bool enable_navic_nav_raw{true};
 
   bool enable_pvt_geodetic{false};
   bool enable_pos_cov_geodetic{false};
@@ -137,6 +148,12 @@ class SbfDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.bds_nav",            config_.enable_bds_nav);
     declare_parameter<bool>("messages.qzs_nav",            config_.enable_qzs_nav);
     declare_parameter<bool>("messages.navic_nav",          config_.enable_navic_nav);
+    declare_parameter<bool>("messages.gps_nav_raw",        config_.enable_gps_nav_raw);
+    declare_parameter<bool>("messages.glo_nav_raw",        config_.enable_glo_nav_raw);
+    declare_parameter<bool>("messages.gal_nav_raw",        config_.enable_gal_nav_raw);
+    declare_parameter<bool>("messages.bds_nav_raw",        config_.enable_bds_nav_raw);
+    declare_parameter<bool>("messages.qzs_nav_raw",        config_.enable_qzs_nav_raw);
+    declare_parameter<bool>("messages.navic_nav_raw",      config_.enable_navic_nav_raw);
     declare_parameter<bool>("messages.pvt_geodetic",       config_.enable_pvt_geodetic);
     declare_parameter<bool>("messages.pos_cov_geodetic",   config_.enable_pos_cov_geodetic);
     declare_parameter<bool>("messages.pvt_cartesian",      config_.enable_pvt_cartesian);
@@ -170,6 +187,12 @@ class SbfDriverNode : public rclcpp::Node {
     config_.enable_bds_nav           = get_parameter("messages.bds_nav").as_bool();
     config_.enable_qzs_nav           = get_parameter("messages.qzs_nav").as_bool();
     config_.enable_navic_nav         = get_parameter("messages.navic_nav").as_bool();
+    config_.enable_gps_nav_raw       = get_parameter("messages.gps_nav_raw").as_bool();
+    config_.enable_glo_nav_raw       = get_parameter("messages.glo_nav_raw").as_bool();
+    config_.enable_gal_nav_raw       = get_parameter("messages.gal_nav_raw").as_bool();
+    config_.enable_bds_nav_raw       = get_parameter("messages.bds_nav_raw").as_bool();
+    config_.enable_qzs_nav_raw       = get_parameter("messages.qzs_nav_raw").as_bool();
+    config_.enable_navic_nav_raw     = get_parameter("messages.navic_nav_raw").as_bool();
     config_.enable_pvt_geodetic      = get_parameter("messages.pvt_geodetic").as_bool();
     config_.enable_pos_cov_geodetic  = get_parameter("messages.pos_cov_geodetic").as_bool();
     config_.enable_pvt_cartesian     = get_parameter("messages.pvt_cartesian").as_bool();
@@ -272,12 +295,20 @@ class SbfDriverNode : public rclcpp::Node {
     // --- SBF output (Stream1) ---
     std::vector<std::string> blocks;
     if (config_.enable_meas_epoch)       blocks.push_back(sbf::BLOCK_MEASEPOCH);
+    // Decoded *Nav blocks (receiver-assembled)
     if (config_.enable_gps_nav)          blocks.push_back(sbf::BLOCK_GPSNAV);
     if (config_.enable_glo_nav)          blocks.push_back(sbf::BLOCK_GLONAV);
     if (config_.enable_gal_nav)          blocks.push_back(sbf::BLOCK_GALNAV);
     if (config_.enable_bds_nav)          blocks.push_back(sbf::BLOCK_BDSNAV);
     if (config_.enable_qzs_nav)          blocks.push_back(sbf::BLOCK_QZSNAV);
     if (config_.enable_navic_nav)        blocks.push_back(sbf::BLOCK_NAVICNAV);
+    // Raw subframe blocks (decoded by RTKLIB)
+    if (config_.enable_gps_nav_raw)      blocks.push_back(sbf::BLOCK_GPSNAV_RAW);
+    if (config_.enable_glo_nav_raw)      blocks.push_back(sbf::BLOCK_GLONAV_RAW);
+    if (config_.enable_gal_nav_raw)      blocks.push_back(sbf::BLOCK_GALNAV_RAW);
+    if (config_.enable_bds_nav_raw)      blocks.push_back(sbf::BLOCK_BDSNAV_RAW);
+    if (config_.enable_qzs_nav_raw)      blocks.push_back(sbf::BLOCK_QZSNAV_RAW);
+    if (config_.enable_navic_nav_raw)    blocks.push_back(sbf::BLOCK_NAVICNAV_RAW);
     if (config_.enable_pvt_geodetic)     blocks.push_back(sbf::BLOCK_PVTGEODETIC);
     if (config_.enable_pos_cov_geodetic) blocks.push_back(sbf::BLOCK_POSCOVGEODETIC);
     if (config_.enable_pvt_cartesian)    blocks.push_back(sbf::BLOCK_PVTCARTESIAN);
@@ -330,9 +361,10 @@ class SbfDriverNode : public rclcpp::Node {
 
       if (response.find("invalid") != std::string::npos ||
           response.find("Error")   != std::string::npos) {
-        if (config_.enable_navic_nav) {
+        if (config_.enable_navic_nav || config_.enable_navic_nav_raw) {
           RCLCPP_WARN(get_logger(), "Receiver rejected config with NavIC. Retrying without NavIC...");
-          config_.enable_navic_nav = false;
+          config_.enable_navic_nav     = false;
+          config_.enable_navic_nav_raw = false;
           configureReceiver();
         } else {
           RCLCPP_ERROR(get_logger(), "Receiver rejected configuration. Check port and settings.");
@@ -409,8 +441,17 @@ class SbfDriverNode : public rclcpp::Node {
   }
 
   void handleSbfBlock() {
-    if (sbf_id_ == sbf::ID_ATTEULER)      handleAttEuler();
-    if (sbf_id_ == sbf::ID_EXTSENSORMEAS) handleExtSensorMeas();
+    switch (sbf_id_) {
+      case sbf::ID_ATTEULER:      handleAttEuler();      break;
+      case sbf::ID_EXTSENSORMEAS: handleExtSensorMeas(); break;
+      case sbf::ID_GPSNAV:        handleGpsNav();        break;
+      case sbf::ID_GLONAV:        handleGloNav();        break;
+      case sbf::ID_GALNAV:        handleGalNav();        break;
+      case sbf::ID_BDSNAV:        handleBdsNav();        break;
+      case sbf::ID_QZSNAV:        handleQzsNav();        break;
+      case sbf::ID_NAVICNAV:      handleNavicNav();      break;
+      default: break;
+    }
   }
 
   void handleAttEuler() {
@@ -502,6 +543,71 @@ class SbfDriverNode : public rclcpp::Node {
     esm_has_gyro_  = false;
     esm_accel_[0] = esm_accel_[1] = esm_accel_[2] = 0.0;
     esm_gyro_[0]  = esm_gyro_[1]  = esm_gyro_[2]  = 0.0;
+  }
+
+  // ============================================================================
+  // Decoded *Nav block handlers
+  // ============================================================================
+
+  void handleGpsNav() {
+    if (!config_.enable_gps_nav) return;
+    eph_t eph{};
+    if (!sbf::nav::parseGPSNav(sbf_body_, eph)) return;
+    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
+    if (!seen_ephemeris_.insert(key).second) return;
+    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+    flushPendingEphemerides();
+  }
+
+  void handleGloNav() {
+    if (!config_.enable_glo_nav) return;
+    geph_t geph{};
+    if (!sbf::nav::parseGLONav(sbf_body_, geph)) return;
+    auto it = last_glo_iode_.find(geph.sat);
+    if (it != last_glo_iode_.end() && it->second == geph.iode) return;
+    last_glo_iode_[geph.sat] = geph.iode;
+    pending_glonass_eph_.push_back(gnss_utils::gephToMsg(geph));
+    flushPendingEphemerides();
+  }
+
+  void handleGalNav() {
+    if (!config_.enable_gal_nav) return;
+    eph_t eph{};
+    if (!sbf::nav::parseGALNav(sbf_body_, eph)) return;
+    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
+    if (!seen_ephemeris_.insert(key).second) return;
+    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+    flushPendingEphemerides();
+  }
+
+  void handleBdsNav() {
+    if (!config_.enable_bds_nav) return;
+    eph_t eph{};
+    if (!sbf::nav::parseBDSNav(sbf_body_, eph)) return;
+    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
+    if (!seen_ephemeris_.insert(key).second) return;
+    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+    flushPendingEphemerides();
+  }
+
+  void handleQzsNav() {
+    if (!config_.enable_qzs_nav) return;
+    eph_t eph{};
+    if (!sbf::nav::parseQZSNav(sbf_body_, eph)) return;
+    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
+    if (!seen_ephemeris_.insert(key).second) return;
+    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+    flushPendingEphemerides();
+  }
+
+  void handleNavicNav() {
+    if (!config_.enable_navic_nav) return;
+    eph_t eph{};
+    if (!sbf::nav::parseNavICNav(sbf_body_, eph)) return;
+    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
+    if (!seen_ephemeris_.insert(key).second) return;
+    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+    flushPendingEphemerides();
   }
 
   // ============================================================================
@@ -637,21 +743,20 @@ class SbfDriverNode : public rclcpp::Node {
   }
 
   // ============================================================================
-  // Ephemeris Publishing
+  // Ephemeris Publishing (pending queue style — shared by raw and decoded paths)
   // ============================================================================
 
-  void publishEphemerides() {
-    bool has_new = false;
-    std::vector<msg::GnssEphemeris> gnss_eph;
-    std::vector<msg::GlonassEphemeris> glo_eph;
-
+  // Accumulate new ephemerides from RTKLIB's raw_.nav arrays into pending queues.
+  void accumulateRtklibEphemerides() {
     for (int i = 0; i < raw_.nav.n; ++i) {
       const eph_t& eph = raw_.nav.eph[i];
       if (eph.sat == 0) continue;
       int prn = 0;
       if (satsys(eph.sat, &prn) == SYS_GLO) continue;
       EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
-      if (seen_ephemeris_.insert(key).second) { gnss_eph.push_back(gnss_utils::ephToMsg(eph)); has_new = true; }
+      if (seen_ephemeris_.insert(key).second) {
+        pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
+      }
     }
     for (int i = 0; i < raw_.nav.ng; ++i) {
       const geph_t& geph = raw_.nav.geph[i];
@@ -659,21 +764,29 @@ class SbfDriverNode : public rclcpp::Node {
       auto it = last_glo_iode_.find(geph.sat);
       if (it == last_glo_iode_.end() || it->second != geph.iode) {
         last_glo_iode_[geph.sat] = geph.iode;
-        glo_eph.push_back(gnss_utils::gephToMsg(geph)); has_new = true;
+        pending_glonass_eph_.push_back(gnss_utils::gephToMsg(geph));
       }
     }
+  }
 
-    if (!has_new && !first_ephemeris_) return;
-    first_ephemeris_ = false;
+  // Publish all pending ephemerides in one message, then clear the pending queues.
+  void flushPendingEphemerides() {
+    if (pending_gnss_eph_.empty() && pending_glonass_eph_.empty()) return;
 
     msg::GnssEphemerides msg;
     msg.header.stamp      = now();
-    msg.gnss_ephemeris    = std::move(gnss_eph);
-    msg.glonass_ephemeris = std::move(glo_eph);
+    msg.gnss_ephemeris    = std::move(pending_gnss_eph_);
+    msg.glonass_ephemeris = std::move(pending_glonass_eph_);
     eph_pub_->publish(msg);
 
-    RCLCPP_INFO(get_logger(), "Published ephemerides: GNSS=%zu GLO=%zu (new=%s)",
-      msg.gnss_ephemeris.size(), msg.glonass_ephemeris.size(), has_new ? "yes" : "no");
+    RCLCPP_INFO(get_logger(), "Published ephemerides: GNSS=%zu GLO=%zu",
+      msg.gnss_ephemeris.size(), msg.glonass_ephemeris.size());
+  }
+
+  // Called by handleDecodeResult(2) — walk RTKLIB nav arrays then flush.
+  void publishEphemerides() {
+    accumulateRtklibEphemerides();
+    flushPendingEphemerides();
   }
 
   // ============================================================================
@@ -747,10 +860,13 @@ class SbfDriverNode : public rclcpp::Node {
   double local_origin_ecef_[3]{0.0};
   double local_origin_pos_[3]{0.0};
 
-  // Ephemeris dedup
+  // Ephemeris dedup (shared between raw RTKLIB path and decoded *Nav path)
   std::unordered_set<EphemerisKey, EphemerisKeyHash> seen_ephemeris_;
   std::unordered_map<int, int> last_glo_iode_;
-  bool first_ephemeris_{true};
+
+  // Pending ephemeris queues (populated by both paths, flushed together)
+  std::vector<msg::GnssEphemeris>    pending_gnss_eph_;
+  std::vector<msg::GlonassEphemeris> pending_glonass_eph_;
 };
 
 }  // namespace gnss_ros_standardization

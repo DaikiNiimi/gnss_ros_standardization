@@ -33,9 +33,138 @@ By providing standardized ROS 2 / RTKLIB-based tools, this project enables devel
 | Receiver | Raw Observations | Navigation / Ephemeris | GNSS Solution (NMEA) | IMU / INS Topics |
 |---|---|---|---|---|
 | u-blox (UBX) | GnssObservations | GnssEphemerides | GnssSolution | sensor_msgs/Imu (ESF-INS, NAV-ATT) |
-| Septentrio (SBF) | GnssObservations | GnssEphemerides | GnssSolution | sensor_msgs/Imu (AttEuler) |
-| NovAtel (OEM) | GnssObservations | GnssEphemerides | GnssSolution | sensor_msgs/Imu (INSPVA attitude) |
+| Septentrio (SBF) | GnssObservations | GnssEphemerides | GnssSolution | sensor_msgs/Imu (AttEuler, ExtSensorMeas) |
+| NovAtel (OEM) | GnssObservations | GnssEphemerides | GnssSolution | sensor_msgs/Imu (INSPVA, CORRIMUDATA) |
 | RTCM3 (input) | GnssObservations | GnssEphemerides | — | — |
+
+---
+
+## Protocol Decoding Reference
+
+This section documents which proprietary receiver messages are decoded to produce each ROS 2 topic.
+All binary decoding (observation / ephemeris) is performed by the embedded [MALIB](https://github.com/DaikiNiimi/MALIB) (RTKLIB fork) decoder.
+IMU/INS messages that RTKLIB does not handle are decoded by a parallel mini-framer inside each driver/decoder node.
+
+### u-blox (UBX protocol)
+
+RTKLIB decoder: `input_ubx()` / `STRFMT_UBX`
+
+#### `/gnss/observation` — Raw Observations
+
+| UBX Message | Class/ID | Description |
+|---|---|---|
+| `UBX-RXM-RAWX` | `0x02` / `0x15` | Raw pseudorange, carrier phase, Doppler, SNR for all tracked signals and frequencies |
+
+#### `/gnss/ephemeris` — Navigation Messages
+
+| UBX Message | Class/ID | Contents |
+|---|---|---|
+| `UBX-RXM-SFRBX` | `0x02` / `0x13` | Raw navigation subframe/string/page for GPS, GLONASS, Galileo, BeiDou, QZSS, NavIC, SBAS |
+
+#### `/gnss/imu/attitude` — Attitude (orientation quaternion)
+
+| UBX Message | Class/ID | Description | Requirement |
+|---|---|---|---|
+| `UBX-NAV-ATT` | `0x01` / `0x05` | Roll, pitch, heading → orientation quaternion | ZED-F9R or IMU-enabled module |
+
+#### `/gnss/imu/data_raw` — Raw IMU (accel + gyro)
+
+| UBX Message | Class/ID | Description | Requirement |
+|---|---|---|---|
+| `UBX-ESF-INS` | `0x10` / `0x15` | Calibrated angular rate [rad/s] + linear acceleration [m/s²] | ZED-F9R or IMU-enabled module |
+
+---
+
+### Septentrio (SBF protocol)
+
+RTKLIB decoder: `input_sbf()` / `STRFMT_SEPT`
+
+#### `/gnss/observation` — Raw Observations
+
+| SBF Block | ID | Description |
+|---|---|---|
+| `MeasEpoch` | 4027 | Raw carrier phase, code range, Doppler, SNR for all signals |
+
+#### `/gnss/ephemeris` — Navigation Messages
+
+**Decoded blocks** (receiver-assembled; single block = complete ephemeris):
+
+| SBF Block | ID | Contents |
+|---|---|---|
+| `GPSNav` | 5891 | GPS complete Keplerian ephemeris |
+| `GLONav` | 4004 | GLONASS complete state-vector ephemeris |
+| `GALNav` | 4002 | Galileo complete Keplerian ephemeris |
+| `BDSNav` | 4081 | BeiDou complete Keplerian ephemeris |
+| `QZSNav` | 4095 | QZSS complete Keplerian ephemeris |
+| `NavICNav` | 4099 | NavIC complete Keplerian ephemeris |
+
+**Raw subframe blocks** (decoded by RTKLIB `input_sbf()`; duplicates filtered by IODE/IODC):
+
+| SBF Block | ID | Contents |
+|---|---|---|
+| `GPSRawCA` | 4017 | GPS L1 C/A navigation subframe |
+| `GLORawCA` | 4026 | GLONASS L1 C/A navigation string |
+| `GALRawINAV` | 4023 | Galileo I/NAV navigation page |
+| `GALRawFNAV` | 4022 | Galileo F/NAV navigation page |
+| `BDSRaw` | 4047 | BeiDou navigation message |
+| `QZSRawL1CA` | 4066 | QZSS L1 C/A navigation subframe |
+| `NAVICRaw` | 4093 | NavIC navigation message |
+
+#### `/gnss/imu/attitude` — Attitude (orientation quaternion)
+
+| SBF Block | ID | Description | Requirement |
+|---|---|---|---|
+| `AttEuler` | 5938 | Heading, pitch, roll → orientation quaternion | AsteRx-i / mosaic-X5 with dual-antenna or IMU |
+
+#### `/gnss/imu/data_raw` — Raw IMU (accel + gyro)
+
+| SBF Block | ID | Description | Requirement |
+|---|---|---|---|
+| `ExtSensorMeas` | 4050 | Linear acceleration [m/s²] (Type 0) and angular velocity [rad/s] (Type 1) as 3-axis vectors | AsteRx-i / mosaic-X5 with integrated IMU |
+
+---
+
+### NovAtel (OEM4/6/7 binary protocol)
+
+RTKLIB decoder: `input_oem4()` / `STRFMT_OEM4` (or `input_oem3()` for legacy OEM3 format)
+IMU/INS messages decoded by a parallel OEM4 mini-framer (RTKLIB does not handle these).
+
+#### `/gnss/observation` — Raw Observations
+
+| NovAtel Log | Message ID | Description |
+|---|---|---|
+| `RANGECMPB` | 140 | Compressed range measurements — pseudorange, carrier phase, Doppler, SNR (recommended) |
+| `RANGEB` | 43 | Uncompressed range measurements (alternative) |
+
+#### `/gnss/ephemeris` — Navigation Messages
+
+| NovAtel Log | Message ID | Contents |
+|---|---|---|
+| `GPSEPHEMB` | 7 | GPS ephemeris (Keplerian elements) |
+| `GLOEPHEMERISB` | 723 | GLONASS ephemeris (state vector) |
+| `GALEPHEMERISB` | 1122 | Galileo F/NAV ephemeris |
+| `GALINAVEPHEMERISB` | 1309 | Galileo I/NAV ephemeris |
+| `BDSEPHEMERISB` | 1696 | BeiDou ephemeris |
+| `QZSSEPHEMERISB` | 1336 | QZSS ephemeris |
+| `NAVICEPHEMERISB` | 2123 | NavIC ephemeris |
+| `IONUTCB` | 8 | GPS ionosphere + UTC parameters |
+| `GALIONOB` | 1127 | Galileo ionosphere parameters |
+| `QZSSIONUTCB` | 1347 | QZSS ionosphere + UTC parameters |
+
+#### `/gnss/imu/attitude` — Attitude (orientation quaternion)
+
+| NovAtel Log | Message ID | Description | Requirement |
+|---|---|---|---|
+| `INSPVAB` | 507 | INS position, velocity, attitude — roll/pitch/azimuth → orientation quaternion, output at 10 Hz | SPAN-capable receiver + IMU |
+
+#### `/gnss/imu/data_raw` — Raw IMU (accel + gyro)
+
+| NovAtel Log | Message ID | Description | Requirement |
+|---|---|---|---|
+| `CORRIMUDATAB` | 812 | Bias/gravity/earth-rate corrected accel [m/s²] and angular velocity [rad/s] at full IMU rate (ONNEW) | SPAN-capable receiver + IMU |
+
+> **Note on CORRIMUDATA**: The log outputs SI-unit *increments* accumulated over one IMU sampling period.
+> The driver/decoder divides each increment by the interval between successive timestamps (`dt`) to recover instantaneous rates and accelerations.
 
 ---
 
@@ -164,8 +293,8 @@ Default topic names (all can be overridden via YAML parameters):
 | `/gnss/ephemeris` | `GnssEphemerides` | All drivers / RTCM3 decoder |
 | `/gnss/solution` | `GnssSolution` | u-blox, Septentrio, NovAtel drivers (via NMEA) |
 | `/gnss/nmea_solution` | `GnssSolution` | Decoder nodes (raw stream decoding) |
-| `/gnss/imu/data` | `sensor_msgs/Imu` | u-blox (ESF-INS/NAV-ATT), Septentrio (AttEuler), NovAtel (INSPVA) |
-| `/gnss/imu/data_raw` | `sensor_msgs/Imu` | u-blox driver (ESF-INS raw) |
+| `/gnss/imu/attitude` | `sensor_msgs/Imu` | Attitude quaternion — u-blox (NAV-ATT), Septentrio (AttEuler), NovAtel (INSPVA) |
+| `/gnss/imu/data_raw` | `sensor_msgs/Imu` | Raw accel + gyro — u-blox (ESF-INS), Septentrio (ExtSensorMeas), NovAtel (CORRIMUDATA) |
 
 ## Message Reference
 
