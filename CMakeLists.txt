@@ -53,14 +53,14 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 )
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
-# MALIB core
-set(MALIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/MALIB")
-if(NOT EXISTS "${MALIB_ROOT}/src/rtklib.h")
-  message(FATAL_ERROR "MALIB not found: ${MALIB_ROOT}/src/rtklib.h")
+# RTKLIB core
+set(RTKLIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/RTKLIB")
+if(NOT EXISTS "${RTKLIB_ROOT}/src/rtklib.h")
+  message(FATAL_ERROR "RTKLIB not found: ${RTKLIB_ROOT}/src/rtklib.h")
 endif()
-file(GLOB _core_main "${MALIB_ROOT}/src/*.c")
-if(EXISTS "${MALIB_ROOT}/src/rcv")
-  file(GLOB _core_rcv  "${MALIB_ROOT}/src/rcv/*.c")
+file(GLOB _core_main "${RTKLIB_ROOT}/src/*.c")
+if(EXISTS "${RTKLIB_ROOT}/src/rcv")
+  file(GLOB _core_rcv  "${RTKLIB_ROOT}/src/rcv/*.c")
 endif()
 set(_core_sources ${_core_main} ${_core_rcv})
 
@@ -69,14 +69,21 @@ set(_apps_to_exclude
   convkml.c
 )
 foreach(_maybe_app IN LISTS _apps_to_exclude)
-  if(EXISTS "${MALIB_ROOT}/src/${_maybe_app}")
-    list(REMOVE_ITEM _core_sources "${MALIB_ROOT}/src/${_maybe_app}")
+  if(EXISTS "${RTKLIB_ROOT}/src/${_maybe_app}")
+    list(REMOVE_ITEM _core_sources "${RTKLIB_ROOT}/src/${_maybe_app}")
   endif()
 endforeach()
 
+# Exclude receiver files that reference nav_t::leaps (removed in this RTKLIB version)
+# and are not used by this package (ComNav / Tersus receivers).
+list(REMOVE_ITEM _core_sources
+  "${RTKLIB_ROOT}/src/rcv/comnav.c"
+  "${RTKLIB_ROOT}/src/rcv/tersus.c"
+)
+
 list(LENGTH _core_sources _core_src_count)
 if(_core_src_count EQUAL 0)
-  message(FATAL_ERROR "MALIB core sources list is empty")
+  message(FATAL_ERROR "RTKLIB core sources list is empty")
 endif()
 
 add_library(rtkcore_lib STATIC ${_core_sources})
@@ -84,7 +91,7 @@ set_target_properties(rtkcore_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
   target_compile_options(rtkcore_lib PRIVATE "-w")
 endif()
-target_include_directories(rtkcore_lib PUBLIC "${MALIB_ROOT}/src")
+target_include_directories(rtkcore_lib PUBLIC "${RTKLIB_ROOT}/src")
 
 add_library(rtkcore_config INTERFACE)
 target_compile_definitions(rtkcore_config INTERFACE
@@ -96,7 +103,7 @@ target_compile_definitions(rtkcore_config INTERFACE
   $<$<BOOL:${ENABLE_IRN}>:ENAIRN>
   NEXOBS=${NEXOBS}
 )
-target_include_directories(rtkcore_config INTERFACE "${MALIB_ROOT}/src")
+target_include_directories(rtkcore_config INTERFACE "${RTKLIB_ROOT}/src")
 target_link_libraries(rtkcore_lib PUBLIC rtkcore_config)
 if(UNIX AND NOT APPLE)
   target_link_libraries(rtkcore_lib PRIVATE m)
@@ -124,7 +131,7 @@ target_include_directories(gnss_utils PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-target_include_directories(gnss_utils PRIVATE "${MALIB_ROOT}/src")
+target_include_directories(gnss_utils PRIVATE "${RTKLIB_ROOT}/src")
 # We need rtkcore_lib for rtklib types used in gnss_utils
 target_link_libraries(gnss_utils rtkcore_lib rtkcore_config ${cpp_typesupport_target})
 ament_target_dependencies(gnss_utils rclcpp std_msgs builtin_interfaces)
@@ -247,7 +254,7 @@ if(BUILD_RINEX_WRITER_TOOL)
     add_executable(rosbag_to_rinex ${_writer_src})
     target_include_directories(rosbag_to_rinex PUBLIC ${_gen_include})
     ament_target_dependencies(rosbag_to_rinex rclcpp rcutils rosbag2_cpp rosbag2_storage std_msgs builtin_interfaces)
-    target_include_directories(rosbag_to_rinex PRIVATE "${MALIB_ROOT}/src")
+    target_include_directories(rosbag_to_rinex PRIVATE "${RTKLIB_ROOT}/src")
     target_link_libraries(rosbag_to_rinex gnss_utils)
     add_dependencies(rosbag_to_rinex ${_rosidl_deps})
     install(TARGETS rosbag_to_rinex DESTINATION lib/${PROJECT_NAME})
@@ -270,7 +277,7 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/rosbag_to_pos.cpp")
   add_executable(rosbag_to_pos src/converter/rosbag_to_pos.cpp)
   target_include_directories(rosbag_to_pos PUBLIC ${_gen_include})
-  target_include_directories(rosbag_to_pos PRIVATE "${MALIB_ROOT}/src")
+  target_include_directories(rosbag_to_pos PRIVATE "${RTKLIB_ROOT}/src")
   ament_target_dependencies(rosbag_to_pos rclcpp rosbag2_cpp rosbag2_storage std_msgs geometry_msgs builtin_interfaces)
   target_link_libraries(rosbag_to_pos gnss_utils)
   add_dependencies(rosbag_to_pos ${_rosidl_deps})
@@ -281,7 +288,7 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/pos_to_rosbag.cpp")
   add_executable(pos_to_rosbag src/converter/pos_to_rosbag.cpp)
   target_include_directories(pos_to_rosbag PUBLIC ${_gen_include})
-  target_include_directories(pos_to_rosbag PRIVATE "${MALIB_ROOT}/src")
+  target_include_directories(pos_to_rosbag PRIVATE "${RTKLIB_ROOT}/src")
   ament_target_dependencies(pos_to_rosbag rclcpp rosbag2_cpp rosbag2_storage std_msgs geometry_msgs builtin_interfaces)
   target_link_libraries(pos_to_rosbag gnss_utils)
   add_dependencies(pos_to_rosbag ${_rosidl_deps})

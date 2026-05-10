@@ -1,6 +1,3 @@
-[submodule "MALIB"]
-	path = MALIB
-	url = https://github.com/JAXA-SNU/MALIB.git
-[submodule "third_party/MALIB"]
-	path = third_party/MALIB
-	url = https://github.com/JAXA-SNU/MALIB.git
+[submodule "third_party/RTKLIB"]
+	path = third_party/RTKLIB
+	url = https://github.com/rtklibexplorer/RTKLIB.git

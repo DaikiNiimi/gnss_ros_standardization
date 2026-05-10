@@ -156,7 +156,7 @@ class UbxDecoderNode : public rclcpp::Node {
       uint8_t byte = buffer[i];
 
       // Feed RTKLIB for UBX binary parsing (obs/eph)
-      const int result = input_ubx(&raw_, &rtcm_, byte);
+      const int result = input_ubx(&raw_, byte);
       handleDecodeResult(result);
 
       // Feed parallel UBX mini-framer for ESF-INS and NAV-ATT

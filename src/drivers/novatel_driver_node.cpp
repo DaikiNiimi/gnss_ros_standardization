@@ -145,7 +145,7 @@ class NovatelDriverNode : public rclcpp::Node {
     config_.format               = get_parameter("format").as_string();
     config_.configure_on_startup = get_parameter("configure_on_startup").as_bool();
 
-    if (config_.format != "oem3" && config_.format != "oem4") {
+    if (config_.format != "oem4") {
       RCLCPP_WARN(get_logger(), "Unknown format '%s', defaulting to oem4", config_.format.c_str());
       config_.format = "oem4";
     }
@@ -186,8 +186,7 @@ class NovatelDriverNode : public rclcpp::Node {
   }
 
   void initializeDecoder() {
-    int strfmt = (config_.format == "oem3") ? STRFMT_OEM3 : STRFMT_OEM4;
-    if (init_raw(&raw_, strfmt) != 1) {
+    if (init_raw(&raw_, STRFMT_OEM4) != 1) {
       RCLCPP_ERROR(get_logger(), "Failed to initialize raw decoder");
       throw std::runtime_error("init_raw failed");
     }
@@ -321,36 +320,6 @@ class NovatelDriverNode : public rclcpp::Node {
     else                            sendCommand(std::string("UNLOG ") + port_pfx + novatel::LOG_CORRIMUDATAB);
   }
 
-  void configureReceiverOem3(const std::string& port_pfx, const std::string& ontime, const std::string& onchanged) {
-    if (config_.enable_rangecmp) sendCommand("LOG " + port_pfx + novatel::LOG_OEM3_RGED + ontime);
-    else                         sendCommand("UNLOG " + port_pfx + novatel::LOG_OEM3_RGED);
-
-    if (config_.enable_range)    sendCommand("LOG " + port_pfx + novatel::LOG_OEM3_RGEB + ontime);
-    else                         sendCommand("UNLOG " + port_pfx + novatel::LOG_OEM3_RGEB);
-
-    if (config_.enable_bestpos || config_.enable_bestvel) {
-      RCLCPP_WARN(get_logger(), "BESTPOS/BESTVEL not supported for OEM3 mode");
-    }
-
-    if (config_.enable_gps_ephem) sendCommand("LOG " + port_pfx + novatel::LOG_OEM3_REPB + onchanged);
-    else                          sendCommand("UNLOG " + port_pfx + novatel::LOG_OEM3_REPB);
-
-    if (config_.enable_ionutc) {
-      sendCommand("LOG " + port_pfx + novatel::LOG_OEM3_IONB + onchanged);
-      sendCommand("LOG " + port_pfx + novatel::LOG_OEM3_UTCB + onchanged);
-    } else {
-      sendCommand("UNLOG " + port_pfx + novatel::LOG_OEM3_IONB);
-      sendCommand("UNLOG " + port_pfx + novatel::LOG_OEM3_UTCB);
-    }
-
-    // NMEA sentences (OEM3 also supports standard NMEA output)
-    if (config_.enable_nmea_gpgga) sendCommand("LOG " + port_pfx + novatel::LOG_GPGGA + " ONTIME 1");
-    else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPGGA);
-
-    if (config_.enable_nmea_gprmc) sendCommand("LOG " + port_pfx + novatel::LOG_GPRMC + " ONTIME 1");
-    else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPRMC);
-  }
-
   void configureReceiver() {
     RCLCPP_INFO(get_logger(), "Configuring receiver...");
 
@@ -364,11 +333,7 @@ class NovatelDriverNode : public rclcpp::Node {
     const std::string ontime        = " ONTIME " + novatel::getIntervalString(config_.publish_rate);
     const std::string onchanged     = " ONCHANGED";
 
-    if (config_.format == "oem3") {
-      configureReceiverOem3(port_pfx, ontime, onchanged);
-    } else {
-      configureReceiverOem4(port_pfx, ontime, onchanged);
-    }
+    configureReceiverOem4(port_pfx, ontime, onchanged);
 
     RCLCPP_INFO(get_logger(), "Configuration commands sent.");
   }
@@ -384,11 +349,11 @@ class NovatelDriverNode : public rclcpp::Node {
     for (int i = 0; i < bytes_read; ++i) {
       const uint8_t byte = buffer[i];
 
-      int result = (config_.format == "oem3") ? input_oem3(&raw_, byte) : input_oem4(&raw_, byte);
+      int result = input_oem4(&raw_, byte);
       handleDecodeResult(result);
 
-      // Parallel OEM4 mini-framer for CORRIMUDATA (OEM4 only)
-      if (config_.format == "oem4") parseOem4Byte(byte);
+      // Parallel OEM4 mini-framer for CORRIMUDATA
+      parseOem4Byte(byte);
 
       // NMEA sentences (interleaved with NovAtel binary)
       if (byte == '$') {

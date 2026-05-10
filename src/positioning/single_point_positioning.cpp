@@ -327,10 +327,12 @@ private:
       
       double llh[3];
       ecef2pos(sol.rr, llh);
-      
+
+      char tstr[40];
+      time2str(sol.time, tstr, 3);
       RCLCPP_INFO(get_logger(),
         "SPP OK | Time: %s | LLH: (%.8f, %.8f, %.3f)m | Sats: %d (%s) | Freqs: (%s) | Sol: %s",
-        time_str(sol.time, 3), llh[0] * R2D, llh[1] * R2D, llh[2], sol.ns,
+        tstr, llh[0] * R2D, llh[1] * R2D, llh[2], sol.ns,
         sat_breakdown, frq_breakdown, solstatToString(sol.stat).c_str());
 
 

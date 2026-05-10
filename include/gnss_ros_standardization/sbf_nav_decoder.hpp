@@ -342,7 +342,6 @@ inline bool parseGALNav(const std::vector<uint8_t>& body, eph_t& eph) {
 
     // data source → RTKLIB code convention (RINEX 3.03)
     eph.code = (src & 0x01) ? (1 << 9) : (1 << 8);  // INAV: bit9, FNAV: bit8
-    eph.type = (src & 0x01) ? 0 : 1;                 // INAV=0, FNAV=1
 
     eph.toe = gst2time(wn_gal, toe_s);
     eph.toc = gst2time(wn_gal, toc_s);

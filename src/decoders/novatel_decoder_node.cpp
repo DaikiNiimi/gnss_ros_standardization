@@ -41,8 +41,7 @@ constexpr int OEM4_MSGLEN_OFFSET = 8;   // bytes 8-9 from SYNC1
 /// Also parses NMEA sentences for GnssSolution and OEM4 IMU logs (RAWIMUSX, CORRIMUDATA).
 ///
 /// Supported formats:
-///   - oem4: OEM4/OEM6/OEM7 binary format (default)
-///   - oem3: OEM3 binary format (legacy)
+///   - oem4: OEM4/OEM6/OEM7 binary format
 class NovatelDecoderNode : public rclcpp::Node {
  public:
   NovatelDecoderNode() : Node("novatel_decoder_node") {
@@ -82,7 +81,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     format_   = get_parameter("format").as_string();
     frame_id_ = get_parameter("frame_id").as_string();
 
-    if (format_ != "oem3" && format_ != "oem4") {
+    if (format_ != "oem4") {
       RCLCPP_WARN(get_logger(), "Unknown format '%s', defaulting to oem4", format_.c_str());
       format_ = "oem4";
     }
@@ -99,8 +98,7 @@ class NovatelDecoderNode : public rclcpp::Node {
   }
 
   void initializeDecoder() {
-    int strfmt = (format_ == "oem3") ? STRFMT_OEM3 : STRFMT_OEM4;
-    if (init_raw(&raw_, strfmt) != 1) {
+    if (init_raw(&raw_, STRFMT_OEM4) != 1) {
       RCLCPP_ERROR(get_logger(), "Failed to initialize raw decoder");
       throw std::runtime_error("init_raw failed");
     }
@@ -158,11 +156,11 @@ class NovatelDecoderNode : public rclcpp::Node {
       const uint8_t byte = buffer[i];
 
       // Feed NovAtel binary decoder
-      int result = (format_ == "oem3") ? input_oem3(&raw_, byte) : input_oem4(&raw_, byte);
+      int result = input_oem4(&raw_, byte);
       handleDecodeResult(result);
 
-      // Parallel OEM4 mini-framer for CORRIMUDATA (OEM4 only)
-      if (format_ == "oem4") parseOem4Byte(byte);
+      // Parallel OEM4 mini-framer for CORRIMUDATA
+      parseOem4Byte(byte);
 
       // Feed NMEA text parser (NovAtel binary and NMEA are interleaved)
       if (byte == '$') {

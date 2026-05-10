@@ -162,7 +162,7 @@ class SbfDecoderNode : public rclcpp::Node {
       const uint8_t byte = buffer[i];
 
       // Feed SBF binary decoder (obs/eph)
-      const int result = input_sbf(&raw_, &rtcm_, byte);
+      const int result = input_sbf(&raw_, byte);
       handleDecodeResult(result);
 
       // Parallel SBF mini-framer for AttEuler

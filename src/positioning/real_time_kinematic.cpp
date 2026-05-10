@@ -148,7 +148,6 @@ private:
     declare_safe("pos2.syncsol", 0);
     declare_safe("pos2.slipthres", 0.05);
     declare_safe("pos2.rejionno", 30.0);
-    declare_safe("pos2.rejgdop", 30.0);
     declare_safe("pos2.niter", 1);
 
     // stats options
@@ -222,8 +221,12 @@ private:
     opt.maxtdiff = get_parameter("pos2.maxage").as_double();
     opt.syncsol = get_parameter("pos2.syncsol").as_int();
     opt.thresslip = get_parameter("pos2.slipthres").as_double();
-    opt.maxinno = get_parameter("pos2.rejionno").as_double();
-    opt.maxgdop = get_parameter("pos2.rejgdop").as_double();
+    // rtklibexplorer: maxinno is now an array [phase, code]; maxgdop removed
+    {
+      double rejionno = get_parameter("pos2.rejionno").as_double();
+      opt.maxinno[0] = rejionno;  // phase
+      opt.maxinno[1] = rejionno;  // code
+    }
     opt.niter = get_parameter("pos2.niter").as_int();
 
     opt.eratio[0] = get_parameter("rtk_stats.eratio1").as_double();

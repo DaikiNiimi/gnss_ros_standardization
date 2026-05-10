@@ -66,7 +66,7 @@ either source.
 ## Protocol Decoding Reference
 
 This section documents which proprietary receiver messages are decoded to produce each ROS 2 topic.
-All binary decoding (observation / ephemeris) is performed by the embedded [MALIB](https://github.com/DaikiNiimi/MALIB) (RTKLIB fork) decoder.
+All binary decoding (observation / ephemeris) is performed by the embedded [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB) decoder.
 IMU/INS messages that RTKLIB does not handle are decoded by a parallel mini-framer inside each driver/decoder node.
 
 ### u-blox (UBX protocol)
@@ -146,7 +146,7 @@ RTKLIB decoder: `input_sbf()` / `STRFMT_SEPT`
 
 ### NovAtel (OEM4/6/7 binary protocol)
 
-RTKLIB decoder: `input_oem4()` / `STRFMT_OEM4` (or `input_oem3()` for legacy OEM3 format)
+RTKLIB decoder: `input_oem4()` / `STRFMT_OEM4`
 IMU/INS messages decoded by a parallel OEM4 mini-framer (RTKLIB does not handle these).
 
 #### `/gnss/observation` — Raw Observations
@@ -231,7 +231,7 @@ and update this table — please open a PR.
   - `Eigen3` (≥ 3.3)
   - `cv_bridge`, `image_transport`
 - **Third-party** (included as git submodule):
-  - [MALIB](https://github.com/DaikiNiimi/MALIB) — RTKLIB-based GNSS library (BSD 2-Clause)
+  - [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB) — RTKLIB by T. Takasu, demo5 fork by T. Everett (BSD 2-Clause)
 
 ---
 
@@ -433,7 +433,7 @@ sudo usermod -aG dialout $USER
 
 ## Acknowledgements
 
-This project uses [MALIB](https://github.com/DaikiNiimi/MALIB), a fork of [RTKLIB](https://github.com/tomojitakasu/RTKLIB) by Tomoji Takasu, licensed under the BSD 2-Clause License.
+This project uses [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB), maintained by Tim Everett, based on [RTKLIB](https://github.com/tomojitakasu/RTKLIB) by Tomoji Takasu, licensed under the BSD 2-Clause License.
 
 ---
 

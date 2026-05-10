@@ -367,7 +367,7 @@ class SbfDriverNode : public rclcpp::Node {
     for (int i = 0; i < bytes_read; ++i) {
       const uint8_t byte = buffer[i];
 
-      const int result = input_sbf(&raw_, &rtcm_, byte);
+      const int result = input_sbf(&raw_, byte);
       handleDecodeResult(result);
 
       // Parallel SBF mini-framer for AttEuler

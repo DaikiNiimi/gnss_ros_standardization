@@ -346,7 +346,7 @@ class UbxDriverNode : public rclcpp::Node {
              uint8_t b = buffer[i];
              
              // Keep the main decoder updated to avoid buffer overflow/loss
-             if (input_ubx(&raw_, &rtcm_, b)) {
+             if (input_ubx(&raw_, b)) {
                  // decoded something (maybe not what we want, but keep engine running)
              }
              
@@ -398,7 +398,7 @@ class UbxDriverNode : public rclcpp::Node {
         int n = strread(&stream_, buffer, sizeof(buffer));
         for (int i = 0; i < n; ++i) {
              uint8_t b = buffer[i];
-             input_ubx(&raw_, &rtcm_, b);
+             input_ubx(&raw_, b);
              checkAckNak(b); // Feed ACK/NAK state machine just in case
              
              switch (state) {
@@ -855,7 +855,7 @@ class UbxDriverNode : public rclcpp::Node {
     while (std::chrono::steady_clock::now() - start < timeout) {
       int n = strread(&stream_, buffer, sizeof(buffer));
       for (int i = 0; i < n; ++i) {
-        int result = input_ubx(&raw_, &rtcm_, buffer[i]);
+        int result = input_ubx(&raw_, buffer[i]);
 
         checkAckNak(buffer[i]);
 
@@ -1086,7 +1086,7 @@ class UbxDriverNode : public rclcpp::Node {
       for (int i = 0; i < bytes_read; ++i) {
         uint8_t byte = buffer[i];
 
-        const int result = input_ubx(&raw_, &rtcm_, byte);
+        const int result = input_ubx(&raw_, byte);
         if (result > 0) {
           handleDecodeResult(result);
         }
