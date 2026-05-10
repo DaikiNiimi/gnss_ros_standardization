@@ -36,6 +36,7 @@ furnished to do so, subject to the following conditions:
 #include <cmath>
 #include <queue>
 #include <cstdint>
+#include <filesystem>
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
 
@@ -166,7 +167,7 @@ struct Options {
   std::string out_obs_path = "";
   std::string out_nav_path = "";
   double rinex_version = 3.04;
-  std::string nav_systems = "GEJCSR";
+  std::string nav_systems = "GREJCI";
   bool flush_immediately = true;
   std::string program_name = "rosbag_to_rinex";
   std::string run_by = "user";
@@ -672,18 +673,25 @@ public:
       std::fprintf(stderr, "Usage: rosbag_to_rinex --bag <bag_dir_or_db3> "
                            "[--obs OBS_PATH --nav NAV_PATH "
                            "--topic-obs TOPIC --topic-nav TOPIC "
-                           "--rnx-version X.YY --nav-systems GEJCSR "
+                           "--rnx-version X.YY --nav-systems GREJCI "
                            "--no-flush --pgm NAME --runby NAME]\n");
       return 2;
     }
 
     if (opt.out_obs_path.empty() && opt.out_nav_path.empty()) {
-       // If neither specified, maybe default to both? Or error?
-       // User request implies explicit control. Let's error if nothing specified, or default to both "out.obs/nav" if BOTH missing?
-       // "allow creating... only from obs or only from nav" -> implies checking what is provided.
-       // Let's assume if user provides NOTHING, we print usage.
-       std::fprintf(stderr, "Error: Please specify at least one output via --obs or --nav\n");
-       return 2;
+      // Auto-derive output paths from bag URI stem
+      namespace fs = std::filesystem;
+      fs::path bag_path(opt.bag_uri);
+      // Strip trailing slashes (bag URI may be a directory)
+      while (!bag_path.empty() && !bag_path.has_filename()) bag_path = bag_path.parent_path();
+      std::string stem = bag_path.stem().string();
+      if (stem.empty()) stem = "output";
+      std::string base_dir = bag_path.parent_path().string();
+      if (!base_dir.empty()) base_dir += "/";
+      opt.out_obs_path = base_dir + stem + ".obs";
+      opt.out_nav_path = base_dir + stem + ".nav";
+      std::fprintf(stderr, "Info: output paths auto-derived: %s, %s\n",
+                   opt.out_obs_path.c_str(), opt.out_nav_path.c_str());
     }
 
     Scanner scanner(opt);

@@ -1,29 +1,29 @@
 // GNSS/IMU/WheelSpeed Error-State EKF Node
-#include "gnss_ros_standardization/ekf_node.hpp"
+#include "gnss_ros_standardization/gnss_imu_kalman_filter.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include <iomanip>
 #include <sstream>
 
 namespace grs = gnss_ros_standardization::msg;
 
-namespace ekf {
+namespace gnss_imu_kalman_filter {
 
 // ============================================================
 // Quaternion helpers
 // ============================================================
-Eigen::Quaterniond EkfNode::getQuaternion() const {
+Eigen::Quaterniond GnssImuKalmanFilter::getQuaternion() const {
   return Eigen::Quaterniond(x_(IDX_QUAT), x_(IDX_QUAT+1),
                             x_(IDX_QUAT+2), x_(IDX_QUAT+3));
 }
 
-void EkfNode::setQuaternion(const Eigen::Quaterniond& q) {
+void GnssImuKalmanFilter::setQuaternion(const Eigen::Quaterniond& q) {
   x_(IDX_QUAT)   = q.w();
   x_(IDX_QUAT+1) = q.x();
   x_(IDX_QUAT+2) = q.y();
   x_(IDX_QUAT+3) = q.z();
 }
 
-Eigen::Vector3d EkfNode::quaternionToEuler(const Eigen::Quaterniond& q) {
+Eigen::Vector3d GnssImuKalmanFilter::quaternionToEuler(const Eigen::Quaterniond& q) {
   // Returns (roll, pitch, yaw) in radians
   auto m = q.normalized().toRotationMatrix();
   double roll  = std::atan2(m(2,1), m(2,2));
@@ -32,21 +32,21 @@ Eigen::Vector3d EkfNode::quaternionToEuler(const Eigen::Quaterniond& q) {
   return {roll, pitch, yaw};
 }
 
-Eigen::Quaterniond EkfNode::eulerToQuaternion(double roll, double pitch, double yaw) {
+Eigen::Quaterniond GnssImuKalmanFilter::eulerToQuaternion(double roll, double pitch, double yaw) {
   return Eigen::AngleAxisd(yaw,   Eigen::Vector3d::UnitZ()) *
          Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) *
          Eigen::AngleAxisd(roll,  Eigen::Vector3d::UnitX());
 }
 
-Eigen::Matrix3d EkfNode::getRotationMatrix() const {
+Eigen::Matrix3d GnssImuKalmanFilter::getRotationMatrix() const {
   return getQuaternion().normalized().toRotationMatrix();
 }
 
-Eigen::Vector3d EkfNode::applyImuAxisRotation(const Eigen::Vector3d& raw) const {
+Eigen::Vector3d GnssImuKalmanFilter::applyImuAxisRotation(const Eigen::Vector3d& raw) const {
   return R_imu_body_ * raw;
 }
 
-Eigen::Vector3d EkfNode::computeLeverArmCorrection() const {
+Eigen::Vector3d GnssImuKalmanFilter::computeLeverArmCorrection() const {
   Eigen::Matrix3d C_bn = getRotationMatrix();
   return C_bn * config_.lever_arm;
 }
@@ -54,7 +54,7 @@ Eigen::Vector3d EkfNode::computeLeverArmCorrection() const {
 // ============================================================
 // Coordinate helpers
 // ============================================================
-Eigen::Vector3d EkfNode::gravityVector() const {
+Eigen::Vector3d GnssImuKalmanFilter::gravityVector() const {
   if (config_.coordinate_frame == "ecef") {
     // Approximate: gravity in ECEF at current position
     Eigen::Vector3d pos = x_.segment<3>(IDX_POS);
@@ -66,7 +66,7 @@ Eigen::Vector3d EkfNode::gravityVector() const {
   }
 }
 
-Eigen::Vector3d EkfNode::ecefToWorkFrame(const Eigen::Vector3d& ecef) const {
+Eigen::Vector3d GnssImuKalmanFilter::ecefToWorkFrame(const Eigen::Vector3d& ecef) const {
   if (config_.coordinate_frame == "ecef") {
     return ecef;
   }
@@ -80,7 +80,7 @@ Eigen::Vector3d EkfNode::ecefToWorkFrame(const Eigen::Vector3d& ecef) const {
   return Eigen::Vector3d(enu[0], enu[1], enu[2]);
 }
 
-Eigen::Vector3d EkfNode::workFrameToEcef(const Eigen::Vector3d& pos) const {
+Eigen::Vector3d GnssImuKalmanFilter::workFrameToEcef(const Eigen::Vector3d& pos) const {
   if (config_.coordinate_frame == "ecef") return pos;
   double pos_ref[3] = {origin_llh_(0), origin_llh_(1), origin_llh_(2)};
   double enu[3] = {pos(0), pos(1), pos(2)};
@@ -91,7 +91,7 @@ Eigen::Vector3d EkfNode::workFrameToEcef(const Eigen::Vector3d& pos) const {
                          origin_ecef_(2) + dr[2]);
 }
 
-Eigen::Vector3d EkfNode::workFrameToLlh(const Eigen::Vector3d& pos) const {
+Eigen::Vector3d GnssImuKalmanFilter::workFrameToLlh(const Eigen::Vector3d& pos) const {
   Eigen::Vector3d ecef = workFrameToEcef(pos);
   double e[3] = {ecef(0), ecef(1), ecef(2)};
   double llh[3];
@@ -103,7 +103,7 @@ Eigen::Vector3d EkfNode::workFrameToLlh(const Eigen::Vector3d& pos) const {
 // ============================================================
 // Constructor / Destructor
 // ============================================================
-EkfNode::EkfNode() : Node("ekf_node") {
+GnssImuKalmanFilter::GnssImuKalmanFilter() : Node("gnss_imu_kalman_filter") {
   x_.setZero();
   P_.setZero();
   R_imu_body_ = Eigen::Matrix3d::Identity();
@@ -133,27 +133,27 @@ EkfNode::EkfNode() : Node("ekf_node") {
   // Subscribers
   imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
     config_.topic_imu_raw, rclcpp::SensorDataQoS(),
-    std::bind(&EkfNode::onImu, this, std::placeholders::_1));
+    std::bind(&GnssImuKalmanFilter::onImu, this, std::placeholders::_1));
 
   gnss_sub_ = create_subscription<grs::GnssSolution>(
     config_.topic_gnss_solution, rclcpp::QoS(10),
-    std::bind(&EkfNode::onGnss, this, std::placeholders::_1));
+    std::bind(&GnssImuKalmanFilter::onGnss, this, std::placeholders::_1));
 
   if (config_.use_wheel_speed) {
     if (config_.wheel_speed_topic_type == "twist") {
       wheel_sub_raw_ = create_subscription<geometry_msgs::msg::TwistStamped>(
         config_.topic_wheel_speed, rclcpp::QoS(10),
-        std::bind(&EkfNode::onWheelSpeedPoint, this, std::placeholders::_1));
+        std::bind(&GnssImuKalmanFilter::onWheelSpeedPoint, this, std::placeholders::_1));
     } else {
       wheel_sub_cov_ = create_subscription<geometry_msgs::msg::TwistWithCovarianceStamped>(
         config_.topic_wheel_speed, rclcpp::QoS(10),
-        std::bind(&EkfNode::onWheelSpeedWithCov, this, std::placeholders::_1));
+        std::bind(&GnssImuKalmanFilter::onWheelSpeedWithCov, this, std::placeholders::_1));
     }
   }
 
   // Publisher
-  solution_pub_ = create_publisher<grs::GnssSolution>(config_.topic_ekf_solution, rclcpp::QoS(10));
-  odom_pub_     = create_publisher<nav_msgs::msg::Odometry>(config_.topic_ekf_solution + "_odom", rclcpp::QoS(10));
+  solution_pub_ = create_publisher<grs::GnssSolution>(config_.topic_solution, rclcpp::QoS(10));
+  odom_pub_     = create_publisher<nav_msgs::msg::Odometry>(config_.topic_solution + "_odom", rclcpp::QoS(10));
 
   // CSV
   csv_file_.open(config_.csv_output_path, std::ios::out | std::ios::trunc);
@@ -171,14 +171,14 @@ EkfNode::EkfNode() : Node("ekf_node") {
     config_.use_wheel_speed ? "ON" : "OFF");
 }
 
-EkfNode::~EkfNode() {
+GnssImuKalmanFilter::~GnssImuKalmanFilter() {
   if (csv_file_.is_open()) csv_file_.close();
 }
 
 // ============================================================
 // Parameter loading
 // ============================================================
-void EkfNode::loadParameters() {
+void GnssImuKalmanFilter::loadParameters() {
   auto& c = config_;
 
   declare_parameter<std::string>("coordinate_frame", c.coordinate_frame);
@@ -193,11 +193,11 @@ void EkfNode::loadParameters() {
   declare_parameter<std::string>("topics.gnss_solution", c.topic_gnss_solution);
   declare_parameter<std::string>("topics.imu_raw", c.topic_imu_raw);
   declare_parameter<std::string>("topics.wheel_speed", c.topic_wheel_speed);
-  declare_parameter<std::string>("topics.ekf_solution", c.topic_ekf_solution);
+  declare_parameter<std::string>("topics.solution", c.topic_solution);
   get_parameter("topics.gnss_solution", c.topic_gnss_solution);
   get_parameter("topics.imu_raw", c.topic_imu_raw);
   get_parameter("topics.wheel_speed", c.topic_wheel_speed);
-  get_parameter("topics.ekf_solution", c.topic_ekf_solution);
+  get_parameter("topics.solution", c.topic_solution);
 
   declare_parameter<std::string>("csv.output_path", c.csv_output_path);
   get_parameter("csv.output_path", c.csv_output_path);
@@ -243,6 +243,9 @@ void EkfNode::loadParameters() {
 
   declare_parameter<double>("init_imu_duration", c.init_imu_duration);
   get_parameter("init_imu_duration", c.init_imu_duration);
+
+  declare_parameter<double>("init_yaw_deg", std::numeric_limits<double>::quiet_NaN());
+  get_parameter("init_yaw_deg", c.init_yaw_deg);
   
   declare_parameter<std::string>("output_reference_frame", c.output_reference_frame);
   get_parameter("output_reference_frame", c.output_reference_frame);
@@ -259,7 +262,7 @@ void EkfNode::loadParameters() {
 // ============================================================
 // Initialization
 // ============================================================
-bool EkfNode::tryInitialize() {
+bool GnssImuKalmanFilter::tryInitialize() {
   if (!has_initial_gnss_ || !has_initial_imu_ || !has_initial_yaw_) return false;
 
   x_.setZero();
@@ -310,7 +313,7 @@ bool EkfNode::tryInitialize() {
 // ============================================================
 // EKF Prediction (IMU-driven)
 // ============================================================
-void EkfNode::predict(const Eigen::Vector3d& acc_body, const Eigen::Vector3d& gyr_body, double dt) {
+void GnssImuKalmanFilter::predict(const Eigen::Vector3d& acc_body, const Eigen::Vector3d& gyr_body, double dt) {
   if (dt <= 0.0 || dt > 1.0) return;
 
   Eigen::Matrix3d C_bn = getRotationMatrix();
@@ -390,7 +393,7 @@ void EkfNode::predict(const Eigen::Vector3d& acc_body, const Eigen::Vector3d& gy
 // ============================================================
 // GNSS Position Update
 // ============================================================
-void EkfNode::updateGnssPosition(const Eigen::Vector3d& z_pos,
+void GnssImuKalmanFilter::updateGnssPosition(const Eigen::Vector3d& z_pos,
                                   const Eigen::Matrix3d& R_pos) {
   // Observation: GNSS Antenna Position z_pos = p_gnss
   Eigen::Vector3d innovation;
@@ -446,7 +449,7 @@ void EkfNode::updateGnssPosition(const Eigen::Vector3d& z_pos,
 // ============================================================
 // GNSS Heading Update (from Doppler velocity)
 // ============================================================
-void EkfNode::updateGnssHeading(double heading_rad, double heading_var) {
+void GnssImuKalmanFilter::updateGnssHeading(double heading_rad, double heading_var) {
   Eigen::Quaterniond q_pred = getQuaternion();
   Eigen::Vector3d euler = quaternionToEuler(q_pred);
   double yaw_pred = euler(2);
@@ -491,7 +494,7 @@ void EkfNode::updateGnssHeading(double heading_rad, double heading_var) {
 // ============================================================
 // Wheel Speed Update
 // ============================================================
-void EkfNode::onWheelSpeedWithCov(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg) {
+void GnssImuKalmanFilter::onWheelSpeedWithCov(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg) {
   Eigen::Vector3d linear(msg->twist.twist.linear.x, msg->twist.twist.linear.y, msg->twist.twist.linear.z);
   Eigen::Matrix3d R_vel = Eigen::Matrix3d::Identity() * config_.wheel_speed_sigma * config_.wheel_speed_sigma;
   
@@ -514,7 +517,7 @@ void EkfNode::onWheelSpeedWithCov(const geometry_msgs::msg::TwistWithCovarianceS
   processWheelSpeed(linear, R_vel);
 }
 
-void EkfNode::onWheelSpeedPoint(const geometry_msgs::msg::TwistStamped::SharedPtr msg) {
+void GnssImuKalmanFilter::onWheelSpeedPoint(const geometry_msgs::msg::TwistStamped::SharedPtr msg) {
   Eigen::Vector3d linear(msg->twist.linear.x, msg->twist.linear.y, msg->twist.linear.z);
   Eigen::Matrix3d R_vel = Eigen::Matrix3d::Identity() * config_.wheel_speed_sigma * config_.wheel_speed_sigma;
   
@@ -528,7 +531,7 @@ void EkfNode::onWheelSpeedPoint(const geometry_msgs::msg::TwistStamped::SharedPt
   processWheelSpeed(linear, R_vel);
 }
 
-void EkfNode::processWheelSpeed(const Eigen::Vector3d& linear_velocity, const Eigen::Matrix3d& covariance) {
+void GnssImuKalmanFilter::processWheelSpeed(const Eigen::Vector3d& linear_velocity, const Eigen::Matrix3d& covariance) {
   std::lock_guard<std::mutex> lock(mtx_);
   if (!initialized_) return;
 
@@ -615,7 +618,7 @@ void EkfNode::processWheelSpeed(const Eigen::Vector3d& linear_velocity, const Ei
 // ============================================================
 // IMU Callback
 // ============================================================
-void EkfNode::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
+void GnssImuKalmanFilter::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
   std::lock_guard<std::mutex> lock(mtx_);
 
   // Raw IMU data (apply axis rotation)
@@ -679,7 +682,7 @@ void EkfNode::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
 // ============================================================
 // GNSS Callback
 // ============================================================
-void EkfNode::onGnss(const grs::GnssSolution::SharedPtr msg) {
+void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
   std::lock_guard<std::mutex> lock(mtx_);
 
   // Build snapshot regardless of update validity
@@ -742,8 +745,12 @@ void EkfNode::onGnss(const grs::GnssSolution::SharedPtr msg) {
     has_initial_gnss_ = true;
     RCLCPP_INFO(get_logger(), "Initial GNSS position acquired");
 
-    // Try to get yaw from Doppler
-    if (!has_initial_yaw_ && !std::isnan(snap.doppler_heading)) {
+    // Use configured initial yaw if provided, otherwise try Doppler heading
+    if (!has_initial_yaw_ && !std::isnan(config_.init_yaw_deg)) {
+      init_yaw_ = config_.init_yaw_deg * M_PI / 180.0;
+      has_initial_yaw_ = true;
+      RCLCPP_INFO(get_logger(), "Initial yaw from config init_yaw_deg: %.2f [deg]", config_.init_yaw_deg);
+    } else if (!has_initial_yaw_ && !std::isnan(snap.doppler_heading)) {
       init_yaw_ = snap.doppler_heading;
       has_initial_yaw_ = true;
       RCLCPP_INFO(get_logger(), "Initial yaw from GNSS Doppler: %.2f [deg]",
@@ -825,10 +832,10 @@ void EkfNode::onGnss(const grs::GnssSolution::SharedPtr msg) {
 // ============================================================
 // Publish Solution
 // ============================================================
-void EkfNode::publishSolution(const rclcpp::Time& stamp) {
+void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
   auto sol = grs::GnssSolution();
   sol.header.stamp = stamp;
-  sol.header.frame_id = "ekf";
+  sol.header.frame_id = "gnss_imu_kalman_filter";
 
   Eigen::Vector3d pos = x_.segment<3>(IDX_POS);
   Eigen::Vector3d vel = x_.segment<3>(IDX_VEL);
@@ -896,20 +903,24 @@ void EkfNode::publishSolution(const rclcpp::Time& stamp) {
   odom.pose.pose.orientation.y = q.y();
   odom.pose.pose.orientation.z = q.z();
 
-  // Vel
-  odom.twist.twist.linear.x = vel(0);
-  odom.twist.twist.linear.y = vel(1);
-  odom.twist.twist.linear.z = vel(2);
-  
+  // Vel in body frame (REP-105: twist must be expressed in child_frame_id)
+  Eigen::Matrix3d C_bn = getRotationMatrix();
+  Eigen::Vector3d vel_body = C_bn.transpose() * vel;
+  odom.twist.twist.linear.x = vel_body(0);
+  odom.twist.twist.linear.y = vel_body(1);
+  odom.twist.twist.linear.z = vel_body(2);
+
   // Covariance arrays: Odometry uses 36-element arrays for 6D pose/twist
+  Eigen::Matrix3d P_vv = P_.block<3,3>(EIDX_VEL, EIDX_VEL);
+  Eigen::Matrix3d P_vv_body = C_bn.transpose() * P_vv * C_bn;
   for (int min_i = 0; min_i < 3; ++min_i) {
     for (int min_j = 0; min_j < 3; ++min_j) {
       odom.pose.covariance[min_i * 6 + min_j] = P_(EIDX_POS + min_i, EIDX_POS + min_j);        // pos-pos
       odom.pose.covariance[(min_i + 3) * 6 + (min_j + 3)] = P_(EIDX_ATT + min_i, EIDX_ATT + min_j); // att-att
       odom.pose.covariance[min_i * 6 + (min_j + 3)] = P_(EIDX_POS + min_i, EIDX_ATT + min_j);       // pos-att
       odom.pose.covariance[(min_i + 3) * 6 + min_j] = P_(EIDX_ATT + min_i, EIDX_POS + min_j);       // att-pos
-      
-      odom.twist.covariance[min_i * 6 + min_j] = P_(EIDX_VEL + min_i, EIDX_VEL + min_j);       // vel x/y/z
+
+      odom.twist.covariance[min_i * 6 + min_j] = P_vv_body(min_i, min_j);  // vel in body frame
     }
   }
 
@@ -919,7 +930,7 @@ void EkfNode::publishSolution(const rclcpp::Time& stamp) {
 // ============================================================
 // CSV Output
 // ============================================================
-void EkfNode::writeCSVHeader() {
+void GnssImuKalmanFilter::writeCSVHeader() {
   if (!csv_file_.is_open()) return;
   // Write Metadata header line
   csv_file_ << "# config_coordinate_frame: " << config_.coordinate_frame 
@@ -980,7 +991,7 @@ void EkfNode::writeCSVHeader() {
   csv_file_.flush();
 }
 
-void EkfNode::writeCSVRow(const rclcpp::Time& stamp) {
+void GnssImuKalmanFilter::writeCSVRow(const rclcpp::Time& stamp) {
   if (!csv_file_.is_open() || !initialized_) return;
 
   Eigen::Vector3d pos = x_.segment<3>(IDX_POS);
@@ -1080,14 +1091,14 @@ void EkfNode::writeCSVRow(const rclcpp::Time& stamp) {
   csv_file_.flush();
 }
 
-}  // namespace ekf
+}  // namespace gnss_imu_kalman_filter
 
 // ============================================================
 // main
 // ============================================================
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<ekf::EkfNode>();
+  auto node = std::make_shared<gnss_imu_kalman_filter::GnssImuKalmanFilter>();
   rclcpp::spin(node);
   rclcpp::shutdown();
   return 0;

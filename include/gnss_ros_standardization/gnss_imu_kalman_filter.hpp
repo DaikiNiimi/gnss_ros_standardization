@@ -1,5 +1,5 @@
-#ifndef GNSS_ROS_STANDARDIZATION_EKF_NODE_HPP
-#define GNSS_ROS_STANDARDIZATION_EKF_NODE_HPP
+#ifndef GNSS_ROS_STANDARDIZATION_GNSS_IMU_KALMAN_FILTER_HPP
+#define GNSS_ROS_STANDARDIZATION_GNSS_IMU_KALMAN_FILTER_HPP
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -15,12 +15,13 @@
 #include <mutex>
 #include <array>
 #include <cmath>
+#include <limits>
 
 extern "C" {
 #include "rtklib.h"
 }
 
-namespace ekf {
+namespace gnss_imu_kalman_filter {
 
 /**
  * @brief State indices for the 16-dim state vector
@@ -80,10 +81,10 @@ struct EkfConfig {
   std::string topic_gnss_solution = "/gnss/solution";
   std::string topic_imu_raw       = "/imu/data_raw";
   std::string topic_wheel_speed   = "/can_twist";
-  std::string topic_ekf_solution  = "/ekf/solution";
+  std::string topic_solution  = "/gnss_imu_kalman_filter/solution";
 
   // CSV
-  std::string csv_output_path = "/tmp/ekf_log.csv";
+  std::string csv_output_path = "/tmp/gnss_imu_kalman_filter_log.csv";
 
   // Process noise
   double sigma_acc      = 0.1;     // accelerometer noise [m/s^2/√Hz]
@@ -110,6 +111,7 @@ struct EkfConfig {
 
   // IMU initialization
   double init_imu_duration = 1.0;  // [s]
+  double init_yaw_deg = std::numeric_limits<double>::quiet_NaN();  // NaN = wait for Doppler heading
 
   // Output configuration
   std::string output_reference_frame = "imu";  // "gnss" or "imu"
@@ -181,10 +183,10 @@ struct WheelSpeedSnapshot {
  * Internal attitude representation: quaternion (w, x, y, z).
  * Output: Euler angles (roll, pitch, yaw) for publishing and CSV.
  */
-class EkfNode : public rclcpp::Node {
+class GnssImuKalmanFilter : public rclcpp::Node {
  public:
-  EkfNode();
-  ~EkfNode() override;
+  GnssImuKalmanFilter();
+  ~GnssImuKalmanFilter() override;
 
  private:
   // ---- Parameter loading ----
@@ -367,6 +369,6 @@ class EkfNode : public rclcpp::Node {
   std::mutex mtx_;
 };
 
-}  // namespace ekf
+}  // namespace gnss_imu_kalman_filter
 
-#endif  // GNSS_ROS_STANDARDIZATION_EKF_NODE_HPP
+#endif  // GNSS_ROS_STANDARDIZATION_GNSS_IMU_KALMAN_FILTER_HPP

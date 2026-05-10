@@ -78,6 +78,7 @@ class UbxDecoderNode : public rclcpp::Node {
     declare_parameter<std::string>("frame_id", "gnss_link");
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
+    declare_parameter<std::string>("solution_topic", "/gnss/nmea_solution");
     declare_parameter<std::string>("imu_topic",     "/gnss/imu/data");
     declare_parameter<std::string>("imu_raw_topic", "/gnss/imu/data_raw");
 
@@ -87,7 +88,7 @@ class UbxDecoderNode : public rclcpp::Node {
   void initializePublishers() {
     obs_pub_     = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
     eph_pub_     = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
-    sol_pub_     = create_publisher<msg::GnssSolution>("/gnss/nmea_solution", 10);
+    sol_pub_     = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
     imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_topic").as_string(), 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
   }

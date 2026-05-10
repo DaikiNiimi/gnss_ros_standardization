@@ -135,6 +135,14 @@ install(TARGETS gnss_utils
   RUNTIME DESTINATION bin
 )
 
+install(DIRECTORY include/
+  DESTINATION include
+)
+
+install(DIRECTORY config
+  DESTINATION share/${PROJECT_NAME}
+)
+
 # rtcm_decoder_node
 if(BUILD_RTCM_DECODER_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/decoders/rtcm_decoder_node.cpp")
   add_executable(rtcm_decoder_node src/decoders/rtcm_decoder_node.cpp)
@@ -311,17 +319,17 @@ elseif(BUILD_RTK_EXAMPLE)
   message(WARNING "BUILD_RTK_EXAMPLE=ON but src/positioning/real_time_kinematic.cpp not found.")
 endif()
 
-# ekf_node (GNSS/IMU/WheelSpeed EKF)
-option(BUILD_EKF_NODE "Build ekf_node (GNSS/IMU EKF)" ON)
-if(BUILD_EKF_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/ekf_node.cpp")
-  add_executable(ekf_node src/positioning/ekf_node.cpp)
-  target_include_directories(ekf_node PUBLIC ${_gen_include})
-  ament_target_dependencies(ekf_node rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs builtin_interfaces)
-  target_link_libraries(ekf_node gnss_utils Eigen3::Eigen Threads::Threads)
-  add_dependencies(ekf_node ${_rosidl_deps})
-  install(TARGETS ekf_node DESTINATION lib/${PROJECT_NAME})
-elseif(BUILD_EKF_NODE)
-  message(WARNING "BUILD_EKF_NODE=ON but src/positioning/ekf_node.cpp not found.")
+# gnss_imu_kalman_filter (GNSS/IMU/WheelSpeed Kalman Filter)
+option(BUILD_GNSS_IMU_KALMAN_FILTER "Build gnss_imu_kalman_filter (GNSS/IMU Kalman Filter)" ON)
+if(BUILD_GNSS_IMU_KALMAN_FILTER AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/gnss_imu_kalman_filter.cpp")
+  add_executable(gnss_imu_kalman_filter src/positioning/gnss_imu_kalman_filter.cpp)
+  target_include_directories(gnss_imu_kalman_filter PUBLIC ${_gen_include})
+  ament_target_dependencies(gnss_imu_kalman_filter rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs builtin_interfaces)
+  target_link_libraries(gnss_imu_kalman_filter gnss_utils Eigen3::Eigen Threads::Threads)
+  add_dependencies(gnss_imu_kalman_filter ${_rosidl_deps})
+  install(TARGETS gnss_imu_kalman_filter DESTINATION lib/${PROJECT_NAME})
+elseif(BUILD_GNSS_IMU_KALMAN_FILTER)
+  message(WARNING "BUILD_GNSS_IMU_KALMAN_FILTER=ON but src/positioning/gnss_imu_kalman_filter.cpp not found.")
 endif()
 
 # gnss_visualizer

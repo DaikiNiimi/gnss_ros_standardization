@@ -300,9 +300,9 @@ void rotateCovarianceEnuToEcef(const double cov_enu[9], double lat_rad, double l
   double T[9];
   for (int i=0; i<3; ++i) {
     for (int j=0; j<3; ++j) {
-      T[3*i + j] = cov_enu[3*i + 0] * R[3*j + 0] +
-                   cov_enu[3*i + 1] * R[3*j + 1] +
-                   cov_enu[3*i + 2] * R[3*j + 2];
+      T[3*i + j] = cov_enu[3*i + 0] * R[3*0 + j] +
+                   cov_enu[3*i + 1] * R[3*1 + j] +
+                   cov_enu[3*i + 2] * R[3*2 + j];
     }
   }
   

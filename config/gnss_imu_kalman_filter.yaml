@@ -1,4 +1,4 @@
-ekf_node:
+gnss_imu_kalman_filter:
   ros__parameters:
     # ==========================================================================
     # Coordinate Frame
@@ -22,13 +22,13 @@ ekf_node:
       gnss_solution: "/gnss/solution"
       imu_raw: "/imu/data_raw"
       wheel_speed: "/can_twist"
-      ekf_solution: "/ekf/solution"
+      solution: "/gnss_imu_kalman_filter/solution"
 
     # ==========================================================================
     # CSV Output
     # ==========================================================================
     csv:
-      output_path: "/tmp/ekf_log.csv"
+      output_path: "/tmp/gnss_imu_kalman_filter_log.csv"
 
     # ==========================================================================
     # EKF Parameters
@@ -55,10 +55,6 @@ ekf_node:
     # "all"       : Use all solution types (including Single, SBAS, DGPS, PPP)
     gnss_update_mode: "fix_only"
     
-    # Minimum valid horizontal speed (from Doppler) to initialize or update yaw [m/s]
-    gnss_heading_speed_threshold_init: 0.5
-    gnss_heading_speed_threshold_update: 0.5
-
     # ==========================================================================
     # Wheel Speed (Optional)
     # ==========================================================================
@@ -76,6 +72,10 @@ ekf_node:
     # Initial IMU Averaging
     # ==========================================================================
     init_imu_duration: 1.0  # Duration to average initial IMU data for Roll/Pitch estimation [s]
+
+    # Initial yaw angle [deg]. If set, EKF can initialize while stationary without waiting for
+    # Doppler heading. Comment out or omit to use Doppler heading (default behavior).
+    # init_yaw_deg: 0.0
 
     # ==========================================================================
     # State Update Thresholds

@@ -17,7 +17,11 @@
 #include <algorithm>
 
 #include "rclcpp/rclcpp.hpp"
+#if __has_include(<cv_bridge/cv_bridge.hpp>)
 #include <cv_bridge/cv_bridge.hpp>
+#else
+#include <cv_bridge/cv_bridge.h>
+#endif
 #include "sensor_msgs/msg/image.hpp"
 #include "opencv2/opencv.hpp"
 
