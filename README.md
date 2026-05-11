@@ -1,453 +1,171 @@
 # gnss_ros_standardization
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![ROS 2](https://img.shields.io/badge/ROS%202-Humble%20%7C%20Jazzy%20%7C%20Rolling-brightgreen)](https://docs.ros.org/en/humble/)
+[![ROS 2](https://img.shields.io/badge/ROS%202-Humble%20%7C%20Jazzy-brightgreen)](https://docs.ros.org/en/humble/)
 
 ## Overview
 
-**gnss_ros_standardization** is an open-source project that standardizes GNSS raw data handling for robotics and autonomous systems using ROS 2.
+**gnss_ros_standardization** is an open-source ROS 2 package that standardizes
+GNSS raw-data handling for robotics and autonomous systems.
 
-The goal is to make GNSS raw data more accessible and usable in real-time experiments, particularly for **tight coupling GNSS/IMU methods** and **multi-sensor fusion frameworks**.
-
-By providing standardized ROS 2 / RTKLIB-based tools, this project enables developers and researchers to:
+The goal is to make GNSS raw observations and ephemeris uniformly accessible
+across receiver brands so that tight-coupling GNSS/IMU methods and multi-sensor
+fusion frameworks can be developed once and reused everywhere.
 
 - Use GNSS raw observations seamlessly in robotics applications
-- Perform real-time RTK/PPP with custom GNSS messages
-- Support diverse GNSS receivers and formats (u-blox, Septentrio, NovAtel, etc.)
+- Perform real-time SPP / RTK with a unified message contract
+- Support diverse GNSS receivers and formats (u-blox, Septentrio, NovAtel, RTCM3)
 - Reproduce experiments across platforms with consistent interfaces
-
----
 
 ## Scope
 
-This package focuses on **GNSS raw data standardization across receiver brands**.
-A minimal IMU passthrough is included for timestamp consistency with GNSS messages,
-limited to two ROS-standard topics:
+This package focuses on **GNSS raw-data standardization across receiver brands**.
+A minimal IMU passthrough is included for timestamp consistency with GNSS
+messages, limited to two ROS-standard topics:
 
 - `/gnss/imu/data_raw` — uncalibrated raw IMU (`sensor_msgs/Imu`)
 - `/gnss/imu/data` — calibrated IMU when the receiver provides it (`sensor_msgs/Imu`)
 
-**Out of scope**: orientation/attitude topics, INS solutions, sensor fusion,
-`nav_msgs/Odometry` outputs. For full IMU/INS support including attitude
-estimation, please use the receiver-vendor's dedicated drivers:
+**Out of scope**: orientation/attitude topics, INS solutions, full sensor
+fusion, `nav_msgs/Odometry` outputs. For attitude estimation, use the vendor
+drivers ([`ublox_gps`](https://github.com/KumarRobotics/ublox),
+[`septentrio_gnss_driver`](https://github.com/septentrio-gnss/septentrio_gnss_driver),
+[`novatel_oem7_driver`](https://github.com/novatel/novatel_oem7_driver))
+alongside this package — GNSS topics here remain time-aligned with vendor IMU
+topics.
 
-- u-blox: [`ublox_gps`](https://github.com/KumarRobotics/ublox)
-- Septentrio: [`septentrio_gnss_driver`](https://github.com/septentrio-gnss/septentrio_gnss_driver)
-- NovAtel: [`novatel_oem7_driver`](https://github.com/novatel/novatel_oem7_driver)
-
-These can be run alongside this package — the GNSS topics from here will align
-in time with the IMU topics from the vendor drivers, and ROS-standard fusion
-nodes (`imu_filter_madgwick`, `robot_localization`) work on the topics from
-either source.
-
----
-
-## Supported ROS 2 Distributions
+## Supported ROS 2 distributions
 
 | Distribution | Ubuntu | Status |
 |---|---|---|
 | Humble Hawksbill (LTS) | 22.04 | Supported |
 | Jazzy Jalisco (LTS) | 24.04 | Supported |
-| Rolling Ridley | 22.04 / 24.04 | Supported |
 
----
+## Supported receivers (summary)
 
-## Supported Receivers & Features
-
-| Receiver | Raw Observations | Navigation / Ephemeris | GNSS Solution (NMEA) | IMU Topics |
+| Receiver | Observations | Ephemeris | NMEA Solution | IMU topics |
 |---|---|---|---|---|
-| u-blox (UBX) | GnssObservations | GnssEphemerides | GnssSolution | `/gnss/imu/data_raw` (ESF-RAW), `/gnss/imu/data` (ESF-INS) |
-| Septentrio (SBF) | GnssObservations | GnssEphemerides | GnssSolution | `/gnss/imu/data_raw` (ExtSensorMeas) |
-| NovAtel (OEM) | GnssObservations | GnssEphemerides | GnssSolution | `/gnss/imu/data_raw` (RAWIMUSX), `/gnss/imu/data` (CORRIMUDATA, SPAN required) |
-| RTCM3 (input) | GnssObservations | GnssEphemerides | — | — |
+| u-blox (UBX) | ✓ | ✓ | ✓ | `/gnss/imu/data_raw`, `/gnss/imu/data` (ZED-F9R) |
+| Septentrio (SBF) | ✓ | ✓ | ✓ | `/gnss/imu/data_raw` (AsteRx-i / mosaic-X5) |
+| NovAtel (OEM4/6/7) | ✓ | ✓ | ✓ | `/gnss/imu/data_raw`, `/gnss/imu/data` (SPAN) |
+| RTCM3 (input) | ✓ | ✓ | — | — |
 
----
+Per-receiver protocol message tables (UBX message IDs, SBF block IDs,
+NovAtel log IDs, RTCM types) live in the component READMEs linked below.
 
-## Protocol Decoding Reference
+## Dependencies
 
-This section documents which proprietary receiver messages are decoded to produce each ROS 2 topic.
-All binary decoding (observation / ephemeris) is performed by the embedded [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB) decoder.
-IMU/INS messages that RTKLIB does not handle are decoded by a parallel mini-framer inside each driver/decoder node.
-
-### u-blox (UBX protocol)
-
-RTKLIB decoder: `input_ubx()` / `STRFMT_UBX`
-
-#### `/gnss/observation` — Raw Observations
-
-| UBX Message | Class/ID | Description |
-|---|---|---|
-| `UBX-RXM-RAWX` | `0x02` / `0x15` | Raw pseudorange, carrier phase, Doppler, SNR for all tracked signals and frequencies |
-
-#### `/gnss/ephemeris` — Navigation Messages
-
-| UBX Message | Class/ID | Contents |
-|---|---|---|
-| `UBX-RXM-SFRBX` | `0x02` / `0x13` | Raw navigation subframe/string/page for GPS, GLONASS, Galileo, BeiDou, QZSS, NavIC, SBAS |
-
-#### `/gnss/imu/data_raw` — Uncalibrated raw IMU
-
-| UBX Message | Class/ID | Description | Requirement |
-|---|---|---|---|
-| `UBX-ESF-RAW` | `0x10` / `0x03` | Raw IMU sensor measurements (accel + gyro, IMU-internal scale) | ZED-F9R or IMU-enabled module |
-
-#### `/gnss/imu/data` — Calibrated IMU
-
-| UBX Message | Class/ID | Description | Requirement |
-|---|---|---|---|
-| `UBX-ESF-INS` | `0x10` / `0x15` | Receiver-calibrated angular rate [rad/s] + linear acceleration [m/s²] | ZED-F9R or IMU-enabled module |
-
----
-
-### Septentrio (SBF protocol)
-
-RTKLIB decoder: `input_sbf()` / `STRFMT_SEPT`
-
-#### `/gnss/observation` — Raw Observations
-
-| SBF Block | ID | Description |
-|---|---|---|
-| `MeasEpoch` | 4027 | Raw carrier phase, code range, Doppler, SNR for all signals |
-
-#### `/gnss/ephemeris` — Navigation Messages
-
-**Decoded blocks** (receiver-assembled; single block = complete ephemeris):
-
-| SBF Block | ID | Contents |
-|---|---|---|
-| `GPSNav` | 5891 | GPS complete Keplerian ephemeris |
-| `GLONav` | 4004 | GLONASS complete state-vector ephemeris |
-| `GALNav` | 4002 | Galileo complete Keplerian ephemeris |
-| `BDSNav` | 4081 | BeiDou complete Keplerian ephemeris |
-| `QZSNav` | 4095 | QZSS complete Keplerian ephemeris |
-| `NavICNav` | 4099 | NavIC complete Keplerian ephemeris |
-
-**Raw subframe blocks** (decoded by RTKLIB `input_sbf()`; duplicates filtered by IODE/IODC):
-
-| SBF Block | ID | Contents |
-|---|---|---|
-| `GPSRawCA` | 4017 | GPS L1 C/A navigation subframe |
-| `GLORawCA` | 4026 | GLONASS L1 C/A navigation string |
-| `GALRawINAV` | 4023 | Galileo I/NAV navigation page |
-| `GALRawFNAV` | 4022 | Galileo F/NAV navigation page |
-| `BDSRaw` | 4047 | BeiDou navigation message |
-| `QZSRawL1CA` | 4066 | QZSS L1 C/A navigation subframe |
-| `NAVICRaw` | 4093 | NavIC navigation message |
-
-#### `/gnss/imu/data_raw` — Uncalibrated raw IMU
-
-| SBF Block | ID | Description | Requirement |
-|---|---|---|---|
-| `ExtSensorMeas` | 4050 | Linear acceleration [m/s²] (Type 0) and angular velocity [rad/s] (Type 1) as 3-axis vectors | AsteRx-i / mosaic-X5 with integrated IMU |
-
-> Septentrio does not provide a separate calibrated IMU output — `/gnss/imu/data` is not advertised by the SBF driver/decoder.
-
----
-
-### NovAtel (OEM4/6/7 binary protocol)
-
-RTKLIB decoder: `input_oem4()` / `STRFMT_OEM4`
-IMU/INS messages decoded by a parallel OEM4 mini-framer (RTKLIB does not handle these).
-
-#### `/gnss/observation` — Raw Observations
-
-| NovAtel Log | Message ID | Description |
-|---|---|---|
-| `RANGECMPB` | 140 | Compressed range measurements — pseudorange, carrier phase, Doppler, SNR (recommended) |
-| `RANGEB` | 43 | Uncompressed range measurements (alternative) |
-
-#### `/gnss/ephemeris` — Navigation Messages
-
-| NovAtel Log | Message ID | Contents |
-|---|---|---|
-| `GPSEPHEMB` | 7 | GPS ephemeris (Keplerian elements) |
-| `GLOEPHEMERISB` | 723 | GLONASS ephemeris (state vector) |
-| `GALEPHEMERISB` | 1122 | Galileo F/NAV ephemeris |
-| `GALINAVEPHEMERISB` | 1309 | Galileo I/NAV ephemeris |
-| `BDSEPHEMERISB` | 1696 | BeiDou ephemeris |
-| `QZSSEPHEMERISB` | 1336 | QZSS ephemeris |
-| `NAVICEPHEMERISB` | 2123 | NavIC ephemeris |
-| `IONUTCB` | 8 | GPS ionosphere + UTC parameters |
-| `GALIONOB` | 1127 | Galileo ionosphere parameters |
-| `QZSSIONUTCB` | 1347 | QZSS ionosphere + UTC parameters |
-
-#### `/gnss/imu/data_raw` — Uncalibrated raw IMU
-
-| NovAtel Log | Message ID | Description | Requirement |
-|---|---|---|---|
-| `RAWIMUSXB` | 1462 | Raw IMU delta-velocity / delta-angle counts × IMU-type-specific scale factor (ONNEW) | NovAtel receiver with IMU connection |
-
-#### `/gnss/imu/data` — Calibrated IMU
-
-| NovAtel Log | Message ID | Description | Requirement |
-|---|---|---|---|
-| `CORRIMUDATAB` | 812 | Bias/gravity/earth-rate corrected accel [m/s²] and angular velocity [rad/s] at full IMU rate (ONNEW) | SPAN-capable receiver + IMU |
-
-> **Note on RAWIMUSX scale factors**: The receiver embeds an `IMUType` byte in each
-> message identifying the connected IMU. The driver / decoder looks up the per-sample
-> count→SI scale factor (delta-velocity in m/s, delta-angle in rad) from a table in
-> [`novatel_imu_scales.hpp`](include/gnss_ros_standardization/novatel_imu_scales.hpp)
-> and divides by the inter-sample `dt` (from successive `Seconds` fields) to recover
-> rates and accelerations. See *Supported NovAtel IMUs* below.
-
-> **Note on CORRIMUDATA**: The log outputs SI-unit *increments* accumulated over one IMU sampling period.
-> The driver/decoder divides each increment by the interval between successive timestamps (`dt`) to recover instantaneous rates and accelerations.
-
-#### Supported NovAtel IMUs (RAWIMUSX scale table)
-
-| IMUType | IMU Model | accel scale (counts → m/s) | gyro scale (counts → rad) |
-|---------|-----------|---------------------------|---------------------------|
-| 4 | Honeywell HG1700-AG11 | 2⁻²² | 2⁻³³ |
-| 5 | Honeywell HG1700-AG17 | 2⁻²² | 2⁻³³ |
-| 8 | Honeywell HG1700-AG58 | 2⁻²² | 2⁻³³ |
-| 11 | Honeywell HG1700-AG62 | 2⁻²² | 2⁻³³ |
-| 13 | Honeywell HG1900-CA50 | 2⁻²¹ | 2⁻³³ |
-| 16 | Northrop Grumman LN200 | 2⁻¹⁴ | 2⁻¹⁹ |
-| 19 | Honeywell HG1930 | 2⁻²² | 2⁻³³ |
-| 26, 28 | Analog Devices ADIS16488 | 2⁻¹² | 2⁻²¹ |
-| 31 | Sensonor STIM 300 | 2⁻²¹ | 2⁻²⁵ |
-| 41 | Epson G320N | 2⁻¹⁵ | 2⁻²¹ |
-| 56 | KVH 1750 | 2⁻¹⁵ | 2⁻²¹ |
-| 58, 68, 69 | Epson G370N / G382PR | 2⁻¹⁵ | 2⁻²¹ |
-
-If your IMU type is not in the table, set `imu_scale_override.{accel,gyro}` in
-`config/novatel_driver.yaml` to the per-sample SI scale factors from the IMU
-datasheet. To contribute permanent support for a new IMU, add a `case` branch
-to `getImuScale()` in
-[`novatel_imu_scales.hpp`](include/gnss_ros_standardization/novatel_imu_scales.hpp)
-and update this table — please open a PR.
-
----
-
-## System Requirements
-
-- **OS**: Ubuntu 22.04 (Humble) or Ubuntu 24.04 (Jazzy)
-- **ROS 2**: Humble, Jazzy, or Rolling
-- **Build tool**: colcon
-- **Dependencies** (installed via rosdep):
-  - `rclcpp`, `rcutils`
-  - `std_msgs`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`, `builtin_interfaces`
-  - `rosbag2_cpp`, `rosbag2_storage`
-  - `Eigen3` (≥ 3.3)
-  - `cv_bridge`, `image_transport`
-- **Third-party** (included as git submodule):
-  - [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB) — RTKLIB by T. Takasu, demo5 fork by T. Everett (BSD 2-Clause)
-
----
-
-## Goals
-
-- Enable **easy and broad utilization of GNSS raw data** in robotics
-- Facilitate **development and testing of tight coupling GNSS positioning methods** with other sensors
-- Provide tools to support **real-time, reproducible experiments**
-
----
+- **OS**: Ubuntu 22.04 (Humble) or 24.04 (Jazzy)
+- **ROS 2**: Humble or Jazzy
+- **Build tool**: `colcon`
+- **ROS packages** (installed via `rosdep`):
+  `rclcpp`, `rcutils`, `std_msgs`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`,
+  `builtin_interfaces`, `rosbag2_cpp`, `rosbag2_storage`, `cv_bridge`,
+  `image_transport`
+- **System libraries**: Eigen3 ≥ 3.3 (`sudo apt install libeigen3-dev`)
+- **Third-party** (vendored as a git submodule):
+  [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB)
+  — RTKLIB by T. Takasu, demo5 fork by T. Everett (BSD 2-Clause)
 
 ## Installation
 
 ```bash
-# Clone repository with submodules
 git clone --recursive https://github.com/DaikiNiimi/gnss_ros_standardization.git
 cd gnss_ros_standardization
-
-# Install ROS 2 dependencies
 rosdep install --from-paths . --ignore-src -r -y
-
-# Build
 colcon build
 source install/setup.bash
 ```
 
----
+If you cloned without `--recursive`, run `git submodule update --init --recursive`.
 
-## Usage
+## Components
 
-### RTCM3 Decoder — Publish Raw GNSS Data from NTRIP / TCP / Serial
+Each component has its own README with the full message table, parameter list,
+and `ros2 run` examples.
 
-```bash
-ros2 run gnss_ros_standardization rtcm_decoder_node --ros-args \
-  -p stream_path:="ntrip://user:password@host:port/mountpoint"
-```
-
-Supported stream URI schemes:
-
-| Scheme | Example |
-|---|---|
-| NTRIP | `ntrip://user:pass@example.com:2101/MOUNT` |
-| TCP client | `tcpcli://192.168.1.100:9000` |
-| Serial | `serial://dev/ttyUSB0:115200` |
-
-Published topics:
-
-| Topic | Type | Description |
+| Component | Purpose | README |
 |---|---|---|
-| `/gnss/observation` | `GnssObservations` | Raw pseudorange / carrier-phase / Doppler |
-| `/gnss/ephemeris` | `GnssEphemerides` | Satellite navigation messages |
+| Decoders | Stream-only: NTRIP / TCP / Serial → ROS topics | [src/decoders/README.md](src/decoders/README.md) |
+| Drivers | Connect to receiver, configure outputs, decode | [src/drivers/README.md](src/drivers/README.md) |
+| Converters | RINEX ↔ rosbag and RTKLIB `.pos` ↔ rosbag | [src/converter/README.md](src/converter/README.md) |
+| Positioning | SPP, RTK, loose-coupled GNSS/IMU EKF | [src/positioning/README.md](src/positioning/README.md) |
+| Messages | Public ROS message contract | [msg/README.md](msg/README.md) |
 
----
+## Topic reference
 
-### u-blox Driver — Direct Serial Connection
-
-```bash
-# Copy and edit the sample config
-cp config/ubx_driver.yaml my_ubx.yaml
-# Edit: serial_port, baud_rate, enable flags as needed
-
-ros2 run gnss_ros_standardization ubx_driver_node --ros-args \
-  --params-file my_ubx.yaml
-```
-
----
-
-### Septentrio Driver
-
-```bash
-ros2 run gnss_ros_standardization sbf_driver_node --ros-args \
-  --params-file config/sbf_driver.yaml
-```
-
----
-
-### NovAtel Driver
-
-```bash
-ros2 run gnss_ros_standardization novatel_driver_node --ros-args \
-  --params-file config/novatel_driver.yaml
-```
-
----
-
-### ROS 2 Bag → RINEX Converter
-
-Convert a recorded ROS 2 bag file to RINEX observation and navigation files:
-
-```bash
-ros2 run gnss_ros_standardization rosbag_to_rinex \
-  --bag bag.db3 \
-  --topic-obs /gnss/observation \
-  --topic-nav /gnss/ephemeris \
-  --obs output.obs \
-  --nav output.nav \
-  --rnx-version 3.04 \
-  --nav-systems "GREJC"
-```
-
-**Supported RINEX versions (write):** 3.00 – 3.05. Values outside this range
-are rejected by `--rnx-version`. RINEX 2.xx and 4.xx are not supported on the
-write path.
-
-### RINEX → ROS 2 Bag Converter
-
-Convert RINEX observation/navigation files to a ROS 2 bag with
-`/gnss/observation` and `/gnss/ephemeris` topics:
-
-```bash
-ros2 run gnss_ros_standardization rinex_to_rosbag \
-  --obs input.obs \
-  --nav input.nav \
-  --out my_bag
-```
-
-**Supported RINEX versions (read):** 2.10 – 3.05. RINEX 4.xx is not supported; decompress with
-`crx2rnx` before conversion.
-
-### ROS 2 Bag ↔ RTKLIB .pos Solution Converter
-
-Convert between `/gnss/solution` (`GnssSolution`) and the RTKLIB `.pos`
-solution format produced by `rnx2rtkp` / `rtkpost`:
-
-```bash
-# rosbag -> .pos
-ros2 run gnss_ros_standardization rosbag_to_pos \
-  --bag bag.db3 --topic /gnss/solution --out output.pos
-
-# .pos -> rosbag
-ros2 run gnss_ros_standardization pos_to_rosbag \
-  --pos input.pos --out my_bag --topic /gnss/solution
-```
-
-Both LLH (`lat/lon/height`) and ECEF (`x/y/z`) `.pos` formats are supported.
-
----
-
-## Topic Reference
-
-Default topic names (all can be overridden via YAML parameters):
+Default topic names — all overridable via YAML parameters. These names form the
+common interface that every component in this package publishes to or
+subscribes from.
 
 | Topic | Type | Source |
 |---|---|---|
-| `/gnss/observation` | `GnssObservations` | All drivers / RTCM3 decoder |
-| `/gnss/ephemeris` | `GnssEphemerides` | All drivers / RTCM3 decoder |
-| `/gnss/solution` | `GnssSolution` | u-blox, Septentrio, NovAtel drivers (via NMEA) |
-| `/gnss/nmea_solution` | `GnssSolution` | Decoder nodes (raw stream decoding) |
-| `/gnss/imu/data_raw` | `sensor_msgs/Imu` | Uncalibrated raw IMU — u-blox (ESF-RAW), Septentrio (ExtSensorMeas), NovAtel (RAWIMUSX) |
-| `/gnss/imu/data` | `sensor_msgs/Imu` | Calibrated IMU — u-blox (ESF-INS), NovAtel (CORRIMUDATA, SPAN required); Septentrio: not provided |
+| `/gnss/observation` | `GnssObservations` | All drivers / decoders |
+| `/gnss/ephemeris` | `GnssEphemerides` | All drivers / decoders |
+| `/gnss/solution` | `GnssSolution` | Drivers (via NMEA) and positioning nodes |
+| `/gnss/nmea_solution` | `GnssSolution` | Decoder nodes |
+| `/gnss/imu/data_raw` | `sensor_msgs/Imu` | u-blox (ESF-RAW), Septentrio (ExtSensorMeas), NovAtel (RAWIMUSX) |
+| `/gnss/imu/data` | `sensor_msgs/Imu` | u-blox (ESF-INS), NovAtel (CORRIMUDATA, SPAN required) |
 
-## Message Reference
+## Message reference
 
-| Message | Package | Description |
-|---|---|---|
-| `GnssObservation` | `gnss_ros_standardization` | Single satellite observation (pseudorange, phase, Doppler, SNR) |
-| `GnssObservations` | `gnss_ros_standardization` | Array of `GnssObservation` with GNSS time stamp |
-| `GnssEphemeris` | `gnss_ros_standardization` | Keplerian ephemeris (GPS/Galileo/QZSS/BeiDou/NavIC/SBAS) |
-| `GlonassEphemeris` | `gnss_ros_standardization` | GLONASS ephemeris (state vector) |
-| `GnssEphemerides` | `gnss_ros_standardization` | Combined ephemeris message (GNSS + GLONASS arrays) |
-| `GnssSolution` | `gnss_ros_standardization` | Receiver positioning solution (LLH, ECEF, ENU, velocity, covariance) |
+| Message | Description |
+|---|---|
+| `GnssObservation` | Single satellite observation (pseudorange, phase, Doppler, SNR) |
+| `GnssObservations` | Array of `GnssObservation` with GNSS time stamp |
+| `GnssEphemeris` | Keplerian ephemeris (GPS / Galileo / QZSS / BeiDou / NavIC / SBAS) |
+| `GlonassEphemeris` | GLONASS ephemeris (PZ-90.11 state vector) |
+| `GnssEphemerides` | Combined ephemeris message (GNSS + GLONASS arrays) |
+| `GnssSolution` | Receiver positioning solution (LLH, ECEF, ENU, velocity, covariance) |
 
----
+Field-level details (units, frames, enum values): [msg/README.md](msg/README.md).
+
+## Goals
+
+- Enable **easy and broad utilization of GNSS raw data** in robotics
+- Facilitate **development and testing of tight-coupling GNSS positioning** with other sensors
+- Provide tools for **real-time, reproducible experiments**
 
 ## Roadmap
 
-- **v0.1** (current): Raw observation/ephemeris output for all three receivers; RINEX conversion; RTCM3 input
-- **v0.2** (current): GnssSolution via NMEA for Septentrio & NovAtel; minimal IMU passthrough (`sensor_msgs/Imu`) on `/gnss/imu/data_raw` and `/gnss/imu/data`
+- **v0.1**: Raw observation/ephemeris output for all three receivers; RINEX conversion; RTCM3 input
+- **v0.2** (current): `GnssSolution` via NMEA for Septentrio & NovAtel; minimal IMU passthrough
 - **v1.0** (planned): Launch file templates, CI-tested multi-distro Docker images, extended RTK/PPP tooling
 
-> Attitude / INS / sensor-fusion outputs are intentionally out of scope — see *Scope* above.
+Attitude / INS / sensor-fusion outputs are intentionally out of scope — see *Scope*.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) if you would like to contribute.
+## References
 
----
+- RTKLIB Manual: <https://www.rtklib.com/>
+- RTKLIB source (rtklibexplorer fork): <https://github.com/rtklibexplorer/RTKLIB>
+- RINEX 3.x format: <https://files.igs.org/pub/data/format/rinex_4.00.pdf>
+- RTCM 10403.x standards: <https://www.rtcm.org/>
+- u-blox UBX protocol: <https://www.u-blox.com/en/docs>
+- Septentrio SBF reference guide: <https://www.septentrio.com/en/support/documentation>
+- NovAtel OEM7 command/log reference: <https://docs.novatel.com/OEM7/Content/Home.htm>
 
 ## Troubleshooting
 
-**Build fails: `Eigen3` not found**
-```bash
-sudo apt install libeigen3-dev
-```
+**Build fails: `Eigen3` not found** — `sudo apt install libeigen3-dev`
 
-**Serial port permission denied**
-```bash
-sudo usermod -aG dialout $USER
-# Log out and back in
-```
-
-**NTRIP connection fails**
-- Verify credentials and mountpoint with an independent NTRIP client (e.g., STRSVR from RTKLIB).
-- Check that `stream_path` matches the exact URI format shown in the Usage section.
-
-**No data on `/gnss/observation`**
-- Confirm the receiver outputs RTCM3 MSM7 messages.
-- For u-blox: ensure `UBX-RXM-RAWX` and `UBX-RXM-SFRBX` are enabled in the receiver configuration.
-
----
+For component-specific troubleshooting (serial permissions, NTRIP connectivity,
+NovAtel IMU scale factors, etc.), see the respective component README.
 
 ## Acknowledgements
 
-This project uses [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB), maintained by Tim Everett, based on [RTKLIB](https://github.com/tomojitakasu/RTKLIB) by Tomoji Takasu, licensed under the BSD 2-Clause License.
-
----
+This project uses [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB),
+maintained by Tim Everett, based on [RTKLIB](https://github.com/tomojitakasu/RTKLIB)
+by Tomoji Takasu, licensed under BSD 2-Clause.
 
 ## License
 
-This project is released under the [MIT License](LICENSE).
-
----
+Released under the [MIT License](LICENSE).
 
 ## Contributing
 
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on reporting issues, submitting pull requests, and the development workflow.
-
----
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for
+guidelines on reporting issues, submitting pull requests, and the development
+workflow.
 
 ## Contact
 

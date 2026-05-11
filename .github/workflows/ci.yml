@@ -18,8 +18,6 @@ jobs:
             ros_image: osrf/ros:humble-desktop
           - ros_distro: jazzy
             ros_image: osrf/ros:jazzy-desktop
-          - ros_distro: rolling
-            ros_image: osrf/ros:rolling-desktop
 
     container:
       image: ${{ matrix.ros_image }}
