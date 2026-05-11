@@ -58,7 +58,7 @@ public:
     obs_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssObservations>(
       "/gnss/observation", 10, std::bind(&GnssVisualizer::obsCallback, this, std::placeholders::_1));
     eph_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssEphemerides>(
-      "/gnss/ephemeris", rclcpp::QoS(10).transient_local(), std::bind(&GnssVisualizer::ephCallback, this, std::placeholders::_1));
+      "/gnss/ephemeris", rclcpp::QoS(1).transient_local(), std::bind(&GnssVisualizer::ephCallback, this, std::placeholders::_1));
     sol_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssSolution>(
       "/gnss/solution", 10, std::bind(&GnssVisualizer::solCallback, this, std::placeholders::_1));
 

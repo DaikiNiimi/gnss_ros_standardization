@@ -5,12 +5,11 @@
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include <sensor_msgs/msg/imu.hpp>
 
+#include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
 #include "gnss_ros_standardization/ubx_protocol.hpp"
@@ -78,13 +77,17 @@ struct UbxConfig {
   // Topics
   std::string observation_topic{"/gnss/observation"};
   std::string ephemeris_topic{"/gnss/ephemeris"};
-  std::string solution_topic{"/gnss/solution"};
+  std::string solution_topic{"/gnss/nmea_solution"};
 
   // ENU local origin settings
   bool auto_origin{true};
   double origin_latitude{0.0};
   double origin_longitude{0.0};
   double origin_altitude{0.0};
+
+  // Ephemeris snapshot behavior
+  double ephemeris_snapshot_period_s{30.0};
+  double ephemeris_max_age_s{7200.0};
 };
 
 /// @brief ROS 2 driver node for u-blox GNSS receivers
@@ -162,6 +165,9 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<double>("origin.longitude", config_.origin_longitude);
     declare_parameter<double>("origin.altitude", config_.origin_altitude);
 
+    declare_parameter<double>("ephemeris.snapshot_period_s", config_.ephemeris_snapshot_period_s);
+    declare_parameter<double>("ephemeris.max_age_s",         config_.ephemeris_max_age_s);
+
     // Read parameters
     config_.stream_path = get_parameter("stream_path").as_string();
     config_.rate_hz = get_parameter("rate_hz").as_int();
@@ -199,6 +205,12 @@ class UbxDriverNode : public rclcpp::Node {
     config_.origin_longitude = get_parameter("origin.longitude").as_double();
     config_.origin_altitude = get_parameter("origin.altitude").as_double();
 
+    config_.ephemeris_snapshot_period_s = get_parameter("ephemeris.snapshot_period_s").as_double();
+    config_.ephemeris_max_age_s         = get_parameter("ephemeris.max_age_s").as_double();
+
+    eph_store_.setSnapshotPeriod(config_.ephemeris_snapshot_period_s);
+    eph_store_.setMaxAge(config_.ephemeris_max_age_s);
+
     // Detect USB connection from path
     is_usb_connection_ = (config_.stream_path.find("ttyACM") != std::string::npos);
 
@@ -217,11 +229,17 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "  GNSS: GPS=%d GLO=%d GAL=%d BDS=%d QZS=%d IRN=%d SBAS=%d",
                 config_.enable_gps, config_.enable_glonass, config_.enable_galileo,
                 config_.enable_beidou, config_.enable_qzss, config_.enable_navic, config_.enable_sbas);
+
+    // Lock solution source at startup. BINARY if NAV-PVT is enabled, else NMEA.
+    // No mid-session switching: if binary stops, output pauses rather than falling back.
+    source_ = config_.enable_nav_pvt ? SolutionSource::BINARY : SolutionSource::NMEA;
+    RCLCPP_INFO(get_logger(), "Solution source locked: %s",
+                source_ == SolutionSource::BINARY ? "BINARY (UBX-NAV-PVT)" : "NMEA");
   }
 
   void initializePublishers() {
     obs_pub_     = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
-    eph_pub_     = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
+    eph_pub_     = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(1).transient_local());
     sol_pub_     = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
     imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(config_.imu_topic, 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
@@ -957,6 +975,7 @@ class UbxDriverNode : public rclcpp::Node {
   void handleUbxFrame() {
     if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_RAW) handleEsfRaw();
     if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_INS) handleEsfIns();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_PVT) handleNavPvt();
   }
 
   // Sign-extend the lower 24 bits of a uint32 into an int32.
@@ -1114,19 +1133,53 @@ class UbxDriverNode : public rclcpp::Node {
         break;
       }
     }
+
+    maybePublishHeartbeat();
   }
 
+  // Solution source policy:
+  //   BINARY (NAV-PVT)  : if config_.enable_nav_pvt → use NAV-PVT only, drop NMEA
+  //   NMEA             : otherwise → use NMEA-parsed solution
+  // Source is locked at startup; no mid-session switching.
+  enum class SolutionSource { BINARY, NMEA };
+
   void handleNmeaSentence(const std::string& sentence) {
-    if (nmea_parser_.parseSentence(sentence, current_solution_)) {
-      publishSolution();
+    if (nmea_parser_.parseSentence(sentence, nmea_solution_)) {
+      if (source_ == SolutionSource::NMEA) {
+        publishSolution(nmea_solution_);
+      }
     }
+  }
+
+  void handleNavPvt() {
+    if (!ubx::pvt::parseNavPvt(ubx_frm_payload_.data(), ubx_frm_payload_.size(),
+                               binary_solution_)) {
+      return;
+    }
+    // Compute pos_ecef from LLH and vel_ecef from vel_enu so that the common
+    // publishSolution logic (origin/ENU derivation) works unchanged.
+    finalizeBinarySolutionGeometry(binary_solution_);
+    if (source_ == SolutionSource::BINARY) {
+      publishSolution(binary_solution_);
+    }
+  }
+
+  static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
+    double llh[3] = {s.latitude * D2R, s.longitude * D2R, s.altitude};
+    double ecef[3] = {0};
+    pos2ecef(llh, ecef);
+    s.pos_ecef.x = ecef[0]; s.pos_ecef.y = ecef[1]; s.pos_ecef.z = ecef[2];
+    double vel_e[3] = {s.vel_enu.x, s.vel_enu.y, s.vel_enu.z};
+    double vel_ec[3] = {0};
+    enu2ecef(llh, vel_e, vel_ec);
+    s.vel_ecef.x = vel_ec[0]; s.vel_ecef.y = vel_ec[1]; s.vel_ecef.z = vel_ec[2];
   }
 
   // ============================================================================
   // Solution Publishing
   // ============================================================================
 
-  void publishSolution() {
+  void publishSolution(msg::GnssSolution& sol) {
     // Block publishing until configuration is complete, unless configure_on_startup is false
     if (!is_configured_ && config_.configure_on_startup) {
         return;
@@ -1136,66 +1189,63 @@ class UbxDriverNode : public rclcpp::Node {
     int week = 0;
     const double tow = time2gpst(raw_.time, &week);
     if (week != 0) {
-      current_solution_.time_week = static_cast<uint16_t>(week);
-      current_solution_.time_tow = tow;
+      sol.time_week = static_cast<uint16_t>(week);
+      sol.time_tow = tow;
     }
 
-    current_solution_.header.stamp = now();
-    current_solution_.header.frame_id = config_.frame_id;
+    sol.header.stamp = now();
+    sol.header.frame_id = config_.frame_id;
 
     // Handle ENU conversion if a reference origin exists or setup if it doesn't
-    if (current_solution_.status == msg::GnssSolution::STATUS_FIX ||
-        current_solution_.status == msg::GnssSolution::STATUS_FLOAT ||
-        current_solution_.status == msg::GnssSolution::STATUS_SINGLE ||
-        current_solution_.status == msg::GnssSolution::STATUS_DGPS ||
-        current_solution_.status == msg::GnssSolution::STATUS_SBAS) {
-      
+    if (sol.status == msg::GnssSolution::STATUS_FIX ||
+        sol.status == msg::GnssSolution::STATUS_FLOAT ||
+        sol.status == msg::GnssSolution::STATUS_SINGLE ||
+        sol.status == msg::GnssSolution::STATUS_DGPS ||
+        sol.status == msg::GnssSolution::STATUS_SBAS) {
+
       if (!has_local_origin_) {
-        // Set first valid position as ENU origin
-        local_origin_ecef_[0] = current_solution_.pos_ecef.x;
-        local_origin_ecef_[1] = current_solution_.pos_ecef.y;
-        local_origin_ecef_[2] = current_solution_.pos_ecef.z;
+        local_origin_ecef_[0] = sol.pos_ecef.x;
+        local_origin_ecef_[1] = sol.pos_ecef.y;
+        local_origin_ecef_[2] = sol.pos_ecef.z;
         ecef2pos(local_origin_ecef_, local_origin_pos_);
         has_local_origin_ = true;
         RCLCPP_INFO(get_logger(), "Auto-set local ENU origin: lat=%.6f, lon=%.6f, alt=%.2f",
                     local_origin_pos_[0] * (180.0/M_PI), local_origin_pos_[1] * (180.0/M_PI), local_origin_pos_[2]);
       }
-      
-      // Transform position and origin to message
-      current_solution_.org_ecef.x = local_origin_ecef_[0];
-      current_solution_.org_ecef.y = local_origin_ecef_[1];
-      current_solution_.org_ecef.z = local_origin_ecef_[2];
+
+      sol.org_ecef.x = local_origin_ecef_[0];
+      sol.org_ecef.y = local_origin_ecef_[1];
+      sol.org_ecef.z = local_origin_ecef_[2];
 
       double ecef[3] = {
-        current_solution_.pos_ecef.x - local_origin_ecef_[0],
-        current_solution_.pos_ecef.y - local_origin_ecef_[1],
-        current_solution_.pos_ecef.z - local_origin_ecef_[2]
+        sol.pos_ecef.x - local_origin_ecef_[0],
+        sol.pos_ecef.y - local_origin_ecef_[1],
+        sol.pos_ecef.z - local_origin_ecef_[2]
       };
       double enu[3] = {0};
       ecef2enu(local_origin_pos_, ecef, enu);
 
-      current_solution_.pos_enu.x = enu[0];
-      current_solution_.pos_enu.y = enu[1];
-      current_solution_.pos_enu.z = enu[2];
-      
-      // Transform velocity
-      double vel_ecef[3] = {current_solution_.vel_ecef.x, current_solution_.vel_ecef.y, current_solution_.vel_ecef.z};
+      sol.pos_enu.x = enu[0];
+      sol.pos_enu.y = enu[1];
+      sol.pos_enu.z = enu[2];
+
+      double vel_ecef[3] = {sol.vel_ecef.x, sol.vel_ecef.y, sol.vel_ecef.z};
       double vel_enu[3] = {0};
       ecef2enu(local_origin_pos_, vel_ecef, vel_enu);
 
-      current_solution_.vel_enu.x = vel_enu[0];
-      current_solution_.vel_enu.y = vel_enu[1];
-      current_solution_.vel_enu.z = vel_enu[2];
+      sol.vel_enu.x = vel_enu[0];
+      sol.vel_enu.y = vel_enu[1];
+      sol.vel_enu.z = vel_enu[2];
     } else {
-      current_solution_.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
+      sol.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
+      sol.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
+      sol.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
+      sol.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
+      sol.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
+      sol.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
     }
 
-    sol_pub_->publish(current_solution_);
+    sol_pub_->publish(sol);
   }
 
   void handleDecodeResult(int result) {
@@ -1258,48 +1308,26 @@ class UbxDriverNode : public rclcpp::Node {
   // ============================================================================
 
   void publishEphemerides() {
-    bool has_new = false;
-
-    std::vector<msg::GnssEphemeris> gnss_eph;
-    std::vector<msg::GlonassEphemeris> glo_eph;
-
+    bool changed = false;
     for (int i = 0; i < raw_.nav.n; ++i) {
-      const eph_t& eph = raw_.nav.eph[i];
-      if (eph.sat == 0) continue;
-
-      int prn = 0;
-      if (satsys(eph.sat, &prn) == SYS_GLO) continue;
-
-      EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
-      if (seen_ephemeris_.insert(key).second) {
-        gnss_eph.push_back(gnss_utils::ephToMsg(eph));
-        has_new = true;
-      }
+      changed = eph_store_.ingestEph(raw_.nav.eph[i]) || changed;
     }
-
     for (int i = 0; i < raw_.nav.ng; ++i) {
-      const geph_t& geph = raw_.nav.geph[i];
-      if (geph.sat == 0) continue;
-
-      auto it = last_glo_iode_.find(geph.sat);
-      if (it == last_glo_iode_.end() || it->second != geph.iode) {
-        last_glo_iode_[geph.sat] = geph.iode;
-        has_new = true;
-        glo_eph.push_back(gnss_utils::gephToMsg(geph));
-      }
+      changed = eph_store_.ingestGeph(raw_.nav.geph[i]) || changed;
     }
+    if (changed) publishSnapshot();
+  }
 
-    if (!has_new && !first_ephemeris_) return;
-    first_ephemeris_ = false;
+  void maybePublishHeartbeat() {
+    if (eph_store_.heartbeatDue(now())) publishSnapshot();
+  }
 
-    msg::GnssEphemerides msg;
-    msg.header.stamp = now();
-    msg.gnss_ephemeris = std::move(gnss_eph);
-    msg.glonass_ephemeris = std::move(glo_eph);
-    eph_pub_->publish(msg);
-
-    RCLCPP_INFO(get_logger(), "Published eph: GNSS=%zu GLO=%zu (new=%s)",
-                msg.gnss_ephemeris.size(), msg.glonass_ephemeris.size(), has_new ? "yes" : "no");
+  void publishSnapshot() {
+    auto m = eph_store_.buildSnapshot(now());
+    eph_pub_->publish(m);
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+      "Published ephemeris snapshot: GNSS=%zu GLO=%zu",
+      m.gnss_ephemeris.size(), m.glonass_ephemeris.size());
   }
 
   // ============================================================================
@@ -1323,20 +1351,6 @@ class UbxDriverNode : public rclcpp::Node {
       default: ++count.unknown; break;
     }
   }
-
-  struct EphemerisKey {
-    int sat, iode, iodc, code;
-    bool operator==(const EphemerisKey& o) const {
-      return sat == o.sat && iode == o.iode && iodc == o.iodc && code == o.code;
-    }
-  };
-
-  struct EphemerisKeyHash {
-    size_t operator()(const EphemerisKey& k) const {
-      return static_cast<size_t>(k.sat) ^ (static_cast<size_t>(k.iode) << 16) ^
-             (static_cast<size_t>(k.iodc) << 1) ^ (static_cast<size_t>(k.code) << 24);
-    }
-  };
 
   // ============================================================================
   // Member Variables
@@ -1362,7 +1376,9 @@ class UbxDriverNode : public rclcpp::Node {
   // NMEA Parsing state
   gnss_utils::NmeaParser nmea_parser_;
   std::string nmea_buffer_;
-  msg::GnssSolution current_solution_;
+  msg::GnssSolution nmea_solution_;
+  msg::GnssSolution binary_solution_;
+  SolutionSource    source_{SolutionSource::NMEA};
 
   // ENU Origin state
   bool has_local_origin_{false};
@@ -1386,11 +1402,9 @@ class UbxDriverNode : public rclcpp::Node {
   uint8_t ack_buf_[10]{};
   int ack_pos_{0};
 
-  // Ephemeris tracking
-  std::unordered_set<EphemerisKey, EphemerisKeyHash> seen_ephemeris_;
-  std::unordered_map<int, int> last_glo_iode_;
-  bool first_ephemeris_{true};
-  
+  // Unified ephemeris store
+  gnss_utils::EphemerisStore eph_store_;
+
   // State
   bool is_configured_{false};
 };

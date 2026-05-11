@@ -35,7 +35,7 @@ public:
       std::bind(&SppPntposNode::onObs, this, std::placeholders::_1));
 
     nav_sub_ = create_subscription<grs::GnssEphemerides>(
-      get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(100).transient_local(),
+      get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(1).transient_local(),
       std::bind(&SppPntposNode::onNav, this, std::placeholders::_1));
 
     gnss_sol_pub_ = this->create_publisher<grs::GnssSolution>(

@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 
 
@@ -21,7 +22,6 @@ constexpr uint16_t RTCM3_MAX_LEN  = 1023;
 constexpr size_t   RTCM3_HDR_LEN  = 3;     // preamble + length(2)
 constexpr size_t   RTCM3_CRC_LEN  = 3;
 constexpr uint32_t CRC24Q_POLY    = 0x1864CFB; // CRC-24Q
-constexpr double   TOE_EQ_EPS     = 1e-3;      // sec
 } // namespace
 
 class RtcmDecoderNode : public rclcpp::Node {
@@ -31,6 +31,11 @@ public:
     declare_parameter<int>("assemble_delay_ms", 200);  // reserved
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
+    declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
+    declare_parameter<double>("ephemeris.max_age_s", 7200.0);
+
+    eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
+    eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
 
     const auto stream_path = get_parameter("stream_path").as_string();
     if (stream_path.empty()) {
@@ -40,7 +45,7 @@ public:
     }
 
     obs_pub_ = create_publisher<gnss_ros_standardization::msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
-    nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
+    nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(1).transient_local());
 
     if (init_rtcm(&rtcm_) != 1) {
       RCLCPP_ERROR(get_logger(), "init_rtcm failed");
@@ -232,94 +237,28 @@ private:
     }
   }
 
-  // ---- ephemerides (publish on change) -------------------------------------
+  // ---- ephemerides (snapshot-on-change + heartbeat) ------------------------
   void publishEphemeridesIfChanged() {
-    // helpful hint if base is not sending 1020
     if (rtcm_.nav.ng == 0) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
         "No GLONASS ephemerides (RTCM 1020). Check base settings.");
     }
 
     bool changed = false;
-
-    // Kepler (GPS/GAL/QZS/BeiDou/SBAS): choose latest toe per sat (Galileo: same toe -> larger code)
-    std::unordered_map<int, int> best_kepler;
     for (int i = 0; i < rtcm_.nav.n; ++i) {
-      const eph_t& e = rtcm_.nav.eph[i];
-      if (!e.sat) continue;
-      int prn = 0;
-      if (satsys(e.sat, &prn) == SYS_GLO) continue;
-
-      int w = 0; const double toe = time2gpst(e.toe, &w);
-      auto it = best_kepler.find(e.sat);
-      if (it == best_kepler.end()) {
-        best_kepler[e.sat] = i;
-      } else {
-        const eph_t& prev = rtcm_.nav.eph[it->second];
-        int wp = 0; const double toe_p = time2gpst(prev.toe, &wp);
-        bool better = (toe > toe_p + TOE_EQ_EPS);
-        if (better) best_kepler[e.sat] = i;
-      }
+      changed = eph_store_.ingestEph(rtcm_.nav.eph[i]) || changed;
     }
-
-    std::vector<gnss_ros_standardization::msg::GnssEphemeris> kmsgs;
-    kmsgs.reserve(rtcm_.nav.n);
-    
-    for (int i = 0; i < rtcm_.nav.n; ++i) {
-      const eph_t& e = rtcm_.nav.eph[i];
-      if (!e.sat) continue;
-      int prn = 0;
-      if (satsys(e.sat, &prn) == SYS_GLO) continue;
-    
-      KKey k{e.sat, (int)e.iode, (int)e.iodc, (int)e.code};
-      if (seen_kepler_.insert(k).second) {
-        kmsgs.push_back(gnss_utils::ephToMsg(e));
-        changed = true;
-      }
-    }
-
-    // GLONASS: choose latest toe per sat
-    std::unordered_map<int, int> best_glo;
     for (int i = 0; i < rtcm_.nav.ng; ++i) {
-      const geph_t& g = rtcm_.nav.geph[i];
-      if (!g.sat) continue;
-
-      int w = 0; const double toe = time2gpst(utc2gpst(g.toe), &w);
-      auto it = best_glo.find(g.sat);
-      if (it == best_glo.end()) {
-        best_glo[g.sat] = i;
-      } else {
-        const geph_t& prev = rtcm_.nav.geph[it->second];
-        int wp = 0; const double toe_p = time2gpst(utc2gpst(prev.toe), &wp);
-        if (toe > toe_p + TOE_EQ_EPS) best_glo[g.sat] = i;
-      }
+      changed = eph_store_.ingestGeph(rtcm_.nav.geph[i]) || changed;
     }
 
-    std::vector<gnss_ros_standardization::msg::GlonassEphemeris> rmsgs;
-    rmsgs.reserve(best_glo.size());
-    for (auto& kv : best_glo) {
-      const geph_t& g = rtcm_.nav.geph[kv.second];
-      auto it = last_glo_iode_.find(g.sat);
-      if (it == last_glo_iode_.end() || it->second != (int)g.iode) {
-        last_glo_iode_[g.sat] = (int)g.iode;
-        changed = true;
-      }
-      rmsgs.push_back(gnss_utils::gephToMsg(g));
+    if (changed || eph_store_.heartbeatDue(now())) {
+      auto out = eph_store_.buildSnapshot(now());
+      nav_pub_->publish(out);
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+        "nav published: GNSS=%zu GLO=%zu",
+        out.gnss_ephemeris.size(), out.glonass_ephemeris.size());
     }
-
-    static bool first = true;
-    if (!changed && !first) return;
-    first = false;
-
-    gnss_ros_standardization::msg::GnssEphemerides out;
-    out.header.stamp      = now();
-    out.gnss_ephemeris    = std::move(kmsgs);
-    out.glonass_ephemeris = std::move(rmsgs);
-    nav_pub_->publish(out);
-
-    RCLCPP_INFO(get_logger(), "nav published: GNSS=%zu GLO=%zu (changed=%s)",
-                out.gnss_ephemeris.size(), out.glonass_ephemeris.size(),
-                changed ? "yes" : "no");
   }
 
   // ---- builders ------------------------------------------------------------
@@ -339,20 +278,8 @@ private:
   // epoch buffer
   std::unordered_map<EpochKey, EpochBuffer, EpochKeyHash> epochs_;
 
-  struct KKey {
-    int sat; int iode; int iodc; int code;
-    bool operator==(const KKey& o) const {
-      return sat==o.sat && iode==o.iode && iodc==o.iodc && code==o.code;
-    }
-  };
-  struct KKeyHash {
-    size_t operator()(const KKey& k) const {
-      return (size_t)k.sat ^ ((size_t)k.iode<<16) ^ ((size_t)k.iodc<<1) ^ ((size_t)k.code<<24);
-    }
-  };
-  
-  std::unordered_set<KKey, KKeyHash> seen_kepler_;
-  std::unordered_map<int, int>       last_glo_iode_;
+  // Unified ephemeris store
+  gnss_utils::EphemerisStore eph_store_;
 };
 
 int main(int argc, char* argv[]) {

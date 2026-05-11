@@ -5,12 +5,11 @@
 #include <limits>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include <sensor_msgs/msg/imu.hpp>
 
+#include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
 #include "gnss_ros_standardization/sbf_nav_decoder.hpp"
@@ -88,13 +87,17 @@ class SbfDecoderNode : public rclcpp::Node {
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
     declare_parameter<std::string>("solution_topic",     "/gnss/nmea_solution");
     declare_parameter<std::string>("imu_raw_topic",      "/gnss/imu/data_raw");
+    declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
+    declare_parameter<double>("ephemeris.max_age_s", 7200.0);
 
     frame_id_ = get_parameter("frame_id").as_string();
+    eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
+    eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
   }
 
   void initializePublishers() {
     obs_pub_          = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
-    eph_pub_          = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(100).transient_local());
+    eph_pub_          = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(1).transient_local());
     sol_pub_          = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
     imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
   }
@@ -182,6 +185,9 @@ class SbfDecoderNode : public rclcpp::Node {
         }
       }
     }
+
+    maybePublishHeartbeat();
+    maybeWatchdogFlushPendingPvt();
   }
 
   // ============================================================================
@@ -226,14 +232,153 @@ class SbfDecoderNode : public rclcpp::Node {
 
   void handleSbfBlock() {
     switch (sbf_id_) {
-      case sbf::ID_EXTSENSORMEAS: handleExtSensorMeas(); break;
-      case sbf::ID_GPSNAV:        handleGpsNav();        break;
-      case sbf::ID_GLONAV:        handleGloNav();        break;
-      case sbf::ID_GALNAV:        handleGalNav();        break;
-      case sbf::ID_BDSNAV:        handleBdsNav();        break;
-      case sbf::ID_QZSNAV:        handleQzsNav();        break;
-      case sbf::ID_NAVICNAV:      handleNavicNav();      break;
+      case sbf::ID_EXTSENSORMEAS:    handleExtSensorMeas();    break;
+      case sbf::ID_GPSNAV:           handleGpsNav();           break;
+      case sbf::ID_GLONAV:           handleGloNav();           break;
+      case sbf::ID_GALNAV:           handleGalNav();           break;
+      case sbf::ID_BDSNAV:           handleBdsNav();           break;
+      case sbf::ID_QZSNAV:           handleQzsNav();           break;
+      case sbf::ID_NAVICNAV:         handleNavicNav();         break;
+      case sbf::ID_PVTGEODETIC:      handlePvtGeodetic();      break;
+      case sbf::ID_POSCOVGEODETIC:   handlePosCovGeodetic();   break;
+      case sbf::ID_PVTCARTESIAN:     handlePvtCartesian();     break;
+      case sbf::ID_POSCOVCARTESIAN:  handlePosCovCartesian();  break;
       default: break;
+    }
+  }
+
+  // ============================================================================
+  // Binary PVT handlers (per-system TOW aggregation, first-msg source lock)
+  // ============================================================================
+  struct PendingPvt {
+    uint32_t tow_ms{UINT32_MAX};
+    bool has_pvt{false};
+    bool has_cov{false};
+    msg::GnssSolution buf{};
+    rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
+  };
+
+  enum class SolutionSource { UNDETERMINED, BINARY, NMEA };
+
+  void lockSourceBinaryOnce() {
+    if (source_ == SolutionSource::UNDETERMINED) {
+      source_ = SolutionSource::BINARY;
+      RCLCPP_INFO(get_logger(), "Solution source locked: BINARY (SBF PVTGeodetic/PVTCartesian)");
+    }
+  }
+
+  void handlePvtGeodetic() {
+    const uint8_t* p = sbf_body_.data();
+    const size_t len = sbf_body_.size();
+    const uint32_t tow = sbf::pvt::getTowMs(p, len);
+    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.has_cov)) {
+      flushPendingGeo();
+    }
+    pending_geo_.tow_ms = tow;
+    if (!sbf::pvt::parsePVTGeodetic(p, len, pending_geo_.buf)) return;
+    pending_geo_.has_pvt = true;
+    pending_geo_.last_update = now();
+    lockSourceBinaryOnce();
+    if (pending_geo_.has_cov) flushPendingGeo();
+  }
+
+  void handlePosCovGeodetic() {
+    const uint8_t* p = sbf_body_.data();
+    const size_t len = sbf_body_.size();
+    const uint32_t tow = sbf::pvt::getTowMs(p, len);
+    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.has_cov)) {
+      flushPendingGeo();
+    }
+    pending_geo_.tow_ms = tow;
+    if (!sbf::pvt::parsePosCovGeodetic(p, len, pending_geo_.buf)) return;
+    pending_geo_.has_cov = true;
+    pending_geo_.last_update = now();
+    if (pending_geo_.has_pvt) flushPendingGeo();
+  }
+
+  void handlePvtCartesian() {
+    const uint8_t* p = sbf_body_.data();
+    const size_t len = sbf_body_.size();
+    const uint32_t tow = sbf::pvt::getTowMs(p, len);
+    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.has_cov)) {
+      flushPendingXyz();
+    }
+    pending_xyz_.tow_ms = tow;
+    if (!sbf::pvt::parsePVTCartesian(p, len, pending_xyz_.buf)) return;
+    pending_xyz_.has_pvt = true;
+    pending_xyz_.last_update = now();
+    lockSourceBinaryOnce();
+    if (pending_xyz_.has_cov) flushPendingXyz();
+  }
+
+  void handlePosCovCartesian() {
+    const uint8_t* p = sbf_body_.data();
+    const size_t len = sbf_body_.size();
+    const uint32_t tow = sbf::pvt::getTowMs(p, len);
+    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.has_cov)) {
+      flushPendingXyz();
+    }
+    pending_xyz_.tow_ms = tow;
+    if (!sbf::pvt::parsePosCovCartesian(p, len, pending_xyz_.buf)) return;
+    pending_xyz_.has_cov = true;
+    pending_xyz_.last_update = now();
+    if (pending_xyz_.has_pvt) flushPendingXyz();
+  }
+
+  void flushPendingGeo() {
+    if (!pending_geo_.has_pvt) { pending_geo_ = {}; return; }
+    binary_solution_.status      = pending_geo_.buf.status;
+    binary_solution_.num_sats    = pending_geo_.buf.num_sats;
+    binary_solution_.time_tow    = pending_geo_.buf.time_tow;
+    binary_solution_.time_week   = pending_geo_.buf.time_week;
+    binary_solution_.latitude    = pending_geo_.buf.latitude;
+    binary_solution_.longitude   = pending_geo_.buf.longitude;
+    binary_solution_.altitude    = pending_geo_.buf.altitude;
+    binary_solution_.vel_enu     = pending_geo_.buf.vel_enu;
+    binary_solution_.pos_enu_cov = pending_geo_.buf.pos_enu_cov;
+    finalizeBinarySolutionGeometry(binary_solution_);
+    if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+    pending_geo_ = {};
+  }
+
+  void flushPendingXyz() {
+    if (!pending_xyz_.has_pvt) { pending_xyz_ = {}; return; }
+    binary_solution_.status        = pending_xyz_.buf.status;
+    binary_solution_.num_sats      = pending_xyz_.buf.num_sats;
+    binary_solution_.time_tow      = pending_xyz_.buf.time_tow;
+    binary_solution_.time_week     = pending_xyz_.buf.time_week;
+    binary_solution_.pos_ecef      = pending_xyz_.buf.pos_ecef;
+    binary_solution_.vel_ecef      = pending_xyz_.buf.vel_ecef;
+    binary_solution_.pos_cov_ecef  = pending_xyz_.buf.pos_cov_ecef;
+    double pos[3] = {0};
+    double r[3] = {binary_solution_.pos_ecef.x, binary_solution_.pos_ecef.y, binary_solution_.pos_ecef.z};
+    ecef2pos(r, pos);
+    constexpr double kRad2Deg = 180.0 / 3.14159265358979323846;
+    binary_solution_.latitude  = pos[0] * kRad2Deg;
+    binary_solution_.longitude = pos[1] * kRad2Deg;
+    binary_solution_.altitude  = pos[2];
+    if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+    pending_xyz_ = {};
+  }
+
+  static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
+    double llh[3] = {s.latitude * D2R, s.longitude * D2R, s.altitude};
+    double ecef[3] = {0};
+    pos2ecef(llh, ecef);
+    s.pos_ecef.x = ecef[0]; s.pos_ecef.y = ecef[1]; s.pos_ecef.z = ecef[2];
+    double vel_e[3] = {s.vel_enu.x, s.vel_enu.y, s.vel_enu.z};
+    double vel_ec[3] = {0};
+    enu2ecef(llh, vel_e, vel_ec);
+    s.vel_ecef.x = vel_ec[0]; s.vel_ecef.y = vel_ec[1]; s.vel_ecef.z = vel_ec[2];
+  }
+
+  void maybeWatchdogFlushPendingPvt() {
+    const auto now_t = now();
+    if (pending_geo_.has_pvt && (now_t - pending_geo_.last_update).seconds() > 1.5) {
+      flushPendingGeo();
+    }
+    if (pending_xyz_.has_pvt && (now_t - pending_xyz_.last_update).seconds() > 1.5) {
+      flushPendingXyz();
     }
   }
 
@@ -310,56 +455,44 @@ class SbfDecoderNode : public rclcpp::Node {
   void handleGpsNav() {
     eph_t eph{};
     if (!sbf::nav::parseGPSNav(sbf_body_, eph)) return;
-    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
-    if (!seen_ephemeris_.insert(key).second) return;
-    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
-    flushPendingEphemerides();
+    ingestAndMaybePublish(eph);
   }
 
   void handleGloNav() {
     geph_t geph{};
     if (!sbf::nav::parseGLONav(sbf_body_, geph)) return;
-    auto it = last_glo_iode_.find(geph.sat);
-    if (it != last_glo_iode_.end() && it->second == geph.iode) return;
-    last_glo_iode_[geph.sat] = geph.iode;
-    pending_glonass_eph_.push_back(gnss_utils::gephToMsg(geph));
-    flushPendingEphemerides();
+    ingestAndMaybePublish(geph);
   }
 
   void handleGalNav() {
     eph_t eph{};
     if (!sbf::nav::parseGALNav(sbf_body_, eph)) return;
-    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
-    if (!seen_ephemeris_.insert(key).second) return;
-    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
-    flushPendingEphemerides();
+    ingestAndMaybePublish(eph);
   }
 
   void handleBdsNav() {
     eph_t eph{};
     if (!sbf::nav::parseBDSNav(sbf_body_, eph)) return;
-    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
-    if (!seen_ephemeris_.insert(key).second) return;
-    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
-    flushPendingEphemerides();
+    ingestAndMaybePublish(eph);
   }
 
   void handleQzsNav() {
     eph_t eph{};
     if (!sbf::nav::parseQZSNav(sbf_body_, eph)) return;
-    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
-    if (!seen_ephemeris_.insert(key).second) return;
-    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
-    flushPendingEphemerides();
+    ingestAndMaybePublish(eph);
   }
 
   void handleNavicNav() {
     eph_t eph{};
     if (!sbf::nav::parseNavICNav(sbf_body_, eph)) return;
-    EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
-    if (!seen_ephemeris_.insert(key).second) return;
-    pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
-    flushPendingEphemerides();
+    ingestAndMaybePublish(eph);
+  }
+
+  void ingestAndMaybePublish(const eph_t& e) {
+    if (eph_store_.ingestEph(e)) publishSnapshot();
+  }
+  void ingestAndMaybePublish(const geph_t& g) {
+    if (eph_store_.ingestGeph(g)) publishSnapshot();
   }
 
   // ============================================================================
@@ -367,8 +500,12 @@ class SbfDecoderNode : public rclcpp::Node {
   // ============================================================================
 
   void handleNmeaSentence(const std::string& sentence) {
-    if (nmea_parser_.parseSentence(sentence, current_solution_)) {
-      publishSolution();
+    if (nmea_parser_.parseSentence(sentence, nmea_solution_)) {
+      if (source_ == SolutionSource::UNDETERMINED) {
+        source_ = SolutionSource::NMEA;
+        RCLCPP_INFO(get_logger(), "Solution source locked: NMEA");
+      }
+      if (source_ == SolutionSource::NMEA) publishSolution(nmea_solution_);
     }
   }
 
@@ -384,28 +521,28 @@ class SbfDecoderNode : public rclcpp::Node {
   // Solution Publishing
   // ============================================================================
 
-  void publishSolution() {
+  void publishSolution(msg::GnssSolution& sol) {
     int week = 0;
     const double tow = time2gpst(raw_.time, &week);
     if (week != 0) {
-      current_solution_.time_week = static_cast<uint16_t>(week);
-      current_solution_.time_tow  = tow;
+      sol.time_week = static_cast<uint16_t>(week);
+      sol.time_tow  = tow;
     }
 
-    current_solution_.header.stamp    = now();
-    current_solution_.header.frame_id = frame_id_;
+    sol.header.stamp    = now();
+    sol.header.frame_id = frame_id_;
 
     const bool has_fix =
-      current_solution_.status == msg::GnssSolution::STATUS_FIX    ||
-      current_solution_.status == msg::GnssSolution::STATUS_FLOAT  ||
-      current_solution_.status == msg::GnssSolution::STATUS_SINGLE ||
-      current_solution_.status == msg::GnssSolution::STATUS_DGPS;
+      sol.status == msg::GnssSolution::STATUS_FIX    ||
+      sol.status == msg::GnssSolution::STATUS_FLOAT  ||
+      sol.status == msg::GnssSolution::STATUS_SINGLE ||
+      sol.status == msg::GnssSolution::STATUS_DGPS;
 
     if (has_fix) {
       if (!has_local_origin_) {
-        local_origin_ecef_[0] = current_solution_.pos_ecef.x;
-        local_origin_ecef_[1] = current_solution_.pos_ecef.y;
-        local_origin_ecef_[2] = current_solution_.pos_ecef.z;
+        local_origin_ecef_[0] = sol.pos_ecef.x;
+        local_origin_ecef_[1] = sol.pos_ecef.y;
+        local_origin_ecef_[2] = sol.pos_ecef.z;
         ecef2pos(local_origin_ecef_, local_origin_pos_);
         has_local_origin_ = true;
         RCLCPP_INFO(get_logger(), "Set local ENU origin: lat=%.6f lon=%.6f alt=%.2f",
@@ -414,41 +551,37 @@ class SbfDecoderNode : public rclcpp::Node {
           local_origin_pos_[2]);
       }
 
-      current_solution_.org_ecef.x = local_origin_ecef_[0];
-      current_solution_.org_ecef.y = local_origin_ecef_[1];
-      current_solution_.org_ecef.z = local_origin_ecef_[2];
+      sol.org_ecef.x = local_origin_ecef_[0];
+      sol.org_ecef.y = local_origin_ecef_[1];
+      sol.org_ecef.z = local_origin_ecef_[2];
 
       double d_ecef[3] = {
-        current_solution_.pos_ecef.x - local_origin_ecef_[0],
-        current_solution_.pos_ecef.y - local_origin_ecef_[1],
-        current_solution_.pos_ecef.z - local_origin_ecef_[2]
+        sol.pos_ecef.x - local_origin_ecef_[0],
+        sol.pos_ecef.y - local_origin_ecef_[1],
+        sol.pos_ecef.z - local_origin_ecef_[2]
       };
       double enu[3] = {0};
       ecef2enu(local_origin_pos_, d_ecef, enu);
-      current_solution_.pos_enu.x = enu[0];
-      current_solution_.pos_enu.y = enu[1];
-      current_solution_.pos_enu.z = enu[2];
+      sol.pos_enu.x = enu[0];
+      sol.pos_enu.y = enu[1];
+      sol.pos_enu.z = enu[2];
 
-      double vel_ecef[3] = {
-        current_solution_.vel_ecef.x,
-        current_solution_.vel_ecef.y,
-        current_solution_.vel_ecef.z
-      };
+      double vel_ecef[3] = {sol.vel_ecef.x, sol.vel_ecef.y, sol.vel_ecef.z};
       double vel_enu[3] = {0};
       ecef2enu(local_origin_pos_, vel_ecef, vel_enu);
-      current_solution_.vel_enu.x = vel_enu[0];
-      current_solution_.vel_enu.y = vel_enu[1];
-      current_solution_.vel_enu.z = vel_enu[2];
+      sol.vel_enu.x = vel_enu[0];
+      sol.vel_enu.y = vel_enu[1];
+      sol.vel_enu.z = vel_enu[2];
     } else {
-      current_solution_.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
+      sol.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
+      sol.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
+      sol.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
+      sol.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
+      sol.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
+      sol.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
     }
 
-    sol_pub_->publish(current_solution_);
+    sol_pub_->publish(sol);
   }
 
   // ============================================================================
@@ -491,47 +624,30 @@ class SbfDecoderNode : public rclcpp::Node {
   }
 
   // ============================================================================
-  // Ephemeris Publishing (pending queue style — shared by raw and decoded paths)
+  // Ephemeris Publishing (snapshot-on-change + heartbeat via EphemerisStore)
   // ============================================================================
 
-  void accumulateRtklibEphemerides() {
+  void publishEphemerides() {
+    bool changed = false;
     for (int i = 0; i < raw_.nav.n; ++i) {
-      const eph_t& eph = raw_.nav.eph[i];
-      if (eph.sat == 0) continue;
-      int prn = 0;
-      if (satsys(eph.sat, &prn) == SYS_GLO) continue;
-      EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
-      if (seen_ephemeris_.insert(key).second) {
-        pending_gnss_eph_.push_back(gnss_utils::ephToMsg(eph));
-      }
+      changed = eph_store_.ingestEph(raw_.nav.eph[i]) || changed;
     }
     for (int i = 0; i < raw_.nav.ng; ++i) {
-      const geph_t& geph = raw_.nav.geph[i];
-      if (geph.sat == 0) continue;
-      auto it = last_glo_iode_.find(geph.sat);
-      if (it == last_glo_iode_.end() || it->second != geph.iode) {
-        last_glo_iode_[geph.sat] = geph.iode;
-        pending_glonass_eph_.push_back(gnss_utils::gephToMsg(geph));
-      }
+      changed = eph_store_.ingestGeph(raw_.nav.geph[i]) || changed;
     }
+    if (changed) publishSnapshot();
   }
 
-  void flushPendingEphemerides() {
-    if (pending_gnss_eph_.empty() && pending_glonass_eph_.empty()) return;
-
-    msg::GnssEphemerides msg;
-    msg.header.stamp      = now();
-    msg.gnss_ephemeris    = std::move(pending_gnss_eph_);
-    msg.glonass_ephemeris = std::move(pending_glonass_eph_);
-    eph_pub_->publish(msg);
-
-    RCLCPP_INFO(get_logger(), "Published ephemerides: GNSS=%zu GLO=%zu",
-      msg.gnss_ephemeris.size(), msg.glonass_ephemeris.size());
+  void maybePublishHeartbeat() {
+    if (eph_store_.heartbeatDue(now())) publishSnapshot();
   }
 
-  void publishEphemerides() {
-    accumulateRtklibEphemerides();
-    flushPendingEphemerides();
+  void publishSnapshot() {
+    auto m = eph_store_.buildSnapshot(now());
+    eph_pub_->publish(m);
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+      "Published ephemeris snapshot: GNSS=%zu GLO=%zu",
+      m.gnss_ephemeris.size(), m.glonass_ephemeris.size());
   }
 
   // ============================================================================
@@ -549,19 +665,6 @@ class SbfDecoderNode : public rclcpp::Node {
       case SYS_SBS: ++c.sbs; break; default: ++c.unknown; break;
     }
   }
-
-  struct EphemerisKey {
-    int sat, iode, iodc, code;
-    bool operator==(const EphemerisKey& o) const {
-      return sat==o.sat && iode==o.iode && iodc==o.iodc && code==o.code;
-    }
-  };
-  struct EphemerisKeyHash {
-    size_t operator()(const EphemerisKey& k) const {
-      return static_cast<size_t>(k.sat) ^ (static_cast<size_t>(k.iode) << 16) ^
-             (static_cast<size_t>(k.iodc) << 1) ^ (static_cast<size_t>(k.code) << 24);
-    }
-  };
 
   // ============================================================================
   // Member Variables
@@ -582,7 +685,11 @@ class SbfDecoderNode : public rclcpp::Node {
   // NMEA parsing state
   gnss_utils::NmeaParser nmea_parser_;
   std::string            nmea_buffer_;
-  msg::GnssSolution      current_solution_;
+  msg::GnssSolution      nmea_solution_;
+  msg::GnssSolution      binary_solution_;
+  SolutionSource         source_{SolutionSource::UNDETERMINED};
+  PendingPvt             pending_geo_;
+  PendingPvt             pending_xyz_;
 
   // ENU local origin
   bool   has_local_origin_{false};
@@ -603,13 +710,8 @@ class SbfDecoderNode : public rclcpp::Node {
   bool     esm_has_accel_{false};
   bool     esm_has_gyro_{false};
 
-  // Ephemeris dedup (shared between raw RTKLIB path and decoded *Nav path)
-  std::unordered_set<EphemerisKey, EphemerisKeyHash> seen_ephemeris_;
-  std::unordered_map<int, int> last_glo_iode_;
-
-  // Pending ephemeris queues (populated by both paths, flushed together)
-  std::vector<msg::GnssEphemeris>    pending_gnss_eph_;
-  std::vector<msg::GlonassEphemeris> pending_glonass_eph_;
+  // Unified ephemeris store (shared between raw RTKLIB path and decoded *Nav path)
+  gnss_utils::EphemerisStore eph_store_;
 };
 
 }  // namespace gnss_ros_standardization

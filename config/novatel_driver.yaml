@@ -31,6 +31,9 @@ novatel_driver_node:
     # Topic Names
     observation_topic: "/gnss/observation"
     ephemeris_topic: "/gnss/ephemeris"
+    solution_topic: "/gnss/nmea_solution"
+    imu_topic:     "/gnss/imu/data"      # CORRIMUDATA (calibrated)
+    imu_raw_topic: "/gnss/imu/data_raw"  # RAWIMUSX (uncalibrated)
 
     # ==========================================================================
     # Message Configuration
@@ -41,9 +44,11 @@ novatel_driver_node:
       rangecmp: true        # RANGECMPB (Compressed Range) - Recommended
       range: false          # RANGEB (Uncompressed Range)
 
-      # Position / Velocity
-      bestpos: false        # BESTPOSB
-      bestvel: false        # BESTVELB
+      # Position / Velocity — Binary PVT, preferred over NMEA when enabled.
+      # When bestpos=true, the solution source is locked to BINARY at startup;
+      # /gnss/nmea_solution carries BESTPOS-derived fix with full sigma values.
+      bestpos: false        # BESTPOSB → LLH + sigma → pos_enu_cov diagonal
+      bestvel: false        # BESTVELB → vel_enu (refresh between BESTPOS messages)
 
       # Navigation Data (Ephemeris)
       gps_ephem: true       # GPSEPHEMB
@@ -68,10 +73,6 @@ novatel_driver_node:
       rawimusx: true
       corrimudata: false
 
-    solution_topic: "/gnss/solution"
-    imu_topic:     "/gnss/imu/data"      # CORRIMUDATA (calibrated)
-    imu_raw_topic: "/gnss/imu/data_raw"  # RAWIMUSX (uncalibrated)
-
     # IMU scale override (applies when IMU type is unknown to novatel_imu_scales.hpp).
     # Both fields must be non-zero to take effect; otherwise the built-in table is used.
     # Units: counts → SI per IMU sample (delta-velocity in m/s, delta-angle in rad).
@@ -79,3 +80,15 @@ novatel_driver_node:
     imu_scale_override:
       accel: 0.0
       gyro:  0.0
+
+    # Solution source policy (locked at startup):
+    #   If messages.bestpos is true → BINARY source (NMEA parsed but not published)
+    #   Otherwise → NMEA source
+    # No mid-session switching.
+
+    # Ephemeris publishing — snapshot-on-change + heartbeat
+    # Topic always carries the full current state; logging this one topic is
+    # sufficient for both RINEX conversion and downstream positioning.
+    ephemeris:
+      snapshot_period_s: 30.0    # heartbeat interval when no new ephemeris arrives
+      max_age_s:         7200.0  # drop entries older than this from snapshots (2 h)

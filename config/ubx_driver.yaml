@@ -27,6 +27,8 @@ ubx_driver_node:
     observation_topic: "/gnss/observation"
     ephemeris_topic: "/gnss/ephemeris"
     solution_topic: "/gnss/nmea_solution"
+    imu_topic:     "/gnss/imu/data"      # ESF-INS (calibrated)
+    imu_raw_topic: "/gnss/imu/data_raw"  # ESF-RAW (uncalibrated)
     
     # ENU local origin settings
     auto_origin: true
@@ -60,7 +62,10 @@ ubx_driver_node:
       # Subframe buffer data (navigation messages)
       sfrbx: true
       
-      # Position/Velocity/Time solution
+      # Position/Velocity/Time solution — Binary PVT, preferred over NMEA.
+      # When nav_pvt=true, the solution source is locked to BINARY at startup;
+      # /gnss/nmea_solution carries NAV-PVT-derived fix (hAcc/vAcc → covariance,
+      # carrSoln → STATUS_FIX/FLOAT/DGPS/SINGLE classification).
       nav_pvt: false
       
       # NMEA messages (disable to save bandwidth)
@@ -79,10 +84,6 @@ ubx_driver_node:
       # Both can be enabled simultaneously; they publish to different topics.
       esf_raw: true
       esf_ins: false
-
-    # Topic Names (IMU)
-    imu_topic:     "/gnss/imu/data"      # ESF-INS (calibrated)
-    imu_raw_topic: "/gnss/imu/data_raw"  # ESF-RAW (uncalibrated)
 
     # ==========================================================================
     # GNSS Constellation Settings
@@ -105,3 +106,15 @@ ubx_driver_node:
       qzss: true      # QZSS (L1C/A, L2C, L5)
       navic: false    # NavIC (IRNSS)
       sbas: false     # SBAS (L1C/A)
+
+    # Solution source policy (locked at startup):
+    #   If messages.nav_pvt is true → BINARY source (NMEA parsed but not published)
+    #   Otherwise → NMEA source
+    # No mid-session switching.
+
+    # Ephemeris publishing — snapshot-on-change + heartbeat
+    # Topic always carries the full current state; logging this one topic is
+    # sufficient for both RINEX conversion and downstream positioning.
+    ephemeris:
+      snapshot_period_s: 30.0    # heartbeat interval when no new ephemeris arrives
+      max_age_s:         7200.0  # drop entries older than this from snapshots (2 h)

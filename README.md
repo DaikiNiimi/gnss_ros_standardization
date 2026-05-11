@@ -101,9 +101,9 @@ subscribes from.
 | Topic | Type | Source |
 |---|---|---|
 | `/gnss/observation` | `GnssObservations` | All drivers / decoders |
-| `/gnss/ephemeris` | `GnssEphemerides` | All drivers / decoders |
-| `/gnss/solution` | `GnssSolution` | Drivers (via NMEA) and positioning nodes |
-| `/gnss/nmea_solution` | `GnssSolution` | Decoder nodes |
+| `/gnss/ephemeris` | `GnssEphemerides` | All drivers / decoders — snapshot-on-change + 30 s heartbeat (single topic for both RINEX conversion and live positioning) |
+| `/gnss/nmea_solution` | `GnssSolution` | Drivers / decoders — receiver-side fix. **Source is locked at startup**: if any binary PVT message is enabled (SBF `pvt_geodetic`/`pvt_cartesian`, NovAtel `bestpos`, UBX `nav_pvt`), the binary path is used (higher precision, full 3×3 covariance). Otherwise NMEA-parsed fix is used. No mid-session switching. |
+| `/gnss/solution` | `GnssSolution` | Positioning nodes (SPP / RTK / GNSS-IMU EKF) — computed in this package |
 | `/gnss/imu/data_raw` | `sensor_msgs/Imu` | u-blox (ESF-RAW), Septentrio (ExtSensorMeas), NovAtel (RAWIMUSX) |
 | `/gnss/imu/data` | `sensor_msgs/Imu` | u-blox (ESF-INS), NovAtel (CORRIMUDATA, SPAN required) |
 

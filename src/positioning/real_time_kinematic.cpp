@@ -41,7 +41,7 @@ public:
       std::bind(&RtkPositionNode::onBaseObs, this, std::placeholders::_1));
 
     nav_sub_ = create_subscription<grs::GnssEphemerides>(
-      eph_topic, rclcpp::QoS(100).transient_local(),
+      eph_topic, rclcpp::QoS(1).transient_local(),
       std::bind(&RtkPositionNode::onNav, this, std::placeholders::_1));
 
     initializeRtk();

@@ -80,19 +80,41 @@ are expressed in the **PZ-90.11 ECEF** frame.
 
 ## `GnssEphemerides.msg`
 
-Combined ephemeris message (typically published with `transient_local` QoS so
-that late-subscribed positioning nodes receive the latest broadcast).
+Combined ephemeris message. Every published message is a **complete snapshot**
+of all currently-valid ephemerides held by the publisher — there are no
+delta-only messages on the topic. Publishers emit whenever the store changes
+(new toe arrival) and additionally on a heartbeat interval (default 30 s) so
+that late-joining subscribers and publisher restarts are covered.
+
+This means logging the single `/gnss/ephemeris` topic is sufficient for both
+RINEX NAV conversion (`rosbag_to_rinex` deduplicates by `(sat, iode, iodc, code)`)
+and real-time positioning (consumers can subscribe with `transient_local`
+depth=1 and receive the full state immediately).
 
 | Field | Type | Notes |
 |---|---|---|
-| `header` | `std_msgs/Header` | `stamp` = reception time |
-| `gnss_ephemeris` | `GnssEphemeris[]` | GPS/Galileo/QZSS/BeiDou/NavIC/SBAS |
-| `glonass_ephemeris` | `GlonassEphemeris[]` | GLONASS only |
+| `header` | `std_msgs/Header` | `stamp` = publish time |
+| `gnss_ephemeris` | `GnssEphemeris[]` | All currently-valid Keplerian entries (GPS/Galileo/QZSS/BeiDou/NavIC/SBAS) |
+| `glonass_ephemeris` | `GlonassEphemeris[]` | All currently-valid GLONASS entries |
 
 ## `GnssSolution.msg`
 
 Receiver-side or post-processed positioning solution. Provides the same fix
 in three representations (LLH, ECEF, local ENU) with covariances.
+
+**Receiver-side fix sources** (published on `/gnss/nmea_solution`): each driver
+locks its source at startup based on YAML flags:
+
+| Receiver | BINARY source (enable flag) | NMEA fallback |
+|---|---|---|
+| Septentrio SBF | `messages.pvt_geodetic` or `messages.pvt_cartesian` (with the matching `pos_cov_*` block) | NMEA GGA/RMC/GSA/GST |
+| NovAtel OEM7   | `messages.bestpos` (+ optional `bestvel`) | NMEA |
+| u-blox UBX     | `messages.nav_pvt` | NMEA |
+
+BINARY sources produce full-precision values with proper 3×3 covariance
+matrices. NMEA fallback fills LLH/ECEF/ENU but typically only diagonal
+covariance from GST. No mid-session switching: if the binary stream stops,
+`/gnss/nmea_solution` publication pauses rather than falling back to NMEA.
 
 ### Time and quality
 

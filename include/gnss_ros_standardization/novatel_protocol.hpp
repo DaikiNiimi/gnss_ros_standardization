@@ -4,12 +4,18 @@
 ///
 /// This header centralizes all NovAtel protocol definitions used by the driver and decoder nodes.
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
 
 // Include rtklib.h for STR_ constants
 #include "rtklib.h"
+
+#include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 namespace gnss_ros_standardization {
 namespace novatel {
@@ -143,6 +149,130 @@ inline std::string getIntervalString(int rate_hz) {
     if (rate_hz <= 0) return "1.0";
     return std::to_string(1.0 / static_cast<double>(rate_hz));
 }
+
+// =============================================================================
+// Binary PVT parsers (BESTPOS / BESTVEL)
+// =============================================================================
+namespace pvt {
+
+// BESTPOS body field offsets (after 28-byte OEM4 header)
+constexpr int BESTPOS_OFFSET_SOLSTAT    = 0;
+constexpr int BESTPOS_OFFSET_POSTYPE    = 4;
+constexpr int BESTPOS_OFFSET_LAT        = 8;
+constexpr int BESTPOS_OFFSET_LON        = 16;
+constexpr int BESTPOS_OFFSET_HGT        = 24;
+constexpr int BESTPOS_OFFSET_LAT_SIGMA  = 40;
+constexpr int BESTPOS_OFFSET_LON_SIGMA  = 44;
+constexpr int BESTPOS_OFFSET_HGT_SIGMA  = 48;
+constexpr int BESTPOS_OFFSET_DIFF_AGE   = 56;
+constexpr int BESTPOS_OFFSET_NUM_SATS   = 64;
+constexpr int BESTPOS_MIN_LEN           = 72;
+
+// BESTVEL body field offsets
+constexpr int BESTVEL_OFFSET_HOR_SPEED  = 16;
+constexpr int BESTVEL_OFFSET_TRK_GND    = 24;
+constexpr int BESTVEL_OFFSET_VERT_SPEED = 32;
+constexpr int BESTVEL_MIN_LEN           = 44;
+
+// NovAtel sol_stat values (subset used to gate publishing)
+constexpr uint32_t SOL_COMPUTED = 0;
+
+// NovAtel pos_type values (subset; full list in OEM7 manual)
+constexpr uint32_t POSTYPE_NONE         = 0;
+constexpr uint32_t POSTYPE_SINGLE       = 16;
+constexpr uint32_t POSTYPE_PSRDIFF      = 17;
+constexpr uint32_t POSTYPE_WAAS         = 18;  // SBAS
+constexpr uint32_t POSTYPE_L1_FLOAT     = 32;
+constexpr uint32_t POSTYPE_IONOFREE_FLOAT = 33;
+constexpr uint32_t POSTYPE_NARROW_FLOAT = 34;
+constexpr uint32_t POSTYPE_L1_INT       = 48;
+constexpr uint32_t POSTYPE_WIDE_INT     = 49;
+constexpr uint32_t POSTYPE_NARROW_INT   = 50;
+constexpr uint32_t POSTYPE_INS_RTKFIXED = 56;
+constexpr uint32_t POSTYPE_PPP_CONVERGING = 68;
+constexpr uint32_t POSTYPE_PPP          = 69;
+constexpr uint32_t POSTYPE_OPERATIONAL  = 70;
+
+template <typename T>
+inline T read_le(const uint8_t* p) {
+  T v;
+  std::memcpy(&v, p, sizeof(T));
+  return v;
+}
+
+inline uint8_t mapPosTypeToStatus(uint32_t pos_type) {
+  using S = gnss_ros_standardization::msg::GnssSolution;
+  switch (pos_type) {
+    case POSTYPE_NONE:           return S::STATUS_NONE;
+    case POSTYPE_SINGLE:         return S::STATUS_SINGLE;
+    case POSTYPE_PSRDIFF:        return S::STATUS_DGPS;
+    case POSTYPE_WAAS:           return S::STATUS_SBAS;
+    case POSTYPE_L1_FLOAT:
+    case POSTYPE_IONOFREE_FLOAT:
+    case POSTYPE_NARROW_FLOAT:   return S::STATUS_FLOAT;
+    case POSTYPE_L1_INT:
+    case POSTYPE_WIDE_INT:
+    case POSTYPE_NARROW_INT:
+    case POSTYPE_INS_RTKFIXED:   return S::STATUS_FIX;
+    case POSTYPE_PPP_CONVERGING:
+    case POSTYPE_PPP:
+    case POSTYPE_OPERATIONAL:    return S::STATUS_PPP;
+    default:                     return S::STATUS_SINGLE;  // best-effort for unknown variants
+  }
+}
+
+/// Parse BESTPOS body (post-header) into GnssSolution.
+/// Fills: status, num_sats, age_diff, latitude, longitude, altitude,
+/// pos_enu_cov diagonal (from sigma values).
+inline bool parseBESTPOS(const uint8_t* p, size_t len,
+                         gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(BESTPOS_MIN_LEN)) return false;
+  const uint32_t sol_stat = read_le<uint32_t>(p + BESTPOS_OFFSET_SOLSTAT);
+  const uint32_t pos_type = read_le<uint32_t>(p + BESTPOS_OFFSET_POSTYPE);
+  const double   lat      = read_le<double>(p + BESTPOS_OFFSET_LAT);
+  const double   lon      = read_le<double>(p + BESTPOS_OFFSET_LON);
+  const double   hgt      = read_le<double>(p + BESTPOS_OFFSET_HGT);
+  const float    lat_s    = read_le<float>(p + BESTPOS_OFFSET_LAT_SIGMA);
+  const float    lon_s    = read_le<float>(p + BESTPOS_OFFSET_LON_SIGMA);
+  const float    hgt_s    = read_le<float>(p + BESTPOS_OFFSET_HGT_SIGMA);
+  const float    diff_age = read_le<float>(p + BESTPOS_OFFSET_DIFF_AGE);
+  const uint8_t  num_sats = p[BESTPOS_OFFSET_NUM_SATS];
+
+  out.status    = (sol_stat == SOL_COMPUTED) ? mapPosTypeToStatus(pos_type)
+                                              : gnss_ros_standardization::msg::GnssSolution::STATUS_NONE;
+  out.num_sats  = num_sats;
+  out.age_diff  = diff_age;
+  out.latitude  = lat;
+  out.longitude = lon;
+  out.altitude  = hgt;
+
+  // sigma values are in meters of local tangent-plane error
+  std::fill(out.pos_enu_cov.begin(), out.pos_enu_cov.end(), 0.0);
+  out.pos_enu_cov[0] = static_cast<double>(lon_s) * lon_s;  // EE
+  out.pos_enu_cov[4] = static_cast<double>(lat_s) * lat_s;  // NN
+  out.pos_enu_cov[8] = static_cast<double>(hgt_s) * hgt_s;  // UU
+  return true;
+}
+
+/// Parse BESTVEL body (post-header) into GnssSolution.
+/// Fills: vel_enu (from hor_speed/trk_gnd/vert_speed). Status is not modified
+/// (BESTPOS owns status).
+inline bool parseBESTVEL(const uint8_t* p, size_t len,
+                         gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(BESTVEL_MIN_LEN)) return false;
+  const double hor_speed  = read_le<double>(p + BESTVEL_OFFSET_HOR_SPEED);
+  const double trk_deg    = read_le<double>(p + BESTVEL_OFFSET_TRK_GND);
+  const double vert_speed = read_le<double>(p + BESTVEL_OFFSET_VERT_SPEED);
+
+  constexpr double kDeg2Rad = 3.14159265358979323846 / 180.0;
+  const double trk_rad = trk_deg * kDeg2Rad;
+  out.vel_enu.x = hor_speed * std::sin(trk_rad);  // East
+  out.vel_enu.y = hor_speed * std::cos(trk_rad);  // North
+  out.vel_enu.z = vert_speed;                     // Up
+  return true;
+}
+
+}  // namespace pvt
 
 }  // namespace novatel
 }  // namespace gnss_ros_standardization
