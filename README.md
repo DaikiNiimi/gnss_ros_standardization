@@ -1,7 +1,7 @@
 # gnss_ros_standardization
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![ROS 2](https://img.shields.io/badge/ROS%202-Humble%20%7C%20Jazzy%20%7C%20Rolling-brightgreen)](https://docs.ros.org/en/humble/)
+[![ROS 2](https://img.shields.io/badge/ROS%202-Humble%20%7C%20Jazzy-brightgreen)](https://docs.ros.org/en/humble/)
 
 ## Overview
 
@@ -48,8 +48,6 @@ either source.
 |---|---|---|
 | Humble Hawksbill (LTS) | 22.04 | Supported |
 | Jazzy Jalisco (LTS) | 24.04 | Supported |
-| Rolling Ridley | 22.04 / 24.04 | Supported |
-
 ---
 
 ## Supported Receivers & Features
@@ -222,7 +220,7 @@ and update this table — please open a PR.
 ## System Requirements
 
 - **OS**: Ubuntu 22.04 (Humble) or Ubuntu 24.04 (Jazzy)
-- **ROS 2**: Humble, Jazzy, or Rolling
+- **ROS 2**: Humble or Jazzy
 - **Build tool**: colcon
 - **Dependencies** (installed via rosdep):
   - `rclcpp`, `rcutils`
