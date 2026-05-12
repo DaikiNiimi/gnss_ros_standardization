@@ -92,6 +92,8 @@ struct SbfConfig {
   // Ephemeris snapshot behavior
   double ephemeris_snapshot_period_s{30.0};
   double ephemeris_max_age_s{7200.0};
+
+  bool use_gps_timestamp{false};
 };
 
 /// @brief ROS 2 driver node for Septentrio GNSS receivers
@@ -161,6 +163,7 @@ class SbfDriverNode : public rclcpp::Node {
 
     declare_parameter<double>("ephemeris.snapshot_period_s", config_.ephemeris_snapshot_period_s);
     declare_parameter<double>("ephemeris.max_age_s",         config_.ephemeris_max_age_s);
+    declare_parameter<bool>("use_gps_timestamp",             config_.use_gps_timestamp);
 
     config_.stream_path          = get_parameter("stream_path").as_string();
     config_.frame_id             = get_parameter("frame_id").as_string();
@@ -198,6 +201,7 @@ class SbfDriverNode : public rclcpp::Node {
 
     config_.ephemeris_snapshot_period_s = get_parameter("ephemeris.snapshot_period_s").as_double();
     config_.ephemeris_max_age_s         = get_parameter("ephemeris.max_age_s").as_double();
+    config_.use_gps_timestamp           = get_parameter("use_gps_timestamp").as_bool();
 
     eph_store_.setSnapshotPeriod(config_.ephemeris_snapshot_period_s);
     eph_store_.setMaxAge(config_.ephemeris_max_age_s);
@@ -206,6 +210,7 @@ class SbfDriverNode : public rclcpp::Node {
     // PVTCartesian is enabled; otherwise NMEA. No mid-session switching.
     const bool binary_enabled = config_.enable_pvt_geodetic || config_.enable_pvt_cartesian;
     source_ = binary_enabled ? SolutionSource::BINARY : SolutionSource::NMEA;
+    start_time_ = now();
     RCLCPP_INFO(get_logger(), "Solution source locked: %s",
                 source_ == SolutionSource::BINARY ? "BINARY (PVTGeodetic/PVTCartesian)" : "NMEA");
 
@@ -401,6 +406,11 @@ class SbfDriverNode : public rclcpp::Node {
       } else if (!nmea_buffer_.empty()) {
         nmea_buffer_.push_back(byte);
         if (byte == '\n') {
+          std::string trimmed = nmea_buffer_;
+          while (!trimmed.empty() && (trimmed.back() == '\n' || trimmed.back() == '\r')) {
+            trimmed.pop_back();
+          }
+          RCLCPP_DEBUG(get_logger(), "NMEA recv: %s", trimmed.c_str());
           handleNmeaSentence(nmea_buffer_);
           nmea_buffer_.clear();
         } else if (nmea_buffer_.size() > kNmeaMaxLineLen) {
@@ -411,6 +421,7 @@ class SbfDriverNode : public rclcpp::Node {
 
     maybePublishHeartbeat();
     maybeWatchdogFlushPendingPvt();
+    warnIfBinaryStarvation();
   }
 
   // Watchdog: if a TOW pair has been sitting incomplete for too long
@@ -566,6 +577,7 @@ class SbfDriverNode : public rclcpp::Node {
     binary_solution_.vel_enu    = pending_geo_.buf.vel_enu;
     binary_solution_.pos_enu_cov = pending_geo_.buf.pos_enu_cov;
     finalizeBinarySolutionGeometry(binary_solution_);
+    ever_received_binary_ = true;
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
     pending_geo_ = {};
   }
@@ -591,8 +603,21 @@ class SbfDriverNode : public rclcpp::Node {
     binary_solution_.latitude  = pos[0] * kRad2Deg;
     binary_solution_.longitude = pos[1] * kRad2Deg;
     binary_solution_.altitude  = pos[2];
+    ever_received_binary_ = true;
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
     pending_xyz_ = {};
+  }
+
+  // Warn if BINARY source was selected via YAML but no PVT block ever produced
+  // a publishable solution after a generous startup window. Prevents silent
+  // failure under no-fallback policy.
+  void warnIfBinaryStarvation() {
+    if (source_ != SolutionSource::BINARY) return;
+    if (ever_received_binary_) return;
+    if ((now() - start_time_).seconds() < 15.0) return;
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+      "Solution source locked to BINARY (PVTGeodetic/PVTCartesian) but no PVT received yet — "
+      "check receiver firmware/configuration.");
   }
 
   static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
@@ -622,6 +647,7 @@ class SbfDriverNode : public rclcpp::Node {
       publishEsmAccum();
     }
     esm_tow_ms_ = tow_ms;
+    std::memcpy(&esm_wnc_, sbf_body_.data() + 4, 2);
 
     for (uint8_t i = 0; i < n; ++i) {
       const int base = ESM_OFFSET_SUBBLOCKS + i * sb_length;
@@ -645,7 +671,9 @@ class SbfDriverNode : public rclcpp::Node {
 
   void publishEsmAccum() {
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
+    imu.header.stamp    = (config_.use_gps_timestamp && esm_tow_ms_ != 0xFFFFFFFFu && esm_wnc_ != 0xFFFFu)
+        ? gnss_utils::gpstToUtcRosTime(gpst2time(adjgpsweek(static_cast<int>(esm_wnc_)), esm_tow_ms_ / 1000.0))
+        : now();
     imu.header.frame_id = config_.frame_id;
 
     auto unk = ins::makeUnknownCovariance();
@@ -731,6 +759,9 @@ class SbfDriverNode : public rclcpp::Node {
       if (source_ == SolutionSource::NMEA) {
         publishSolution(nmea_solution_);
       }
+    } else {
+      std::string head = sentence.substr(0, std::min<size_t>(sentence.size(), 6));
+      RCLCPP_DEBUG(get_logger(), "NMEA parseSentence=false (head='%s')", head.c_str());
     }
   }
 
@@ -758,7 +789,8 @@ class SbfDriverNode : public rclcpp::Node {
       sol.time_tow  = tow;
     }
 
-    sol.header.stamp    = now();
+    sol.header.stamp    = (config_.use_gps_timestamp && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     sol.header.frame_id = config_.frame_id;
 
     const bool has_fix =
@@ -824,7 +856,8 @@ class SbfDriverNode : public rclcpp::Node {
     const double tow = time2gpst(raw_.time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp    = now();
+    msg.header.stamp    = (config_.use_gps_timestamp && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     msg.header.frame_id = config_.frame_id;
     msg.week = static_cast<uint16_t>(week);
     msg.tow  = tow;
@@ -925,6 +958,7 @@ class SbfDriverNode : public rclcpp::Node {
 
   // ExtSensorMeas accumulator (TOW-based, collects accel + gyro 3-vectors)
   uint32_t esm_tow_ms_{0xFFFFFFFFu};
+  uint16_t esm_wnc_{0xFFFFu};
   double   esm_accel_[3]{0.0, 0.0, 0.0};
   double   esm_gyro_[3]{0.0, 0.0, 0.0};
   bool     esm_has_accel_{false};
@@ -936,6 +970,8 @@ class SbfDriverNode : public rclcpp::Node {
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
   SolutionSource         source_{SolutionSource::NMEA};
+  rclcpp::Time           start_time_{0, 0, RCL_ROS_TIME};
+  bool                   ever_received_binary_{false};
   PendingPvt             pending_geo_;
   PendingPvt             pending_xyz_;
 

@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <rclcpp/logging.hpp>
 
 namespace gnss_utils {
 
@@ -44,6 +45,13 @@ static int satFromMsg(const std::string& satid, const std::string& sys, int prn)
   else return 0;
 
   return satno(sys_mask, prn);
+}
+
+rclcpp::Time gpstToUtcRosTime(gtime_t t_gpst) {
+  const gtime_t t_utc = gpst2utc(t_gpst);
+  const int64_t nsec = static_cast<int64_t>(t_utc.time) * 1000000000LL +
+                       static_cast<int64_t>(t_utc.sec * 1e9);
+  return rclcpp::Time(nsec);
 }
 
 // Local helper from original ros2_rinex_writer.cpp
@@ -230,7 +238,7 @@ gnss_ros_standardization::msg::GnssObservation obsToMsg(const obsd_t& o, int kf)
   obs.p             = o.P[kf];
   obs.l             = o.L[kf];
   obs.d             = o.D[kf];
-  obs.snr           = static_cast<float>(o.SNR[kf]) * 0.001f; 
+  obs.snr           = static_cast<float>(o.SNR[kf]);
   obs.lli           = o.LLI[kf] & 0x03;
 
   return obs;
@@ -417,6 +425,10 @@ bool NmeaParser::parseSentence(const std::string& sentence, gnss_ros_standardiza
     } catch (...) {}
     
     if (checksum != provided_checksum) {
+      RCLCPP_DEBUG(rclcpp::get_logger("nmea_parser"),
+        "NMEA checksum mismatch: got %02X want %02X head='%s'",
+        provided_checksum, checksum,
+        sentence.substr(0, std::min<size_t>(sentence.size(), 12)).c_str());
       return false; // Invalid checksum
     }
   }
@@ -449,6 +461,15 @@ bool NmeaParser::parseSentence(const std::string& sentence, gnss_ros_standardiza
 }
 
 bool NmeaParser::parseGga(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution) {
+  RCLCPP_DEBUG(rclcpp::get_logger("nmea_parser"),
+    "parseGga: nfields=%zu quality='%s' lat='%s'%s lon='%s'%s",
+    fields.size(),
+    fields.size() > 6  ? fields[6].c_str()  : "?",
+    fields.size() > 2  ? fields[2].c_str()  : "?",
+    fields.size() > 3  ? fields[3].c_str()  : "",
+    fields.size() > 4  ? fields[4].c_str()  : "?",
+    fields.size() > 5  ? fields[5].c_str()  : "");
+
   if (fields.size() < 15) return false;
 
   int status = parseInteger(fields[6]);

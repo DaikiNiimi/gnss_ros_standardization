@@ -88,6 +88,8 @@ struct UbxConfig {
   // Ephemeris snapshot behavior
   double ephemeris_snapshot_period_s{30.0};
   double ephemeris_max_age_s{7200.0};
+
+  bool use_gps_timestamp{false};
 };
 
 /// @brief ROS 2 driver node for u-blox GNSS receivers
@@ -167,6 +169,7 @@ class UbxDriverNode : public rclcpp::Node {
 
     declare_parameter<double>("ephemeris.snapshot_period_s", config_.ephemeris_snapshot_period_s);
     declare_parameter<double>("ephemeris.max_age_s",         config_.ephemeris_max_age_s);
+    declare_parameter<bool>("use_gps_timestamp",             config_.use_gps_timestamp);
 
     // Read parameters
     config_.stream_path = get_parameter("stream_path").as_string();
@@ -207,6 +210,7 @@ class UbxDriverNode : public rclcpp::Node {
 
     config_.ephemeris_snapshot_period_s = get_parameter("ephemeris.snapshot_period_s").as_double();
     config_.ephemeris_max_age_s         = get_parameter("ephemeris.max_age_s").as_double();
+    config_.use_gps_timestamp           = get_parameter("use_gps_timestamp").as_bool();
 
     eph_store_.setSnapshotPeriod(config_.ephemeris_snapshot_period_s);
     eph_store_.setMaxAge(config_.ephemeris_max_age_s);
@@ -233,6 +237,7 @@ class UbxDriverNode : public rclcpp::Node {
     // Lock solution source at startup. BINARY if NAV-PVT is enabled, else NMEA.
     // No mid-session switching: if binary stops, output pauses rather than falling back.
     source_ = config_.enable_nav_pvt ? SolutionSource::BINARY : SolutionSource::NMEA;
+    start_time_ = now();
     RCLCPP_INFO(get_logger(), "Solution source locked: %s",
                 source_ == SolutionSource::BINARY ? "BINARY (UBX-NAV-PVT)" : "NMEA");
   }
@@ -1135,6 +1140,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
 
     maybePublishHeartbeat();
+    warnIfBinaryStarvation();
   }
 
   // Solution source policy:
@@ -1159,9 +1165,22 @@ class UbxDriverNode : public rclcpp::Node {
     // Compute pos_ecef from LLH and vel_ecef from vel_enu so that the common
     // publishSolution logic (origin/ENU derivation) works unchanged.
     finalizeBinarySolutionGeometry(binary_solution_);
+    ever_received_binary_ = true;
     if (source_ == SolutionSource::BINARY) {
       publishSolution(binary_solution_);
     }
+  }
+
+  // Warn if BINARY source was selected via YAML but no PVT has arrived after
+  // a generous startup window — typically indicates a receiver-side config
+  // or capability issue. Prevents silent failure under no-fallback policy.
+  void warnIfBinaryStarvation() {
+    if (source_ != SolutionSource::BINARY) return;
+    if (ever_received_binary_) return;
+    if ((now() - start_time_).seconds() < 15.0) return;
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+      "Solution source locked to BINARY (NAV-PVT) but no PVT received yet — "
+      "check receiver firmware/configuration.");
   }
 
   static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
@@ -1193,7 +1212,8 @@ class UbxDriverNode : public rclcpp::Node {
       sol.time_tow = tow;
     }
 
-    sol.header.stamp = now();
+    sol.header.stamp    = (config_.use_gps_timestamp && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     sol.header.frame_id = config_.frame_id;
 
     // Handle ENU conversion if a reference origin exists or setup if it doesn't
@@ -1272,7 +1292,8 @@ class UbxDriverNode : public rclcpp::Node {
     const double tow = time2gpst(raw_.time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp = now();
+    msg.header.stamp    = (config_.use_gps_timestamp && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     msg.header.frame_id = config_.frame_id;
     msg.week = static_cast<uint16_t>(week);
     msg.tow = tow;
@@ -1379,6 +1400,8 @@ class UbxDriverNode : public rclcpp::Node {
   msg::GnssSolution nmea_solution_;
   msg::GnssSolution binary_solution_;
   SolutionSource    source_{SolutionSource::NMEA};
+  rclcpp::Time      start_time_{0, 0, RCL_ROS_TIME};
+  bool              ever_received_binary_{false};
 
   // ENU Origin state
   bool has_local_origin_{false};

@@ -90,9 +90,12 @@ class SbfDecoderNode : public rclcpp::Node {
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
     declare_parameter<double>("ephemeris.max_age_s", 7200.0);
 
+    declare_parameter<bool>("use_gps_timestamp", false);
+
     frame_id_ = get_parameter("frame_id").as_string();
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
+    use_gps_timestamp_ = get_parameter("use_gps_timestamp").as_bool();
   }
 
   void initializePublishers() {
@@ -188,6 +191,7 @@ class SbfDecoderNode : public rclcpp::Node {
 
     maybePublishHeartbeat();
     maybeWatchdogFlushPendingPvt();
+    commitSourceLockIfDue();  // ensure grace finalizes even on idle stream
   }
 
   // ============================================================================
@@ -258,16 +262,44 @@ class SbfDecoderNode : public rclcpp::Node {
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
 
+  // Solution source policy (grace-period detection):
+  //   Start in UNDETERMINED. Wait kGracePeriodSec to detect whether the stream
+  //   carries PVT blocks. If yes → BINARY (PVT wins when both are present).
+  //   If grace expires with no PVT → NMEA. Deterministic regardless of stream
+  //   ordering between NMEA and binary frames.
   enum class SolutionSource { UNDETERMINED, BINARY, NMEA };
+  // 1.0 s safely covers a 1 Hz PVT cadence worst-case. Higher PVT rates lock
+  // BINARY in milliseconds — grace only affects NMEA-only commit latency.
+  static constexpr double kGracePeriodSec = 1.0;
 
-  void lockSourceBinaryOnce() {
-    if (source_ == SolutionSource::UNDETERMINED) {
-      source_ = SolutionSource::BINARY;
-      RCLCPP_INFO(get_logger(), "Solution source locked: BINARY (SBF PVTGeodetic/PVTCartesian)");
+  void startGraceIfNeeded() {
+    if (!grace_started_) {
+      grace_start_ = now();
+      grace_started_ = true;
     }
   }
 
+  void commitSourceLockIfDue() {
+    if (source_ != SolutionSource::UNDETERMINED) return;
+    if (!grace_started_) return;
+    const bool elapsed = (now() - grace_start_).seconds() >= kGracePeriodSec;
+    if (saw_binary_during_grace_) {
+      source_ = SolutionSource::BINARY;
+      RCLCPP_INFO(get_logger(), "Solution source locked: BINARY (PVT detected during grace)");
+    } else if (elapsed) {
+      source_ = SolutionSource::NMEA;
+      RCLCPP_INFO(get_logger(), "Solution source locked: NMEA (no PVT during grace)");
+    }
+  }
+
+  // Mark "binary seen during grace" — called from every PVT block arrival.
+  void markBinarySeen() {
+    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
+  }
+
   void handlePvtGeodetic() {
+    startGraceIfNeeded();
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
@@ -278,11 +310,12 @@ class SbfDecoderNode : public rclcpp::Node {
     if (!sbf::pvt::parsePVTGeodetic(p, len, pending_geo_.buf)) return;
     pending_geo_.has_pvt = true;
     pending_geo_.last_update = now();
-    lockSourceBinaryOnce();
+    markBinarySeen();
     if (pending_geo_.has_cov) flushPendingGeo();
   }
 
   void handlePosCovGeodetic() {
+    startGraceIfNeeded();
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
@@ -293,10 +326,12 @@ class SbfDecoderNode : public rclcpp::Node {
     if (!sbf::pvt::parsePosCovGeodetic(p, len, pending_geo_.buf)) return;
     pending_geo_.has_cov = true;
     pending_geo_.last_update = now();
+    markBinarySeen();
     if (pending_geo_.has_pvt) flushPendingGeo();
   }
 
   void handlePvtCartesian() {
+    startGraceIfNeeded();
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
@@ -307,11 +342,12 @@ class SbfDecoderNode : public rclcpp::Node {
     if (!sbf::pvt::parsePVTCartesian(p, len, pending_xyz_.buf)) return;
     pending_xyz_.has_pvt = true;
     pending_xyz_.last_update = now();
-    lockSourceBinaryOnce();
+    markBinarySeen();
     if (pending_xyz_.has_cov) flushPendingXyz();
   }
 
   void handlePosCovCartesian() {
+    startGraceIfNeeded();
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
@@ -322,6 +358,7 @@ class SbfDecoderNode : public rclcpp::Node {
     if (!sbf::pvt::parsePosCovCartesian(p, len, pending_xyz_.buf)) return;
     pending_xyz_.has_cov = true;
     pending_xyz_.last_update = now();
+    markBinarySeen();
     if (pending_xyz_.has_pvt) flushPendingXyz();
   }
 
@@ -399,6 +436,7 @@ class SbfDecoderNode : public rclcpp::Node {
       publishEsmAccum();
     }
     esm_tow_ms_ = tow_ms;
+    std::memcpy(&esm_wnc_, sbf_body_.data() + 4, 2);
 
     // Parse sub-blocks: each Type carries a full 3-vector
     for (uint8_t i = 0; i < n; ++i) {
@@ -424,7 +462,9 @@ class SbfDecoderNode : public rclcpp::Node {
 
   void publishEsmAccum() {
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
+    imu.header.stamp    = (use_gps_timestamp_ && esm_tow_ms_ != 0xFFFFFFFFu && esm_wnc_ != 0xFFFFu)
+        ? gnss_utils::gpstToUtcRosTime(gpst2time(adjgpsweek(static_cast<int>(esm_wnc_)), esm_tow_ms_ / 1000.0))
+        : now();
     imu.header.frame_id = frame_id_;
 
     auto unk = ins::makeUnknownCovariance();
@@ -500,13 +540,10 @@ class SbfDecoderNode : public rclcpp::Node {
   // ============================================================================
 
   void handleNmeaSentence(const std::string& sentence) {
-    if (nmea_parser_.parseSentence(sentence, nmea_solution_)) {
-      if (source_ == SolutionSource::UNDETERMINED) {
-        source_ = SolutionSource::NMEA;
-        RCLCPP_INFO(get_logger(), "Solution source locked: NMEA");
-      }
-      if (source_ == SolutionSource::NMEA) publishSolution(nmea_solution_);
-    }
+    startGraceIfNeeded();
+    if (!nmea_parser_.parseSentence(sentence, nmea_solution_)) return;
+    commitSourceLockIfDue();
+    if (source_ == SolutionSource::NMEA) publishSolution(nmea_solution_);
   }
 
   void handleDecodeResult(int result) {
@@ -529,7 +566,8 @@ class SbfDecoderNode : public rclcpp::Node {
       sol.time_tow  = tow;
     }
 
-    sol.header.stamp    = now();
+    sol.header.stamp    = (use_gps_timestamp_ && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     sol.header.frame_id = frame_id_;
 
     const bool has_fix =
@@ -595,7 +633,8 @@ class SbfDecoderNode : public rclcpp::Node {
     const double tow = time2gpst(raw_.time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp    = now();
+    msg.header.stamp    = (use_gps_timestamp_ && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     msg.header.frame_id = frame_id_;
     msg.week = static_cast<uint16_t>(week);
     msg.tow  = tow;
@@ -671,6 +710,7 @@ class SbfDecoderNode : public rclcpp::Node {
   // ============================================================================
 
   std::string frame_id_;
+  bool        use_gps_timestamp_{false};
 
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr  obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr   eph_pub_;
@@ -688,6 +728,9 @@ class SbfDecoderNode : public rclcpp::Node {
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
   SolutionSource         source_{SolutionSource::UNDETERMINED};
+  rclcpp::Time           grace_start_{0, 0, RCL_ROS_TIME};
+  bool                   grace_started_{false};
+  bool                   saw_binary_during_grace_{false};
   PendingPvt             pending_geo_;
   PendingPvt             pending_xyz_;
 
@@ -705,6 +748,7 @@ class SbfDecoderNode : public rclcpp::Node {
 
   // ExtSensorMeas accumulator (TOW-based, collects accel + gyro 3-vectors across blocks)
   uint32_t esm_tow_ms_{0xFFFFFFFFu};
+  uint16_t esm_wnc_{0xFFFFu};
   double   esm_accel_[3]{0.0, 0.0, 0.0};
   double   esm_gyro_[3]{0.0, 0.0, 0.0};
   bool     esm_has_accel_{false};

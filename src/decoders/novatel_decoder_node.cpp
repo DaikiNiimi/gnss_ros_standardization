@@ -78,6 +78,8 @@ class NovatelDecoderNode : public rclcpp::Node {
     declare_parameter<double>("imu_scale_override.gyro",  0.0);
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
     declare_parameter<double>("ephemeris.max_age_s", 7200.0);
+    declare_parameter<bool>("use_gps_timestamp", false);
+    use_gps_timestamp_ = get_parameter("use_gps_timestamp").as_bool();
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
 
@@ -181,6 +183,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     }
 
     maybePublishHeartbeat();
+    commitSourceLockIfDue();  // ensure grace finalizes even on idle stream
   }
 
   // ============================================================================
@@ -230,17 +233,42 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (oem4_msg_id_ == novatel::ID_BESTVEL)     handleBestVel();
   }
 
-  // Solution source policy: first observed message family wins (BINARY if BESTPOS
-  // arrives, NMEA if NMEA sentence arrives first). Locked thereafter.
+  // Solution source policy (grace-period detection):
+  //   Start in UNDETERMINED. Wait kGracePeriodSec to detect whether the stream
+  //   carries BESTPOS. If yes → BINARY (PVT wins when both are present). If no
+  //   PVT seen by grace expiry → NMEA. Deterministic regardless of stream
+  //   ordering between NMEA and binary frames.
   enum class SolutionSource { UNDETERMINED, BINARY, NMEA };
+  // 1.0 s safely covers a 1 Hz PVT cadence worst-case. Higher PVT rates lock
+  // BINARY in milliseconds — grace only affects NMEA-only commit latency.
+  static constexpr double kGracePeriodSec = 1.0;
+
+  void startGraceIfNeeded() {
+    if (!grace_started_) {
+      grace_start_ = now();
+      grace_started_ = true;
+    }
+  }
+
+  void commitSourceLockIfDue() {
+    if (source_ != SolutionSource::UNDETERMINED) return;
+    if (!grace_started_) return;
+    const bool elapsed = (now() - grace_start_).seconds() >= kGracePeriodSec;
+    if (saw_binary_during_grace_) {
+      source_ = SolutionSource::BINARY;
+      RCLCPP_INFO(get_logger(), "Solution source locked: BINARY (PVT detected during grace)");
+    } else if (elapsed) {
+      source_ = SolutionSource::NMEA;
+      RCLCPP_INFO(get_logger(), "Solution source locked: NMEA (no PVT during grace)");
+    }
+  }
 
   void handleBestPos() {
+    startGraceIfNeeded();
     if (!novatel::pvt::parseBESTPOS(oem4_body_.data(), oem4_body_.size(), binary_solution_)) return;
     finalizeBinarySolutionGeometry(binary_solution_);
-    if (source_ == SolutionSource::UNDETERMINED) {
-      source_ = SolutionSource::BINARY;
-      RCLCPP_INFO(get_logger(), "Solution source locked: BINARY (BESTPOS/BESTVEL)");
-    }
+    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
   }
 
@@ -273,9 +301,11 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (oem4_body_.size() < 60) return;
 
     const uint8_t imu_type = oem4_body_[2];
+    uint16_t imu_week = 0;
     double seconds = 0.0;
     int32_t z_acc = 0, ny_acc = 0, x_acc = 0, z_gyr = 0, ny_gyr = 0, x_gyr = 0;
-    std::memcpy(&seconds, oem4_body_.data() +  8, 8);
+    std::memcpy(&imu_week, oem4_body_.data() +  4, 2);
+    std::memcpy(&seconds,  oem4_body_.data() +  8, 8);
     std::memcpy(&z_acc,   oem4_body_.data() + 20, 4);
     std::memcpy(&ny_acc,  oem4_body_.data() + 24, 4);
     std::memcpy(&x_acc,   oem4_body_.data() + 28, 4);
@@ -304,7 +334,8 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (dt <= 0.0 || dt > 1.0) return;
 
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
+    imu.header.stamp    = (use_gps_timestamp_ && imu_week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(gpst2time(imu_week, seconds)) : now();
     imu.header.frame_id = frame_id_;
     imu.orientation_covariance[0] = -1.0;
 
@@ -329,10 +360,12 @@ class NovatelDecoderNode : public rclcpp::Node {
   void handleCorrImuData() {
     if (oem4_body_.size() < 60) return;
 
+    uint32_t corrimu_week = 0;
     double seconds = 0.0, pitch_rate = 0.0, roll_rate = 0.0, yaw_rate = 0.0;
     double lat_acc = 0.0, lon_acc = 0.0, vert_acc = 0.0;
-    std::memcpy(&seconds,    oem4_body_.data() +  4, 8);
-    std::memcpy(&pitch_rate, oem4_body_.data() + 12, 8);
+    std::memcpy(&corrimu_week, oem4_body_.data() +  0, 4);
+    std::memcpy(&seconds,      oem4_body_.data() +  4, 8);
+    std::memcpy(&pitch_rate,   oem4_body_.data() + 12, 8);
     std::memcpy(&roll_rate,  oem4_body_.data() + 20, 8);
     std::memcpy(&yaw_rate,   oem4_body_.data() + 28, 8);
     std::memcpy(&lat_acc,    oem4_body_.data() + 36, 8);
@@ -349,7 +382,8 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (dt <= 0.0 || dt > 1.0) return;
 
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
+    imu.header.stamp    = (use_gps_timestamp_ && corrimu_week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(gpst2time(static_cast<int>(corrimu_week), seconds)) : now();
     imu.header.frame_id = frame_id_;
 
     // SPAN body frame: roll=X, pitch=Y, yaw=Z; longitudinal=X, lateral=Y, vertical=Z
@@ -375,13 +409,10 @@ class NovatelDecoderNode : public rclcpp::Node {
   // ============================================================================
 
   void handleNmeaSentence(const std::string& sentence) {
-    if (nmea_parser_.parseSentence(sentence, nmea_solution_)) {
-      if (source_ == SolutionSource::UNDETERMINED) {
-        source_ = SolutionSource::NMEA;
-        RCLCPP_INFO(get_logger(), "Solution source locked: NMEA");
-      }
-      if (source_ == SolutionSource::NMEA) publishSolution(nmea_solution_);
-    }
+    startGraceIfNeeded();
+    if (!nmea_parser_.parseSentence(sentence, nmea_solution_)) return;
+    commitSourceLockIfDue();
+    if (source_ == SolutionSource::NMEA) publishSolution(nmea_solution_);
   }
 
   void handleDecodeResult(int result) {
@@ -404,7 +435,8 @@ class NovatelDecoderNode : public rclcpp::Node {
       sol.time_tow  = tow;
     }
 
-    sol.header.stamp    = now();
+    sol.header.stamp    = (use_gps_timestamp_ && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     sol.header.frame_id = frame_id_;
 
     const bool has_fix =
@@ -470,7 +502,8 @@ class NovatelDecoderNode : public rclcpp::Node {
     const double tow = time2gpst(raw_.time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp    = now();
+    msg.header.stamp    = (use_gps_timestamp_ && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     msg.header.frame_id = frame_id_;
     msg.week = static_cast<uint16_t>(week);
     msg.tow  = tow;
@@ -547,6 +580,7 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   std::string format_{"oem4"};
   std::string frame_id_;
+  bool        use_gps_timestamp_{false};
 
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr  obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr   eph_pub_;
@@ -566,6 +600,9 @@ class NovatelDecoderNode : public rclcpp::Node {
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
   SolutionSource         source_{SolutionSource::UNDETERMINED};
+  rclcpp::Time           grace_start_{0, 0, RCL_ROS_TIME};
+  bool                   grace_started_{false};
+  bool                   saw_binary_during_grace_{false};
 
   // ENU local origin
   bool   has_local_origin_{false};

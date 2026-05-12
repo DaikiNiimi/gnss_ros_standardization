@@ -627,7 +627,7 @@ class ObsWriter {
         if (o.p   != 0.0) it->second.P[k]   = o.p;
         if (o.l   != 0.0) it->second.L[k]   = o.l;
         if (o.d   != 0.0) it->second.D[k]   = o.d;
-        if (o.snr >  0.0) it->second.SNR[k] = o.snr * 1000.0f;
+        if (o.snr >  0.0) it->second.SNR[k] = o.snr;
         it->second.LLI[k] = static_cast<unsigned char>(o.lli);
   
         it->second.time = t;

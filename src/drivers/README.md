@@ -129,27 +129,37 @@ rates and accelerations.
 
 ## Supported NovAtel IMUs (RAWIMUSX scale table)
 
-| IMUType | IMU model | accel scale (counts → m/s) | gyro scale (counts → rad) |
-|---|---|---|---|
-| 4  | Honeywell HG1700-AG11 | 2⁻²² | 2⁻³³ |
-| 5  | Honeywell HG1700-AG17 | 2⁻²² | 2⁻³³ |
-| 8  | Honeywell HG1700-AG58 | 2⁻²² | 2⁻³³ |
-| 11 | Honeywell HG1700-AG62 | 2⁻²² | 2⁻³³ |
-| 13 | Honeywell HG1900-CA50 | 2⁻²¹ | 2⁻³³ |
-| 16 | Northrop Grumman LN200 | 2⁻¹⁴ | 2⁻¹⁹ |
-| 19 | Honeywell HG1930 | 2⁻²² | 2⁻³³ |
-| 26, 28 | Analog Devices ADIS16488 | 2⁻¹² | 2⁻²¹ |
-| 31 | Sensonor STIM 300 | 2⁻²¹ | 2⁻²⁵ |
-| 41 | Epson G320N | 2⁻¹⁵ | 2⁻²¹ |
-| 56 | KVH 1750 | 2⁻¹⁵ | 2⁻²¹ |
-| 58, 68, 69 | Epson G370N / G382PR | 2⁻¹⁵ | 2⁻²¹ |
+IDs follow the official [CONNECTIMU table](https://docs.novatel.com/OEM7/Content/SPAN_Commands/CONNECTIMU.htm).
+Scale factors are taken verbatim from the
+[RAWIMUSX page](https://docs.novatel.com/OEM7/Content/SPAN_Logs/RAWIMUSX.htm)
+and converted to SI (ft/s → m/s, deg → rad) at compile time.
 
-If your IMU type is not in the table, set `imu_scale_override.{accel,gyro}` in
-`config/novatel_driver.yaml` to the per-sample SI scale factors from the IMU
-datasheet. To contribute permanent support for a new IMU, add a `case` branch
-to `getImuScale()` in
-[`novatel_imu_scales.hpp`](../../include/gnss_ros_standardization/novatel_imu_scales.hpp)
-and update this table — please open a PR.
+| IMUType | IMU model | gyro (rad/LSB·sample) | accel (m/s/LSB·sample) |
+|---|---|---|---|
+| 5  | HG1900-CA29                  | 2⁻³³ | 2⁻²⁷ × 0.3048 |
+| 8  | LN-200                       | 2⁻¹⁹ | 2⁻¹⁴ |
+| 11 | HG1700-AG58                  | 2⁻³³ | 2⁻²⁷ × 0.3048 |
+| 12 | HG1700-AG62                  | 2⁻³³ | 2⁻²⁶ × 0.3048 |
+| 20 | HG1930-AA99                  | 2⁻³³ | 2⁻²⁷ × 0.3048 |
+| 26 | ISA-100C / µIMU-IC           | 1.0e-9 | 2.0e-8 |
+| 27 | HG1900-CA50                  | 2⁻³³ | 2⁻²⁷ × 0.3048 |
+| 28 | HG1930-CA50                  | 2⁻³³ | 2⁻²⁷ × 0.3048 |
+| 32 | OEM-IMU-STIM300              | 2⁻²¹ × π/180 | 2⁻²² |
+| 41 | OEM-IMU-EG320N (125 Hz)      | (0.008/65536/125) × π/180 | (0.200/65536/125) × g/1000 |
+| 56 | OEM-IMU-STIM300D             | 2⁻²¹ × π/180 | 2⁻²² |
+| 58 | HG4930-AN01 (also CPT7/CPT7700) | 2⁻³³ | 2⁻²⁹ |
+| 61 | OEM-IMU-EG370N (200 Hz)      | (0.0151515/65536/200) × π/180 | (0.400/65536/200) × g/1000 |
+| 62 | OEM-IMU-EG320N (200 Hz)      | (0.008/65536/200) × π/180 | (0.200/65536/200) × g/1000 |
+| 68 | HG4930-AN04                  | 2⁻³³ | 2⁻²⁹ |
+| 69 | HG4930-AN04 (400 Hz)         | 2⁻³³ | 2⁻²⁹ |
+
+For any IMU not listed above, set `imu_scale_override.{accel,gyro}` in
+`config/novatel_driver.yaml` to per-sample SI scale factors from the IMU
+datasheet.
+
+**EPSON G320N data-rate caveat**: the published scale depends on the IMU's
+sample rate. ID 41 assumes 125 Hz and ID 62 assumes 200 Hz; if you run the IMU
+at any other rate, use `imu_scale_override.*` instead.
 
 ---
 

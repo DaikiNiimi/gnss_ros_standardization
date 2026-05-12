@@ -673,7 +673,7 @@ private:
     o.P[idx] = m.p;
     o.L[idx] = m.l;
     o.D[idx] = static_cast<float>(m.d);
-    o.SNR[idx] = static_cast<uint16_t>(m.snr * 1000.0);
+    o.SNR[idx] = static_cast<float>(m.snr);
     o.LLI[idx] = static_cast<uint8_t>(m.lli);
     o.code[idx] = m.code;
 

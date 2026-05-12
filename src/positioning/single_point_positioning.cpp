@@ -271,7 +271,7 @@ private:
       if (m.p > 0.0) acc.o.P[idx] = m.p;
       if (m.l != 0.0) acc.o.L[idx] = m.l;
       if (m.d != 0.0) acc.o.D[idx] = static_cast<float>(m.d);
-      if (m.snr > 0.0) acc.o.SNR[idx] = static_cast<uint16_t>(std::lround(m.snr * 4.0));
+      if (m.snr > 0.0) acc.o.SNR[idx] = static_cast<float>(m.snr);
       acc.o.LLI[idx] = static_cast<uint8_t>(m.lli);
     }
     std::lock_guard<std::mutex> lk(nav_mtx_);

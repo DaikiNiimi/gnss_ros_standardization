@@ -76,6 +76,8 @@ struct NovatelConfig {
   // Ephemeris snapshot behavior
   double ephemeris_snapshot_period_s{30.0};
   double ephemeris_max_age_s{7200.0};
+
+  bool use_gps_timestamp{false};
 };
 
 /// @brief ROS 2 driver node for NovAtel GNSS receivers
@@ -143,6 +145,7 @@ class NovatelDriverNode : public rclcpp::Node {
 
     declare_parameter<double>("ephemeris.snapshot_period_s", config_.ephemeris_snapshot_period_s);
     declare_parameter<double>("ephemeris.max_age_s",         config_.ephemeris_max_age_s);
+    declare_parameter<bool>("use_gps_timestamp",             config_.use_gps_timestamp);
 
     config_.stream_path          = get_parameter("stream_path").as_string();
     config_.frame_id             = get_parameter("frame_id").as_string();
@@ -184,12 +187,14 @@ class NovatelDriverNode : public rclcpp::Node {
 
     config_.ephemeris_snapshot_period_s = get_parameter("ephemeris.snapshot_period_s").as_double();
     config_.ephemeris_max_age_s         = get_parameter("ephemeris.max_age_s").as_double();
+    config_.use_gps_timestamp           = get_parameter("use_gps_timestamp").as_bool();
 
     eph_store_.setSnapshotPeriod(config_.ephemeris_snapshot_period_s);
     eph_store_.setMaxAge(config_.ephemeris_max_age_s);
 
     // Lock solution source at startup. BINARY if BESTPOS is enabled, else NMEA.
     source_ = config_.enable_bestpos ? SolutionSource::BINARY : SolutionSource::NMEA;
+    start_time_ = now();
     RCLCPP_INFO(get_logger(), "Solution source locked: %s",
                 source_ == SolutionSource::BINARY ? "BINARY (BESTPOS/BESTVEL)" : "NMEA");
   }
@@ -388,6 +393,7 @@ class NovatelDriverNode : public rclcpp::Node {
     }
 
     maybePublishHeartbeat();
+    warnIfBinaryStarvation();
   }
 
   // ============================================================================
@@ -468,9 +474,22 @@ class NovatelDriverNode : public rclcpp::Node {
       return;
     }
     finalizeBinarySolutionGeometry(binary_solution_);
+    ever_received_binary_ = true;
     if (source_ == SolutionSource::BINARY) {
       publishSolution(binary_solution_);
     }
+  }
+
+  // Warn if BINARY source was selected via YAML but no PVT has arrived after
+  // a generous startup window — typically indicates a receiver-side config
+  // or capability issue. Prevents silent failure under no-fallback policy.
+  void warnIfBinaryStarvation() {
+    if (source_ != SolutionSource::BINARY) return;
+    if (ever_received_binary_) return;
+    if ((now() - start_time_).seconds() < 15.0) return;
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+      "Solution source locked to BINARY (BESTPOS) but no PVT received yet — "
+      "check receiver firmware/configuration.");
   }
 
   void handleBestVel() {
@@ -516,9 +535,11 @@ class NovatelDriverNode : public rclcpp::Node {
     if (oem4_body_.size() < 60) return;
 
     const uint8_t  imu_type = oem4_body_[2];
+    uint16_t imu_week = 0;
     double seconds = 0.0;
     int32_t z_acc = 0, ny_acc = 0, x_acc = 0, z_gyr = 0, ny_gyr = 0, x_gyr = 0;
-    std::memcpy(&seconds, oem4_body_.data() +  8, 8);
+    std::memcpy(&imu_week, oem4_body_.data() +  4, 2);
+    std::memcpy(&seconds,  oem4_body_.data() +  8, 8);
     std::memcpy(&z_acc,   oem4_body_.data() + 20, 4);
     std::memcpy(&ny_acc,  oem4_body_.data() + 24, 4);
     std::memcpy(&x_acc,   oem4_body_.data() + 28, 4);
@@ -549,7 +570,8 @@ class NovatelDriverNode : public rclcpp::Node {
 
     // Recover +Y by negating the -Y fields, then scale and divide by dt.
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
+    imu.header.stamp    = (config_.use_gps_timestamp && imu_week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(gpst2time(imu_week, seconds)) : now();
     imu.header.frame_id = config_.frame_id;
 
     imu.orientation_covariance[0] = -1.0;  // unknown
@@ -575,15 +597,17 @@ class NovatelDriverNode : public rclcpp::Node {
   void handleCorrImuData() {
     if (oem4_body_.size() < 60) return;
 
+    uint32_t corrimu_week = 0;
     double seconds = 0.0, pitch_rate = 0.0, roll_rate = 0.0, yaw_rate = 0.0;
     double lat_acc = 0.0, lon_acc = 0.0, vert_acc = 0.0;
-    std::memcpy(&seconds,    oem4_body_.data() +  4, 8);
-    std::memcpy(&pitch_rate, oem4_body_.data() + 12, 8);
-    std::memcpy(&roll_rate,  oem4_body_.data() + 20, 8);
-    std::memcpy(&yaw_rate,   oem4_body_.data() + 28, 8);
-    std::memcpy(&lat_acc,    oem4_body_.data() + 36, 8);
-    std::memcpy(&lon_acc,    oem4_body_.data() + 44, 8);
-    std::memcpy(&vert_acc,   oem4_body_.data() + 52, 8);
+    std::memcpy(&corrimu_week, oem4_body_.data() +  0, 4);
+    std::memcpy(&seconds,      oem4_body_.data() +  4, 8);
+    std::memcpy(&pitch_rate,   oem4_body_.data() + 12, 8);
+    std::memcpy(&roll_rate,    oem4_body_.data() + 20, 8);
+    std::memcpy(&yaw_rate,     oem4_body_.data() + 28, 8);
+    std::memcpy(&lat_acc,      oem4_body_.data() + 36, 8);
+    std::memcpy(&lon_acc,      oem4_body_.data() + 44, 8);
+    std::memcpy(&vert_acc,     oem4_body_.data() + 52, 8);
 
     if (!has_corrimu_prev_) {
       corrimu_prev_seconds_ = seconds;
@@ -595,7 +619,8 @@ class NovatelDriverNode : public rclcpp::Node {
     if (dt <= 0.0 || dt > 1.0) return;  // sanity: skip across-week wraps and outliers
 
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
+    imu.header.stamp    = (config_.use_gps_timestamp && corrimu_week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(gpst2time(static_cast<int>(corrimu_week), seconds)) : now();
     imu.header.frame_id = config_.frame_id;
 
     // SPAN body frame: roll=X, pitch=Y, yaw=Z; longitudinal=X, lateral=Y, vertical=Z
@@ -628,7 +653,8 @@ class NovatelDriverNode : public rclcpp::Node {
       sol.time_tow  = tow;
     }
 
-    sol.header.stamp    = now();
+    sol.header.stamp    = (config_.use_gps_timestamp && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     sol.header.frame_id = config_.frame_id;
 
     const bool has_fix =
@@ -699,7 +725,8 @@ class NovatelDriverNode : public rclcpp::Node {
     const double tow = time2gpst(raw_.time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp    = now();
+    msg.header.stamp    = (config_.use_gps_timestamp && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     msg.header.frame_id = config_.frame_id;
     msg.week = static_cast<uint16_t>(week);
     msg.tow  = tow;
@@ -808,6 +835,8 @@ class NovatelDriverNode : public rclcpp::Node {
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
   SolutionSource         source_{SolutionSource::NMEA};
+  rclcpp::Time           start_time_{0, 0, RCL_ROS_TIME};
+  bool                   ever_received_binary_{false};
 
   // ENU local origin
   bool   has_local_origin_{false};

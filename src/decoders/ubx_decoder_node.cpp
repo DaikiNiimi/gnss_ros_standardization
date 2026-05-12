@@ -82,10 +82,12 @@ class UbxDecoderNode : public rclcpp::Node {
     declare_parameter<std::string>("imu_raw_topic", "/gnss/imu/data_raw");
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
     declare_parameter<double>("ephemeris.max_age_s", 7200.0);
+    declare_parameter<bool>("use_gps_timestamp", false);
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
 
     frame_id_ = get_parameter("frame_id").as_string();
+    use_gps_timestamp_ = get_parameter("use_gps_timestamp").as_bool();
   }
 
   void initializePublishers() {
@@ -181,6 +183,7 @@ class UbxDecoderNode : public rclcpp::Node {
     }
 
     maybePublishHeartbeat();
+    commitSourceLockIfDue();  // ensure grace finalizes even on idle stream
   }
 
   // ============================================================================
@@ -235,21 +238,47 @@ class UbxDecoderNode : public rclcpp::Node {
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_PVT) handleNavPvt();
   }
 
-  // Solution source policy: BINARY if NAV-PVT seen at least once during the
-  // initial detection window, else NMEA. Locked at first publish; no
-  // mid-session switching.
+  // Solution source policy (grace-period detection):
+  //   Start in UNDETERMINED. Parse both NMEA and binary into their own
+  //   buffers but publish nothing for the first kGracePeriodSec.
+  //   If any binary PVT arrived during grace → lock BINARY (PVT wins when both
+  //   are present in the stream). Else after grace expires → lock NMEA.
+  // This guarantees deterministic, PVT-preferred behavior regardless of
+  // whether NMEA or PVT happens to arrive first in the byte stream.
   enum class SolutionSource { UNDETERMINED, BINARY, NMEA };
+  // 1.0 s safely covers a 1 Hz PVT cadence worst-case. Higher PVT rates lock
+  // BINARY in milliseconds — grace only affects NMEA-only commit latency.
+  static constexpr double kGracePeriodSec = 1.0;
+
+  void startGraceIfNeeded() {
+    if (!grace_started_) {
+      grace_start_ = now();
+      grace_started_ = true;
+    }
+  }
+
+  void commitSourceLockIfDue() {
+    if (source_ != SolutionSource::UNDETERMINED) return;
+    if (!grace_started_) return;
+    const bool elapsed = (now() - grace_start_).seconds() >= kGracePeriodSec;
+    if (saw_binary_during_grace_) {
+      source_ = SolutionSource::BINARY;
+      RCLCPP_INFO(get_logger(), "Solution source locked: BINARY (PVT detected during grace)");
+    } else if (elapsed) {
+      source_ = SolutionSource::NMEA;
+      RCLCPP_INFO(get_logger(), "Solution source locked: NMEA (no PVT during grace)");
+    }
+  }
 
   void handleNavPvt() {
+    startGraceIfNeeded();
     if (!ubx::pvt::parseNavPvt(ubx_payload_.data(), ubx_payload_.size(),
                                binary_solution_)) {
       return;
     }
     finalizeBinarySolutionGeometry(binary_solution_);
-    if (source_ == SolutionSource::UNDETERMINED) {
-      source_ = SolutionSource::BINARY;
-      RCLCPP_INFO(get_logger(), "Solution source locked: BINARY (UBX-NAV-PVT)");
-    }
+    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
     if (source_ == SolutionSource::BINARY) {
       publishSolution(binary_solution_);
     }
@@ -381,14 +410,11 @@ class UbxDecoderNode : public rclcpp::Node {
   // ============================================================================
 
   void handleNmeaSentence(const std::string& sentence) {
-    if (nmea_parser_.parseSentence(sentence, nmea_solution_)) {
-      if (source_ == SolutionSource::UNDETERMINED) {
-        source_ = SolutionSource::NMEA;
-        RCLCPP_INFO(get_logger(), "Solution source locked: NMEA");
-      }
-      if (source_ == SolutionSource::NMEA) {
-        publishSolution(nmea_solution_);
-      }
+    startGraceIfNeeded();
+    if (!nmea_parser_.parseSentence(sentence, nmea_solution_)) return;
+    commitSourceLockIfDue();
+    if (source_ == SolutionSource::NMEA) {
+      publishSolution(nmea_solution_);
     }
   }
 
@@ -412,7 +438,8 @@ class UbxDecoderNode : public rclcpp::Node {
       sol.time_tow = tow;
     }
 
-    sol.header.stamp = now();
+    sol.header.stamp    = (use_gps_timestamp_ && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     sol.header.frame_id = frame_id_;
 
     if (sol.status == msg::GnssSolution::STATUS_FIX ||
@@ -476,7 +503,8 @@ class UbxDecoderNode : public rclcpp::Node {
     const double tow = time2gpst(raw_.time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp = now();
+    msg.header.stamp    = (use_gps_timestamp_ && week != 0)
+                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     msg.header.frame_id = frame_id_;
     msg.week = static_cast<uint16_t>(week);
     msg.tow = tow;
@@ -554,6 +582,7 @@ class UbxDecoderNode : public rclcpp::Node {
   // ============================================================================
 
   std::string frame_id_;
+  bool        use_gps_timestamp_{false};
 
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr   obs_pub_;
   rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr    eph_pub_;
@@ -572,6 +601,9 @@ class UbxDecoderNode : public rclcpp::Node {
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
   SolutionSource         source_{SolutionSource::UNDETERMINED};
+  rclcpp::Time           grace_start_{0, 0, RCL_ROS_TIME};
+  bool                   grace_started_{false};
+  bool                   saw_binary_during_grace_{false};
 
   // ENU origin
   bool   has_local_origin_{false};

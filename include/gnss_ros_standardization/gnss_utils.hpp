@@ -56,7 +56,11 @@ gnss_ros_standardization::msg::GlonassEphemeris gephToMsg(const geph_t& g);
 gnss_ros_standardization::msg::GnssObservation obsToMsg(const obsd_t& o, int kf);
 
 // ---- Time Helpers ----
-// (Optional if strictly needed, otherwise we can keep using inline calls)
+
+/**
+ * Convert RTKLIB GPS time (gtime_t) to UTC ROS Time, applying leap seconds via gpst2utc().
+ */
+rclcpp::Time gpstToUtcRosTime(gtime_t t_gpst);
 
 // ---- Math Helpers ----
 
