@@ -372,7 +372,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (dt <= 0.0 || dt > 1.0) return;
 
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = (use_gps_timestamp_ && imu_week != 0)
+    imu.header.stamp    = (use_gps_timestamp_ && imu_week > 0)
                           ? gnss_utils::gpstToUtcRosTime(gpst2time(imu_week, seconds)) : now();
     imu.header.frame_id = frame_id_;
     imu.orientation_covariance[0] = -1.0;
@@ -420,7 +420,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (dt <= 0.0 || dt > 1.0) return;
 
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = (use_gps_timestamp_ && corrimu_week != 0)
+    imu.header.stamp    = (use_gps_timestamp_ && corrimu_week > 0)
                           ? gnss_utils::gpstToUtcRosTime(gpst2time(static_cast<int>(corrimu_week), seconds)) : now();
     imu.header.frame_id = frame_id_;
 
@@ -468,12 +468,12 @@ class NovatelDecoderNode : public rclcpp::Node {
   void publishSolution(msg::GnssSolution& sol) {
     int week = 0;
     const double tow = time2gpst(raw_.time, &week);
-    if (week != 0) {
+    if (week > 0) {
       sol.time_week = static_cast<uint16_t>(week);
       sol.time_tow  = tow;
     }
 
-    sol.header.stamp    = (use_gps_timestamp_ && week != 0)
+    sol.header.stamp    = (use_gps_timestamp_ && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     sol.header.frame_id = frame_id_;
 
@@ -540,7 +540,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     const double tow = time2gpst(raw_.time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp    = (use_gps_timestamp_ && week != 0)
+    msg.header.stamp    = (use_gps_timestamp_ && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     msg.header.frame_id = frame_id_;
     msg.week = static_cast<uint16_t>(week);

@@ -72,8 +72,11 @@ struct SbfConfig {
 
   bool enable_pvt_geodetic{false};
   bool enable_pos_cov_geodetic{false};
+  bool enable_vel_cov_geodetic{false};
   bool enable_pvt_cartesian{false};
   bool enable_pos_cov_cartesian{false};
+  bool enable_vel_cov_cartesian{false};
+  bool enable_dop{false};
 
   bool enable_ext_sensor_meas{false};  // Raw IMU accel + gyro (AsteRx-i / mosaic-X5 with IMU)
 
@@ -154,8 +157,11 @@ class SbfDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.navic_nav_raw",      config_.enable_navic_nav_raw);
     declare_parameter<bool>("messages.pvt_geodetic",       config_.enable_pvt_geodetic);
     declare_parameter<bool>("messages.pos_cov_geodetic",   config_.enable_pos_cov_geodetic);
+    declare_parameter<bool>("messages.vel_cov_geodetic",   config_.enable_vel_cov_geodetic);
     declare_parameter<bool>("messages.pvt_cartesian",      config_.enable_pvt_cartesian);
     declare_parameter<bool>("messages.pos_cov_cartesian",  config_.enable_pos_cov_cartesian);
+    declare_parameter<bool>("messages.vel_cov_cartesian",  config_.enable_vel_cov_cartesian);
+    declare_parameter<bool>("messages.dop",                config_.enable_dop);
     declare_parameter<bool>("messages.ext_sensor_meas",    config_.enable_ext_sensor_meas);
     declare_parameter<bool>("messages.nmea_gga",           config_.enable_nmea_gga);
     declare_parameter<bool>("messages.nmea_rmc",           config_.enable_nmea_rmc);
@@ -194,8 +200,11 @@ class SbfDriverNode : public rclcpp::Node {
     config_.enable_navic_nav_raw     = get_parameter("messages.navic_nav_raw").as_bool();
     config_.enable_pvt_geodetic      = get_parameter("messages.pvt_geodetic").as_bool();
     config_.enable_pos_cov_geodetic  = get_parameter("messages.pos_cov_geodetic").as_bool();
+    config_.enable_vel_cov_geodetic  = get_parameter("messages.vel_cov_geodetic").as_bool();
     config_.enable_pvt_cartesian     = get_parameter("messages.pvt_cartesian").as_bool();
     config_.enable_pos_cov_cartesian = get_parameter("messages.pos_cov_cartesian").as_bool();
+    config_.enable_vel_cov_cartesian = get_parameter("messages.vel_cov_cartesian").as_bool();
+    config_.enable_dop               = get_parameter("messages.dop").as_bool();
     config_.enable_ext_sensor_meas   = get_parameter("messages.ext_sensor_meas").as_bool();
     config_.enable_nmea_gga          = get_parameter("messages.nmea_gga").as_bool();
     config_.enable_nmea_rmc          = get_parameter("messages.nmea_rmc").as_bool();
@@ -222,6 +231,8 @@ class SbfDriverNode : public rclcpp::Node {
 
     eph_store_.setSnapshotPeriod(config_.ephemeris_snapshot_period_s);
     eph_store_.setMaxAge(config_.ephemeris_max_age_s);
+
+    initPendingExpectedMasks();
 
     // Lock solution source at startup. BINARY if either PVTGeodetic or
     // PVTCartesian is enabled; otherwise NMEA. No mid-session switching.
@@ -276,9 +287,10 @@ class SbfDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "  Nav (raw)    : GPS=%s GLO=%s GAL=%s BDS=%s QZS=%s NavIC=%s",
       on(config_.enable_gps_nav_raw), on(config_.enable_glo_nav_raw), on(config_.enable_gal_nav_raw),
       on(config_.enable_bds_nav_raw), on(config_.enable_qzs_nav_raw), on(config_.enable_navic_nav_raw));
-    RCLCPP_INFO(get_logger(), "  PVT (binary) : PVTGeodetic=%s PosCovGeodetic=%s PVTCartesian=%s PosCovCartesian=%s",
-      on(config_.enable_pvt_geodetic), on(config_.enable_pos_cov_geodetic),
-      on(config_.enable_pvt_cartesian), on(config_.enable_pos_cov_cartesian));
+    RCLCPP_INFO(get_logger(), "  PVT (binary) : PVTGeodetic=%s PosCovGeodetic=%s VelCovGeodetic=%s PVTCartesian=%s PosCovCartesian=%s VelCovCartesian=%s DOP=%s",
+      on(config_.enable_pvt_geodetic), on(config_.enable_pos_cov_geodetic), on(config_.enable_vel_cov_geodetic),
+      on(config_.enable_pvt_cartesian), on(config_.enable_pos_cov_cartesian), on(config_.enable_vel_cov_cartesian),
+      on(config_.enable_dop));
     RCLCPP_INFO(get_logger(), "  NMEA         : GGA=%s RMC=%s GSA=%s GST=%s",
       on(config_.enable_nmea_gga), on(config_.enable_nmea_rmc),
       on(config_.enable_nmea_gsa), on(config_.enable_nmea_gst));
@@ -381,8 +393,11 @@ class SbfDriverNode : public rclcpp::Node {
     if (config_.enable_navic_nav_raw)    blocks.push_back(sbf::BLOCK_NAVICNAV_RAW);
     if (config_.enable_pvt_geodetic)     blocks.push_back(sbf::BLOCK_PVTGEODETIC);
     if (config_.enable_pos_cov_geodetic) blocks.push_back(sbf::BLOCK_POSCOVGEODETIC);
+    if (config_.enable_vel_cov_geodetic) blocks.push_back(sbf::BLOCK_VELCOVGEODETIC);
     if (config_.enable_pvt_cartesian)    blocks.push_back(sbf::BLOCK_PVTCARTESIAN);
     if (config_.enable_pos_cov_cartesian)blocks.push_back(sbf::BLOCK_POSCOVCARTESIAN);
+    if (config_.enable_vel_cov_cartesian)blocks.push_back(sbf::BLOCK_VELCOVCARTESIAN);
+    if (config_.enable_dop)              blocks.push_back(sbf::BLOCK_DOP);
     if (config_.enable_ext_sensor_meas)  blocks.push_back(sbf::BLOCK_EXTSENSORMEAS);
 
     if (!blocks.empty()) {
@@ -537,8 +552,11 @@ class SbfDriverNode : public rclcpp::Node {
       case sbf::ID_NAVICNAV:         handleNavicNav();         break;
       case sbf::ID_PVTGEODETIC:      handlePvtGeodetic();      break;
       case sbf::ID_POSCOVGEODETIC:   handlePosCovGeodetic();   break;
+      case sbf::ID_VELCOVGEODETIC:   handleVelCovGeodetic();   break;
       case sbf::ID_PVTCARTESIAN:     handlePvtCartesian();     break;
       case sbf::ID_POSCOVCARTESIAN:  handlePosCovCartesian();  break;
+      case sbf::ID_VELCOVCARTESIAN:  handleVelCovCartesian();  break;
+      case sbf::ID_DOP:              handleDop();              break;
       default: break;
     }
   }
@@ -547,31 +565,56 @@ class SbfDriverNode : public rclcpp::Node {
   // Binary PVT handlers with per-system TOW aggregation
   // ============================================================================
 
-  // Per-system pending buffer: PVT block + Cov block aggregated by matching TOW.
-  // On any new TOW arrival, the previous (incomplete-OK) pending is flushed.
+  // Per-system pending buffer: PVT block + Cov blocks aggregated by matching TOW.
+  // cov_expected is a bitmask of enabled cov blocks (POS/VEL). cov_received
+  // tracks arrivals. Flush triggers: (a) all expected covs received with PVT,
+  // or (b) a new TOW arrives — previous epoch published with whatever cov was
+  // received (missing covs stay zero).
+  static constexpr uint8_t COV_BIT_POS = 0x1;
+  static constexpr uint8_t COV_BIT_VEL = 0x2;
+
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
     bool has_pvt{false};
-    bool has_cov{false};
+    uint8_t cov_expected{0};
+    uint8_t cov_received{0};
     msg::GnssSolution buf{};
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
 
   enum class SolutionSource { BINARY, NMEA };
 
+  void initPendingExpectedMasks() {
+    pending_geo_.cov_expected =
+        (config_.enable_pos_cov_geodetic ? COV_BIT_POS : uint8_t{0}) |
+        (config_.enable_vel_cov_geodetic ? COV_BIT_VEL : uint8_t{0});
+    pending_xyz_.cov_expected =
+        (config_.enable_pos_cov_cartesian ? COV_BIT_POS : uint8_t{0}) |
+        (config_.enable_vel_cov_cartesian ? COV_BIT_VEL : uint8_t{0});
+  }
+
+  bool pendingGeoComplete() const {
+    return pending_geo_.has_pvt &&
+           pending_geo_.cov_received == pending_geo_.cov_expected;
+  }
+  bool pendingXyzComplete() const {
+    return pending_xyz_.has_pvt &&
+           pending_xyz_.cov_received == pending_xyz_.cov_expected;
+  }
+
   void handlePvtGeodetic() {
     if (!config_.enable_pvt_geodetic) return;
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
-    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.has_cov)) {
+    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.cov_received)) {
       flushPendingGeo();
     }
     pending_geo_.tow_ms = tow;
     if (!sbf::pvt::parsePVTGeodetic(p, len, pending_geo_.buf)) return;
     pending_geo_.has_pvt = true;
     pending_geo_.last_update = now();
-    if (pending_geo_.has_cov) flushPendingGeo();
+    if (pendingGeoComplete()) flushPendingGeo();
   }
 
   void handlePosCovGeodetic() {
@@ -579,14 +622,29 @@ class SbfDriverNode : public rclcpp::Node {
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
-    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.has_cov)) {
+    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.cov_received)) {
       flushPendingGeo();
     }
     pending_geo_.tow_ms = tow;
     if (!sbf::pvt::parsePosCovGeodetic(p, len, pending_geo_.buf)) return;
-    pending_geo_.has_cov = true;
+    pending_geo_.cov_received |= COV_BIT_POS;
     pending_geo_.last_update = now();
-    if (pending_geo_.has_pvt) flushPendingGeo();
+    if (pendingGeoComplete()) flushPendingGeo();
+  }
+
+  void handleVelCovGeodetic() {
+    if (!config_.enable_vel_cov_geodetic) return;
+    const uint8_t* p = sbf_body_.data();
+    const size_t len = sbf_body_.size();
+    const uint32_t tow = sbf::pvt::getTowMs(p, len);
+    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.cov_received)) {
+      flushPendingGeo();
+    }
+    pending_geo_.tow_ms = tow;
+    if (!sbf::pvt::parseVelCovGeodetic(p, len, pending_geo_.buf)) return;
+    pending_geo_.cov_received |= COV_BIT_VEL;
+    pending_geo_.last_update = now();
+    if (pendingGeoComplete()) flushPendingGeo();
   }
 
   void handlePvtCartesian() {
@@ -594,14 +652,14 @@ class SbfDriverNode : public rclcpp::Node {
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
-    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.has_cov)) {
+    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.cov_received)) {
       flushPendingXyz();
     }
     pending_xyz_.tow_ms = tow;
     if (!sbf::pvt::parsePVTCartesian(p, len, pending_xyz_.buf)) return;
     pending_xyz_.has_pvt = true;
     pending_xyz_.last_update = now();
-    if (pending_xyz_.has_cov) flushPendingXyz();
+    if (pendingXyzComplete()) flushPendingXyz();
   }
 
   void handlePosCovCartesian() {
@@ -609,19 +667,43 @@ class SbfDriverNode : public rclcpp::Node {
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
-    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.has_cov)) {
+    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.cov_received)) {
       flushPendingXyz();
     }
     pending_xyz_.tow_ms = tow;
     if (!sbf::pvt::parsePosCovCartesian(p, len, pending_xyz_.buf)) return;
-    pending_xyz_.has_cov = true;
+    pending_xyz_.cov_received |= COV_BIT_POS;
     pending_xyz_.last_update = now();
-    if (pending_xyz_.has_pvt) flushPendingXyz();
+    if (pendingXyzComplete()) flushPendingXyz();
+  }
+
+  void handleVelCovCartesian() {
+    if (!config_.enable_vel_cov_cartesian) return;
+    const uint8_t* p = sbf_body_.data();
+    const size_t len = sbf_body_.size();
+    const uint32_t tow = sbf::pvt::getTowMs(p, len);
+    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.cov_received)) {
+      flushPendingXyz();
+    }
+    pending_xyz_.tow_ms = tow;
+    if (!sbf::pvt::parseVelCovCartesian(p, len, pending_xyz_.buf)) return;
+    pending_xyz_.cov_received |= COV_BIT_VEL;
+    pending_xyz_.last_update = now();
+    if (pendingXyzComplete()) flushPendingXyz();
+  }
+
+  // DOP block is independent of the PVT/Cov TOW aggregation: it can be rated
+  // differently and is temporally smooth, so sticky-write the latest value.
+  void handleDop() {
+    if (!config_.enable_dop) return;
+    sbf::pvt::parseDop(sbf_body_.data(), sbf_body_.size(), binary_solution_);
   }
 
   void flushPendingGeo() {
+    const uint8_t expected = pending_geo_.cov_expected;
     if (!pending_geo_.has_pvt) {
-      pending_geo_ = {};  // Cov-only is meaningless; drop it
+      pending_geo_ = {};
+      pending_geo_.cov_expected = expected;  // preserve config
       return;
     }
     // Merge geodetic into binary_solution_ (preserve any ECEF fields from xyz path)
@@ -634,15 +716,19 @@ class SbfDriverNode : public rclcpp::Node {
     binary_solution_.altitude   = pending_geo_.buf.altitude;
     binary_solution_.vel_enu    = pending_geo_.buf.vel_enu;
     binary_solution_.pos_enu_cov = pending_geo_.buf.pos_enu_cov;
+    binary_solution_.vel_enu_cov = pending_geo_.buf.vel_enu_cov;
     finalizeBinarySolutionGeometry(binary_solution_);
     ever_received_binary_ = true;
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
     pending_geo_ = {};
+    pending_geo_.cov_expected = expected;
   }
 
   void flushPendingXyz() {
+    const uint8_t expected = pending_xyz_.cov_expected;
     if (!pending_xyz_.has_pvt) {
       pending_xyz_ = {};
+      pending_xyz_.cov_expected = expected;
       return;
     }
     binary_solution_.status      = pending_xyz_.buf.status;
@@ -652,6 +738,7 @@ class SbfDriverNode : public rclcpp::Node {
     binary_solution_.pos_ecef    = pending_xyz_.buf.pos_ecef;
     binary_solution_.vel_ecef    = pending_xyz_.buf.vel_ecef;
     binary_solution_.pos_cov_ecef = pending_xyz_.buf.pos_cov_ecef;
+    binary_solution_.vel_cov_ecef = pending_xyz_.buf.vel_cov_ecef;
     // LLH not provided here — caller must already have it from PVTGeodetic or
     // we derive it from ECEF.
     double pos[3] = {0};
@@ -664,6 +751,7 @@ class SbfDriverNode : public rclcpp::Node {
     ever_received_binary_ = true;
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
     pending_xyz_ = {};
+    pending_xyz_.cov_expected = expected;
   }
 
   // Warn if BINARY source was selected via YAML but no PVT block ever produced
@@ -842,12 +930,12 @@ class SbfDriverNode : public rclcpp::Node {
   void publishSolution(msg::GnssSolution& sol) {
     int week = 0;
     const double tow = time2gpst(raw_.time, &week);
-    if (week != 0) {
+    if (raw_.time.time != 0 && week > 0) {
       sol.time_week = static_cast<uint16_t>(week);
       sol.time_tow  = tow;
     }
 
-    sol.header.stamp    = (config_.use_gps_timestamp && week != 0)
+    sol.header.stamp    = (config_.use_gps_timestamp && raw_.time.time != 0 && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     sol.header.frame_id = config_.frame_id;
 
@@ -914,7 +1002,7 @@ class SbfDriverNode : public rclcpp::Node {
     const double tow = time2gpst(raw_.time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp    = (config_.use_gps_timestamp && week != 0)
+    msg.header.stamp    = (config_.use_gps_timestamp && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     msg.header.frame_id = config_.frame_id;
     msg.week = static_cast<uint16_t>(week);

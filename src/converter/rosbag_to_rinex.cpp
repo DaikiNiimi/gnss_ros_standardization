@@ -191,7 +191,7 @@ public:
   explicit BagReader(const std::string &raw) {
     rosbag2_storage::StorageOptions sopt;
     sopt.uri = normalizeBagUri(raw);
-    sopt.storage_id = "sqlite3";
+    sopt.storage_id = "";  // auto-detect from metadata.yaml (sqlite3 / mcap)
     rosbag2_cpp::ConverterOptions copt;
     copt.input_serialization_format  = "";
     copt.output_serialization_format = "";

@@ -465,12 +465,12 @@ class UbxDecoderNode : public rclcpp::Node {
   void publishSolution(msg::GnssSolution& sol) {
     int week = 0;
     const double tow = time2gpst(raw_.time, &week);
-    if (week != 0) {
+    if (week > 0) {
       sol.time_week = static_cast<uint16_t>(week);
       sol.time_tow = tow;
     }
 
-    sol.header.stamp    = (use_gps_timestamp_ && week != 0)
+    sol.header.stamp    = (use_gps_timestamp_ && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     sol.header.frame_id = frame_id_;
 
@@ -535,7 +535,7 @@ class UbxDecoderNode : public rclcpp::Node {
     const double tow = time2gpst(raw_.time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp    = (use_gps_timestamp_ && week != 0)
+    msg.header.stamp    = (use_gps_timestamp_ && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     msg.header.frame_id = frame_id_;
     msg.week = static_cast<uint16_t>(week);

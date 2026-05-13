@@ -146,7 +146,7 @@ int main(int argc, char** argv) {
 
   rosbag2_storage::StorageOptions sopt;
   sopt.uri = normalizeBagUri(args.bag_uri);
-  sopt.storage_id = "sqlite3";
+  sopt.storage_id = "";  // auto-detect from metadata.yaml (sqlite3 / mcap)
   rosbag2_cpp::ConverterOptions copt;
 
   rosbag2_cpp::Reader reader;

@@ -74,10 +74,13 @@ sbf_driver_node:
       # When pvt_geodetic=true, pos_cov_geodetic=true is strongly recommended
       # (otherwise pos_enu_cov will be zero). Same applies to pvt_cartesian /
       # pos_cov_cartesian for ECEF.
-      pvt_geodetic: false       # PVTGeodetic   (ID 4007) → LLH + vel_NED
+      pvt_geodetic: false       # PVTGeodetic    (ID 4007) → LLH + vel_NED
       pos_cov_geodetic: false   # PosCovGeodetic (ID 5906) → pos_enu_cov 3x3
-      pvt_cartesian: false      # PVTCartesian  (ID 4006) → ECEF pos + vel
+      vel_cov_geodetic: false   # VelCovGeodetic (ID 5908) → vel_enu_cov 3x3
+      pvt_cartesian: false      # PVTCartesian    (ID 4006) → ECEF pos + vel
       pos_cov_cartesian: false  # PosCovCartesian (ID 5905) → pos_cov_ecef 3x3
+      vel_cov_cartesian: false  # VelCovCartesian (ID 5907) → vel_cov_ecef 3x3
+      dop: false                # DOP            (ID 4001) → pdop/hdop/vdop (+ gdop = sqrt(pdop²+tdop²))
 
       # IMU output (requires AsteRx-i / mosaic-X5 or other receiver with integrated IMU)
       ext_sensor_meas: false   # Uncalibrated raw IMU accel + gyro → /gnss/imu/data_raw

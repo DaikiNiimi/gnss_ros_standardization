@@ -277,8 +277,11 @@ class SbfDecoderNode : public rclcpp::Node {
       case sbf::ID_NAVICNAV:         handleNavicNav();         break;
       case sbf::ID_PVTGEODETIC:      handlePvtGeodetic();      break;
       case sbf::ID_POSCOVGEODETIC:   handlePosCovGeodetic();   break;
+      case sbf::ID_VELCOVGEODETIC:   handleVelCovGeodetic();   break;
       case sbf::ID_PVTCARTESIAN:     handlePvtCartesian();     break;
       case sbf::ID_POSCOVCARTESIAN:  handlePosCovCartesian();  break;
+      case sbf::ID_VELCOVCARTESIAN:  handleVelCovCartesian();  break;
+      case sbf::ID_DOP:              handleDop();              break;
       default: break;
     }
   }
@@ -286,10 +289,18 @@ class SbfDecoderNode : public rclcpp::Node {
   // ============================================================================
   // Binary PVT handlers (per-system TOW aggregation, first-msg source lock)
   // ============================================================================
+  // Decoder is passive: it cannot know which cov blocks the receiver was
+  // configured to emit. Instead, `cov_ever_seen` is a sticky bitmask updated
+  // whenever a cov block arrives — so the flush condition self-calibrates after
+  // the first epoch of each cov type.
+  static constexpr uint8_t COV_BIT_POS = 0x1;
+  static constexpr uint8_t COV_BIT_VEL = 0x2;
+
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
     bool has_pvt{false};
-    bool has_cov{false};
+    uint8_t cov_received{0};
+    uint8_t cov_ever_seen{0};
     msg::GnssSolution buf{};
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
@@ -330,12 +341,21 @@ class SbfDecoderNode : public rclcpp::Node {
     commitSourceLockIfDue();
   }
 
+  bool pendingGeoComplete() const {
+    return pending_geo_.has_pvt &&
+           pending_geo_.cov_received == pending_geo_.cov_ever_seen;
+  }
+  bool pendingXyzComplete() const {
+    return pending_xyz_.has_pvt &&
+           pending_xyz_.cov_received == pending_xyz_.cov_ever_seen;
+  }
+
   void handlePvtGeodetic() {
     startGraceIfNeeded();
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
-    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.has_cov)) {
+    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.cov_received)) {
       flushPendingGeo();
     }
     pending_geo_.tow_ms = tow;
@@ -343,7 +363,7 @@ class SbfDecoderNode : public rclcpp::Node {
     pending_geo_.has_pvt = true;
     pending_geo_.last_update = now();
     markBinarySeen();
-    if (pending_geo_.has_cov) flushPendingGeo();
+    if (pendingGeoComplete()) flushPendingGeo();
   }
 
   void handlePosCovGeodetic() {
@@ -351,15 +371,33 @@ class SbfDecoderNode : public rclcpp::Node {
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
-    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.has_cov)) {
+    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.cov_received)) {
       flushPendingGeo();
     }
     pending_geo_.tow_ms = tow;
     if (!sbf::pvt::parsePosCovGeodetic(p, len, pending_geo_.buf)) return;
-    pending_geo_.has_cov = true;
+    pending_geo_.cov_received |= COV_BIT_POS;
+    pending_geo_.cov_ever_seen |= COV_BIT_POS;
     pending_geo_.last_update = now();
     markBinarySeen();
-    if (pending_geo_.has_pvt) flushPendingGeo();
+    if (pendingGeoComplete()) flushPendingGeo();
+  }
+
+  void handleVelCovGeodetic() {
+    startGraceIfNeeded();
+    const uint8_t* p = sbf_body_.data();
+    const size_t len = sbf_body_.size();
+    const uint32_t tow = sbf::pvt::getTowMs(p, len);
+    if (tow != pending_geo_.tow_ms && (pending_geo_.has_pvt || pending_geo_.cov_received)) {
+      flushPendingGeo();
+    }
+    pending_geo_.tow_ms = tow;
+    if (!sbf::pvt::parseVelCovGeodetic(p, len, pending_geo_.buf)) return;
+    pending_geo_.cov_received |= COV_BIT_VEL;
+    pending_geo_.cov_ever_seen |= COV_BIT_VEL;
+    pending_geo_.last_update = now();
+    markBinarySeen();
+    if (pendingGeoComplete()) flushPendingGeo();
   }
 
   void handlePvtCartesian() {
@@ -367,7 +405,7 @@ class SbfDecoderNode : public rclcpp::Node {
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
-    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.has_cov)) {
+    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.cov_received)) {
       flushPendingXyz();
     }
     pending_xyz_.tow_ms = tow;
@@ -375,7 +413,7 @@ class SbfDecoderNode : public rclcpp::Node {
     pending_xyz_.has_pvt = true;
     pending_xyz_.last_update = now();
     markBinarySeen();
-    if (pending_xyz_.has_cov) flushPendingXyz();
+    if (pendingXyzComplete()) flushPendingXyz();
   }
 
   void handlePosCovCartesian() {
@@ -383,19 +421,48 @@ class SbfDecoderNode : public rclcpp::Node {
     const uint8_t* p = sbf_body_.data();
     const size_t len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
-    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.has_cov)) {
+    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.cov_received)) {
       flushPendingXyz();
     }
     pending_xyz_.tow_ms = tow;
     if (!sbf::pvt::parsePosCovCartesian(p, len, pending_xyz_.buf)) return;
-    pending_xyz_.has_cov = true;
+    pending_xyz_.cov_received |= COV_BIT_POS;
+    pending_xyz_.cov_ever_seen |= COV_BIT_POS;
     pending_xyz_.last_update = now();
     markBinarySeen();
-    if (pending_xyz_.has_pvt) flushPendingXyz();
+    if (pendingXyzComplete()) flushPendingXyz();
+  }
+
+  void handleVelCovCartesian() {
+    startGraceIfNeeded();
+    const uint8_t* p = sbf_body_.data();
+    const size_t len = sbf_body_.size();
+    const uint32_t tow = sbf::pvt::getTowMs(p, len);
+    if (tow != pending_xyz_.tow_ms && (pending_xyz_.has_pvt || pending_xyz_.cov_received)) {
+      flushPendingXyz();
+    }
+    pending_xyz_.tow_ms = tow;
+    if (!sbf::pvt::parseVelCovCartesian(p, len, pending_xyz_.buf)) return;
+    pending_xyz_.cov_received |= COV_BIT_VEL;
+    pending_xyz_.cov_ever_seen |= COV_BIT_VEL;
+    pending_xyz_.last_update = now();
+    markBinarySeen();
+    if (pendingXyzComplete()) flushPendingXyz();
+  }
+
+  // DOP block is independent of the PVT/Cov TOW aggregation: sticky-write the
+  // latest value into binary_solution_; next publish picks it up.
+  void handleDop() {
+    sbf::pvt::parseDop(sbf_body_.data(), sbf_body_.size(), binary_solution_);
   }
 
   void flushPendingGeo() {
-    if (!pending_geo_.has_pvt) { pending_geo_ = {}; return; }
+    const uint8_t ever_seen = pending_geo_.cov_ever_seen;
+    if (!pending_geo_.has_pvt) {
+      pending_geo_ = {};
+      pending_geo_.cov_ever_seen = ever_seen;
+      return;
+    }
     binary_solution_.status      = pending_geo_.buf.status;
     binary_solution_.num_sats    = pending_geo_.buf.num_sats;
     binary_solution_.time_tow    = pending_geo_.buf.time_tow;
@@ -405,13 +472,20 @@ class SbfDecoderNode : public rclcpp::Node {
     binary_solution_.altitude    = pending_geo_.buf.altitude;
     binary_solution_.vel_enu     = pending_geo_.buf.vel_enu;
     binary_solution_.pos_enu_cov = pending_geo_.buf.pos_enu_cov;
+    binary_solution_.vel_enu_cov = pending_geo_.buf.vel_enu_cov;
     finalizeBinarySolutionGeometry(binary_solution_);
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
     pending_geo_ = {};
+    pending_geo_.cov_ever_seen = ever_seen;
   }
 
   void flushPendingXyz() {
-    if (!pending_xyz_.has_pvt) { pending_xyz_ = {}; return; }
+    const uint8_t ever_seen = pending_xyz_.cov_ever_seen;
+    if (!pending_xyz_.has_pvt) {
+      pending_xyz_ = {};
+      pending_xyz_.cov_ever_seen = ever_seen;
+      return;
+    }
     binary_solution_.status        = pending_xyz_.buf.status;
     binary_solution_.num_sats      = pending_xyz_.buf.num_sats;
     binary_solution_.time_tow      = pending_xyz_.buf.time_tow;
@@ -419,6 +493,7 @@ class SbfDecoderNode : public rclcpp::Node {
     binary_solution_.pos_ecef      = pending_xyz_.buf.pos_ecef;
     binary_solution_.vel_ecef      = pending_xyz_.buf.vel_ecef;
     binary_solution_.pos_cov_ecef  = pending_xyz_.buf.pos_cov_ecef;
+    binary_solution_.vel_cov_ecef  = pending_xyz_.buf.vel_cov_ecef;
     double pos[3] = {0};
     double r[3] = {binary_solution_.pos_ecef.x, binary_solution_.pos_ecef.y, binary_solution_.pos_ecef.z};
     ecef2pos(r, pos);
@@ -428,6 +503,7 @@ class SbfDecoderNode : public rclcpp::Node {
     binary_solution_.altitude  = pos[2];
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
     pending_xyz_ = {};
+    pending_xyz_.cov_ever_seen = ever_seen;
   }
 
   static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
@@ -593,12 +669,12 @@ class SbfDecoderNode : public rclcpp::Node {
   void publishSolution(msg::GnssSolution& sol) {
     int week = 0;
     const double tow = time2gpst(raw_.time, &week);
-    if (week != 0) {
+    if (raw_.time.time != 0 && week > 0) {
       sol.time_week = static_cast<uint16_t>(week);
       sol.time_tow  = tow;
     }
 
-    sol.header.stamp    = (use_gps_timestamp_ && week != 0)
+    sol.header.stamp    = (use_gps_timestamp_ && raw_.time.time != 0 && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     sol.header.frame_id = frame_id_;
 
@@ -665,7 +741,7 @@ class SbfDecoderNode : public rclcpp::Node {
     const double tow = time2gpst(raw_.time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp    = (use_gps_timestamp_ && week != 0)
+    msg.header.stamp    = (use_gps_timestamp_ && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
     msg.header.frame_id = frame_id_;
     msg.week = static_cast<uint16_t>(week);

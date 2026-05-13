@@ -61,13 +61,15 @@ constexpr uint16_t ID_PVTCARTESIAN      = 4006;
 constexpr uint16_t ID_PVTGEODETIC       = 4007;
 constexpr uint16_t ID_POSCOVCARTESIAN   = 5905;
 constexpr uint16_t ID_POSCOVGEODETIC    = 5906;
+constexpr uint16_t ID_VELCOVCARTESIAN   = 5907;
+constexpr uint16_t ID_VELCOVGEODETIC    = 5908;
+constexpr uint16_t ID_DOP               = 4001;
 
 // INS / IMU Blocks (AsteRx-i / mosaic-X5 with integrated IMU)
 constexpr uint16_t ID_EXTSENSORMEAS     = 4050;  // Raw accelerometer + gyro measurements
 
 // Status & Other Blocks
 constexpr uint16_t ID_RECEIVERSTATUS    = 4014;
-constexpr uint16_t ID_QUALITYIND        = 4001;
 constexpr uint16_t ID_RXSETUP           = 4012;
 constexpr uint16_t ID_CHANSTATUS        = 4013;
 
@@ -95,11 +97,13 @@ constexpr const char* BLOCK_NAVICNAV  = "NavICNav";
 
 constexpr const char* BLOCK_PVTGEODETIC = "PVTGeodetic";
 constexpr const char* BLOCK_POSCOVGEODETIC = "PosCovGeodetic";
+constexpr const char* BLOCK_VELCOVGEODETIC = "VelCovGeodetic";
 constexpr const char* BLOCK_PVTCARTESIAN = "PVTCartesian";
 constexpr const char* BLOCK_POSCOVCARTESIAN = "PosCovCartesian";
+constexpr const char* BLOCK_VELCOVCARTESIAN = "VelCovCartesian";
+constexpr const char* BLOCK_DOP = "DOP";
 constexpr const char* BLOCK_EXTSENSORMEAS = "ExtSensorMeas";
 constexpr const char* BLOCK_RECEIVERSTATUS = "ReceiverStatus";
-constexpr const char* BLOCK_QUALITYIND = "QualityInd";
 
 // =============================================================================
 // SBF Command Strings
@@ -187,6 +191,34 @@ constexpr int POSCOV_XYZ_OFFSET_XZ = 28;
 constexpr int POSCOV_XYZ_OFFSET_YZ = 36;
 constexpr int POSCOV_XYZ_MIN_LEN   = 48;
 
+// VelCovGeodetic body field offsets (variances in (m/s)²; Vn≡N, Ve≡E, Vu≡U)
+constexpr int VELCOV_GEO_OFFSET_VNVN = 8;
+constexpr int VELCOV_GEO_OFFSET_VEVE = 12;
+constexpr int VELCOV_GEO_OFFSET_VUVU = 16;
+constexpr int VELCOV_GEO_OFFSET_VNVE = 24;
+constexpr int VELCOV_GEO_OFFSET_VNVU = 28;
+constexpr int VELCOV_GEO_OFFSET_VEVU = 36;
+constexpr int VELCOV_GEO_MIN_LEN     = 48;
+
+// VelCovCartesian body field offsets
+constexpr int VELCOV_XYZ_OFFSET_VXVX = 8;
+constexpr int VELCOV_XYZ_OFFSET_VYVY = 12;
+constexpr int VELCOV_XYZ_OFFSET_VZVZ = 16;
+constexpr int VELCOV_XYZ_OFFSET_VXVY = 24;
+constexpr int VELCOV_XYZ_OFFSET_VXVZ = 28;
+constexpr int VELCOV_XYZ_OFFSET_VYVZ = 36;
+constexpr int VELCOV_XYZ_MIN_LEN     = 48;
+
+// DOP body field offsets (Septentrio block 4001).
+// Layout: TOW(u4)+WNc(u2)+NrSV(u1)+Reserved(u1)+PDOP(u2)+TDOP(u2)+HDOP(u2)+VDOP(u2)+HPL(f4)+VPL(f4)
+// PDOP/TDOP/HDOP/VDOP are u16 scaled by 0.01; 0xFFFF = Not-Available.
+constexpr int DOP_OFFSET_PDOP = 8;
+constexpr int DOP_OFFSET_TDOP = 10;
+constexpr int DOP_OFFSET_HDOP = 12;
+constexpr int DOP_OFFSET_VDOP = 14;
+constexpr int DOP_MIN_LEN     = 16;
+constexpr uint16_t DOP_NOT_AVAILABLE = 0xFFFF;
+
 // SBF Mode field (lower 4 bits = PVT solution type)
 constexpr uint8_t MODE_NO_PVT       = 0;
 constexpr uint8_t MODE_STANDALONE   = 1;
@@ -243,6 +275,7 @@ inline bool parsePVTGeodetic(const uint8_t* p, size_t len,
   const uint32_t tow_ms = read_le<uint32_t>(p + SBF_BODY_OFFSET_TOW);
   const uint16_t wnc    = read_le<uint16_t>(p + SBF_BODY_OFFSET_WNC);
   const uint8_t  mode   = p[SBF_BODY_OFFSET_MODE];
+  if ((mode & 0x0F) == MODE_NO_PVT) return false;
 
   const double lat_rad = read_le<double>(p + PVT_GEO_OFFSET_LAT);
   const double lon_rad = read_le<double>(p + PVT_GEO_OFFSET_LON);
@@ -275,6 +308,7 @@ inline bool parsePVTCartesian(const uint8_t* p, size_t len,
   const uint32_t tow_ms = read_le<uint32_t>(p + SBF_BODY_OFFSET_TOW);
   const uint16_t wnc    = read_le<uint16_t>(p + SBF_BODY_OFFSET_WNC);
   const uint8_t  mode   = p[SBF_BODY_OFFSET_MODE];
+  if ((mode & 0x0F) == MODE_NO_PVT) return false;
 
   const double x  = read_le<double>(p + PVT_XYZ_OFFSET_X);
   const double y  = read_le<double>(p + PVT_XYZ_OFFSET_Y);
@@ -342,6 +376,76 @@ inline bool parsePosCovCartesian(const uint8_t* p, size_t len,
   out.pos_cov_ecef[6] = c_xz;
   out.pos_cov_ecef[7] = c_yz;
   out.pos_cov_ecef[8] = c_zz;
+  return true;
+}
+
+/// Parse VelCovGeodetic body into GnssSolution's vel_enu_cov (row-major E,N,U).
+/// Septentrio convention: Vn≡N, Ve≡E, Vu≡U.
+inline bool parseVelCovGeodetic(const uint8_t* p, size_t len,
+                                gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(VELCOV_GEO_MIN_LEN)) return false;
+  const float c_vn_vn = read_le<float>(p + VELCOV_GEO_OFFSET_VNVN);
+  const float c_ve_ve = read_le<float>(p + VELCOV_GEO_OFFSET_VEVE);
+  const float c_vu_vu = read_le<float>(p + VELCOV_GEO_OFFSET_VUVU);
+  const float c_vn_ve = read_le<float>(p + VELCOV_GEO_OFFSET_VNVE);
+  const float c_vn_vu = read_le<float>(p + VELCOV_GEO_OFFSET_VNVU);
+  const float c_ve_vu = read_le<float>(p + VELCOV_GEO_OFFSET_VEVU);
+
+  // E↔Ve, N↔Vn, U↔Vu
+  out.vel_enu_cov[0] = c_ve_ve;  // EE
+  out.vel_enu_cov[1] = c_vn_ve;  // EN
+  out.vel_enu_cov[2] = c_ve_vu;  // EU
+  out.vel_enu_cov[3] = c_vn_ve;  // NE
+  out.vel_enu_cov[4] = c_vn_vn;  // NN
+  out.vel_enu_cov[5] = c_vn_vu;  // NU
+  out.vel_enu_cov[6] = c_ve_vu;  // UE
+  out.vel_enu_cov[7] = c_vn_vu;  // UN
+  out.vel_enu_cov[8] = c_vu_vu;  // UU
+  return true;
+}
+
+/// Parse VelCovCartesian body into GnssSolution's vel_cov_ecef (row-major).
+inline bool parseVelCovCartesian(const uint8_t* p, size_t len,
+                                 gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(VELCOV_XYZ_MIN_LEN)) return false;
+  const float c_vx_vx = read_le<float>(p + VELCOV_XYZ_OFFSET_VXVX);
+  const float c_vy_vy = read_le<float>(p + VELCOV_XYZ_OFFSET_VYVY);
+  const float c_vz_vz = read_le<float>(p + VELCOV_XYZ_OFFSET_VZVZ);
+  const float c_vx_vy = read_le<float>(p + VELCOV_XYZ_OFFSET_VXVY);
+  const float c_vx_vz = read_le<float>(p + VELCOV_XYZ_OFFSET_VXVZ);
+  const float c_vy_vz = read_le<float>(p + VELCOV_XYZ_OFFSET_VYVZ);
+
+  out.vel_cov_ecef[0] = c_vx_vx;
+  out.vel_cov_ecef[1] = c_vx_vy;
+  out.vel_cov_ecef[2] = c_vx_vz;
+  out.vel_cov_ecef[3] = c_vx_vy;
+  out.vel_cov_ecef[4] = c_vy_vy;
+  out.vel_cov_ecef[5] = c_vy_vz;
+  out.vel_cov_ecef[6] = c_vx_vz;
+  out.vel_cov_ecef[7] = c_vy_vz;
+  out.vel_cov_ecef[8] = c_vz_vz;
+  return true;
+}
+
+/// Parse DOP body. Fills gdop/pdop/hdop/vdop. GDOP is derived as sqrt(PDOP²+TDOP²)
+/// since the Septentrio DOP block exposes only PDOP/TDOP/HDOP/VDOP.
+inline bool parseDop(const uint8_t* p, size_t len,
+                     gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(DOP_MIN_LEN)) return false;
+  const uint16_t pdop_raw = read_le<uint16_t>(p + DOP_OFFSET_PDOP);
+  const uint16_t tdop_raw = read_le<uint16_t>(p + DOP_OFFSET_TDOP);
+  const uint16_t hdop_raw = read_le<uint16_t>(p + DOP_OFFSET_HDOP);
+  const uint16_t vdop_raw = read_le<uint16_t>(p + DOP_OFFSET_VDOP);
+
+  const float pdop = (pdop_raw == DOP_NOT_AVAILABLE) ? 0.0f : pdop_raw * 0.01f;
+  const float tdop = (tdop_raw == DOP_NOT_AVAILABLE) ? 0.0f : tdop_raw * 0.01f;
+  const float hdop = (hdop_raw == DOP_NOT_AVAILABLE) ? 0.0f : hdop_raw * 0.01f;
+  const float vdop = (vdop_raw == DOP_NOT_AVAILABLE) ? 0.0f : vdop_raw * 0.01f;
+
+  out.pdop = pdop;
+  out.hdop = hdop;
+  out.vdop = vdop;
+  out.gdop = (pdop > 0.0f || tdop > 0.0f) ? std::sqrt(pdop * pdop + tdop * tdop) : 0.0f;
   return true;
 }
 

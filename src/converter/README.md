@@ -4,6 +4,25 @@ Offline conversion tools between ROS 2 bag files and the standard GNSS file
 formats consumed by post-processing tools (RTKLIB `rnx2rtkp`, RTKPOST,
 teqc, etc.).
 
+## ROS 2 bag storage formats (Humble vs Jazzy)
+
+ROS 2 distributions differ in the default rosbag2 storage backend:
+
+| Distro | Default storage | Typical file |
+|---|---|---|
+| Humble | `sqlite3` | `*.db3` inside the bag directory |
+| Jazzy  | `mcap`    | `*.mcap` inside the bag directory |
+
+The writer tools (`rinex_to_rosbag`, `pos_to_rosbag`) accept a `--storage` flag
+(`mcap` or `sqlite3`). When omitted the storage is chosen from the `--out`
+extension (`.mcap` → mcap, `.db3` → sqlite3); otherwise the distro default is
+used. The reader tools (`rosbag_to_rinex`, `rosbag_to_pos`) auto-detect the
+storage backend from the bag's `metadata.yaml` and need no flag.
+
+Running mcap on Humble requires the mcap storage plugin
+(`apt install ros-humble-rosbag2-storage-mcap`); on Jazzy it is part of the
+default install.
+
 | Executable | Direction | Source |
 |---|---|---|
 | `rosbag_to_rinex` | rosbag (`/gnss/observation`, `/gnss/ephemeris`) → RINEX OBS + NAV | [`rosbag_to_rinex.cpp`](rosbag_to_rinex.cpp) |
@@ -56,7 +75,8 @@ ros2 run gnss_ros_standardization rinex_to_rosbag \
 |---|---|
 | `--obs` | Input OBS file (required) |
 | `--nav` | Input NAV file (may repeat for multi-constellation NAV split files) |
-| `--out` | Output bag path |
+| `--out` | Output bag path (extension `.mcap` / `.db3` selects storage; otherwise distro default) |
+| `--storage` | Force `mcap` or `sqlite3` (overrides extension auto-detection) |
 
 Publishes `/gnss/observation` and `/gnss/ephemeris` into the bag.
 
@@ -90,8 +110,9 @@ ros2 run gnss_ros_standardization pos_to_rosbag \
 | Flag | Description |
 |---|---|
 | `--pos` | Input `.pos` file (required) |
-| `--out` | Output bag path |
+| `--out` | Output bag path (extension `.mcap` / `.db3` selects storage; otherwise distro default) |
 | `--topic` | `GnssSolution` topic to publish into the bag |
+| `--storage` | Force `mcap` or `sqlite3` (overrides extension auto-detection) |
 
 Both LLH and ECEF `.pos` formats are accepted.
 

@@ -10,6 +10,7 @@
 #include <string>
 #include <map>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <type_traits>
@@ -28,6 +29,7 @@ struct Args {
   std::string obs_path;
   std::vector<std::string> nav_paths;
   std::string output_bag = "rinex_converted";
+  std::string storage_id;  // empty => auto-detect from --out extension or distro default
 };
 
 Args parseArgs(const std::vector<std::string>& args) {
@@ -39,9 +41,25 @@ Args parseArgs(const std::vector<std::string>& args) {
       a.nav_paths.push_back(args[++i]);
     } else if (args[i] == "--out" && i + 1 < args.size()) {
       a.output_bag = args[++i];
+    } else if (args[i] == "--storage" && i + 1 < args.size()) {
+      a.storage_id = args[++i];
     }
   }
   return a;
+}
+
+// Resolve rosbag2 storage_id: explicit override > extension auto-detect > "" (distro default).
+static std::string resolveStorageId(const std::string& override_id,
+                                    const std::string& output_uri) {
+  if (!override_id.empty()) return override_id;
+  auto pos = output_uri.find_last_of('.');
+  if (pos == std::string::npos) return "";
+  std::string ext = output_uri.substr(pos);
+  std::transform(ext.begin(), ext.end(), ext.begin(),
+                 [](unsigned char c){ return std::tolower(c); });
+  if (ext == ".mcap") return "mcap";
+  if (ext == ".db3")  return "sqlite3";
+  return "";
 }
 
 rclcpp::Time toRosTime(gtime_t t) {
@@ -104,7 +122,7 @@ int main(int argc, char** argv) {
   Args args = parseArgs(args_vec);
 
   if (args.obs_path.empty()) {
-    std::cerr << "Usage: rinex_to_rosbag --obs <obs_file> [--nav <nav_file> ...] [--out <bag_path>]\n";
+    std::cerr << "Usage: rinex_to_rosbag --obs <obs_file> [--nav <nav_file> ...] [--out <bag_path>] [--storage mcap|sqlite3]\n";
     return 1;
   }
 
@@ -153,7 +171,7 @@ int main(int argc, char** argv) {
   rosbag2_cpp::Writer writer;
   rosbag2_storage::StorageOptions storage_opts;
   storage_opts.uri = args.output_bag;
-  storage_opts.storage_id = "sqlite3";
+  storage_opts.storage_id = resolveStorageId(args.storage_id, args.output_bag);
   
   rosbag2_cpp::ConverterOptions converter_opts;
   converter_opts.input_serialization_format = "cdr";

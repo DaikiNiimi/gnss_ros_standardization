@@ -13,6 +13,7 @@
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -28,6 +29,7 @@ struct Args {
   std::string pos_path;
   std::string output_bag = "pos_converted";
   std::string topic = "/gnss/solution";
+  std::string storage_id;  // empty => auto-detect from --out extension or distro default
 };
 
 static Args parseArgs(int argc, char** argv) {
@@ -38,12 +40,27 @@ static Args parseArgs(int argc, char** argv) {
       if (i + 1 >= argc) throw std::runtime_error("missing value for " + s);
       return std::string(argv[++i]);
     };
-    if      (s == "--pos")   a.pos_path    = next();
-    else if (s == "--out")   a.output_bag  = next();
-    else if (s == "--topic") a.topic       = next();
+    if      (s == "--pos")     a.pos_path    = next();
+    else if (s == "--out")     a.output_bag  = next();
+    else if (s == "--topic")   a.topic       = next();
+    else if (s == "--storage") a.storage_id  = next();
     else std::fprintf(stderr, "[warn] unknown arg %s\n", s.c_str());
   }
   return a;
+}
+
+// Resolve rosbag2 storage_id: explicit override > extension auto-detect > "" (distro default).
+static std::string resolveStorageId(const std::string& override_id,
+                                    const std::string& output_uri) {
+  if (!override_id.empty()) return override_id;
+  auto pos = output_uri.find_last_of('.');
+  if (pos == std::string::npos) return "";
+  std::string ext = output_uri.substr(pos);
+  std::transform(ext.begin(), ext.end(), ext.begin(),
+                 [](unsigned char c){ return std::tolower(c); });
+  if (ext == ".mcap") return "mcap";
+  if (ext == ".db3")  return "sqlite3";
+  return "";
 }
 
 static rclcpp::Time toRosTime(gtime_t t) {
@@ -95,7 +112,7 @@ int main(int argc, char** argv) {
   if (args.pos_path.empty()) {
     std::fprintf(stderr,
       "Usage: pos_to_rosbag --pos <input.pos> [--out <bag>] "
-      "[--topic /gnss/solution]\n");
+      "[--topic /gnss/solution] [--storage mcap|sqlite3]\n");
     return 2;
   }
 
@@ -133,7 +150,7 @@ int main(int argc, char** argv) {
   rosbag2_cpp::Writer writer;
   rosbag2_storage::StorageOptions storage_opts;
   storage_opts.uri = args.output_bag;
-  storage_opts.storage_id = "sqlite3";
+  storage_opts.storage_id = resolveStorageId(args.storage_id, args.output_bag);
   rosbag2_cpp::ConverterOptions converter_opts;
   converter_opts.input_serialization_format  = "cdr";
   converter_opts.output_serialization_format = "cdr";
