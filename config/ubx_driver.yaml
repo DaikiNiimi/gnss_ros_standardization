@@ -31,16 +31,16 @@ ubx_driver_node:
     imu_raw_topic: "/gnss/imu/data_raw"  # ESF-RAW (uncalibrated)
     
     # ENU local origin settings
-    auto_origin: true
-    origin:
-      latitude: 0.0
-      longitude: 0.0
-      altitude: 0.0
+    auto_origin: true              # false: use origin below; true: first valid fix
+    origin: [0.0, 0.0, 0.0]       # [lat_deg, lon_deg, alt_m (ellipsoidal)]
     
     # Send configuration commands on startup
     # Set to false to use the receiver's current configuration as-is
     # (equivalent to using ubx_decoder_node for decode-only operation)
     configure_on_startup: true
+
+    # Use GPS week/tow for message header stamps instead of system clock
+    use_gps_timestamp: false
     
     # Dynamic platform model
     # Options: portable, stationary, pedestrian, automotive, sea,

@@ -94,6 +94,12 @@ struct SbfConfig {
   double ephemeris_max_age_s{7200.0};
 
   bool use_gps_timestamp{false};
+
+  // ENU local origin
+  bool auto_origin{true};
+  double origin_latitude{0.0};
+  double origin_longitude{0.0};
+  double origin_altitude{0.0};
 };
 
 /// @brief ROS 2 driver node for Septentrio GNSS receivers
@@ -164,6 +170,8 @@ class SbfDriverNode : public rclcpp::Node {
     declare_parameter<double>("ephemeris.snapshot_period_s", config_.ephemeris_snapshot_period_s);
     declare_parameter<double>("ephemeris.max_age_s",         config_.ephemeris_max_age_s);
     declare_parameter<bool>("use_gps_timestamp",             config_.use_gps_timestamp);
+    declare_parameter<bool>("auto_origin",                   config_.auto_origin);
+    declare_parameter<std::vector<double>>("origin",         {0.0, 0.0, 0.0});
 
     config_.stream_path          = get_parameter("stream_path").as_string();
     config_.frame_id             = get_parameter("frame_id").as_string();
@@ -202,6 +210,15 @@ class SbfDriverNode : public rclcpp::Node {
     config_.ephemeris_snapshot_period_s = get_parameter("ephemeris.snapshot_period_s").as_double();
     config_.ephemeris_max_age_s         = get_parameter("ephemeris.max_age_s").as_double();
     config_.use_gps_timestamp           = get_parameter("use_gps_timestamp").as_bool();
+    config_.auto_origin                 = get_parameter("auto_origin").as_bool();
+    {
+      const auto v = get_parameter("origin").as_double_array();
+      if (v.size() == 3) {
+        config_.origin_latitude  = v[0];
+        config_.origin_longitude = v[1];
+        config_.origin_altitude  = v[2];
+      }
+    }
 
     eph_store_.setSnapshotPeriod(config_.ephemeris_snapshot_period_s);
     eph_store_.setMaxAge(config_.ephemeris_max_age_s);
@@ -231,6 +248,48 @@ class SbfDriverNode : public rclcpp::Node {
     eph_pub_          = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(1).transient_local());
     sol_pub_          = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
     imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
+
+    if (!config_.auto_origin) {
+      if (config_.origin_latitude == 0.0 && config_.origin_longitude == 0.0) {
+        RCLCPP_WARN(get_logger(),
+          "auto_origin=false but origin is [0,0,0] — falling back to auto (first fix)");
+      } else {
+        local_origin_pos_[0] = config_.origin_latitude  * (M_PI / 180.0);
+        local_origin_pos_[1] = config_.origin_longitude * (M_PI / 180.0);
+        local_origin_pos_[2] = config_.origin_altitude;
+        pos2ecef(local_origin_pos_, local_origin_ecef_);
+        has_local_origin_ = true;
+        RCLCPP_INFO(get_logger(), "ENU origin set from config: lat=%.6f lon=%.6f alt=%.2f",
+          config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
+      }
+    }
+    logEnabledMessages();
+  }
+
+  void logEnabledMessages() {
+    auto on = [](bool v) { return v ? "ON" : "OFF"; };
+    RCLCPP_INFO(get_logger(), "Enabled messages:");
+    RCLCPP_INFO(get_logger(), "  Observation  : MeasEpoch=%s", on(config_.enable_meas_epoch));
+    RCLCPP_INFO(get_logger(), "  Navigation   : GPS=%s GLO=%s GAL=%s BDS=%s QZS=%s NavIC=%s",
+      on(config_.enable_gps_nav), on(config_.enable_glo_nav), on(config_.enable_gal_nav),
+      on(config_.enable_bds_nav), on(config_.enable_qzs_nav), on(config_.enable_navic_nav));
+    RCLCPP_INFO(get_logger(), "  Nav (raw)    : GPS=%s GLO=%s GAL=%s BDS=%s QZS=%s NavIC=%s",
+      on(config_.enable_gps_nav_raw), on(config_.enable_glo_nav_raw), on(config_.enable_gal_nav_raw),
+      on(config_.enable_bds_nav_raw), on(config_.enable_qzs_nav_raw), on(config_.enable_navic_nav_raw));
+    RCLCPP_INFO(get_logger(), "  PVT (binary) : PVTGeodetic=%s PosCovGeodetic=%s PVTCartesian=%s PosCovCartesian=%s",
+      on(config_.enable_pvt_geodetic), on(config_.enable_pos_cov_geodetic),
+      on(config_.enable_pvt_cartesian), on(config_.enable_pos_cov_cartesian));
+    RCLCPP_INFO(get_logger(), "  NMEA         : GGA=%s RMC=%s GSA=%s GST=%s",
+      on(config_.enable_nmea_gga), on(config_.enable_nmea_rmc),
+      on(config_.enable_nmea_gsa), on(config_.enable_nmea_gst));
+    RCLCPP_INFO(get_logger(), "  IMU          : ExtSensorMeas=%s", on(config_.enable_ext_sensor_meas));
+    RCLCPP_INFO(get_logger(), "  GPS timestamp : %s", on(config_.use_gps_timestamp));
+    if (!config_.auto_origin && (config_.origin_latitude != 0.0 || config_.origin_longitude != 0.0)) {
+      RCLCPP_INFO(get_logger(), "  ENU origin    : fixed (lat=%.6f lon=%.6f alt=%.2f)",
+        config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
+    } else {
+      RCLCPP_INFO(get_logger(), "  ENU origin    : auto (first valid solution)");
+    }
   }
 
   void initializeDecoder() {
@@ -410,7 +469,6 @@ class SbfDriverNode : public rclcpp::Node {
           while (!trimmed.empty() && (trimmed.back() == '\n' || trimmed.back() == '\r')) {
             trimmed.pop_back();
           }
-          RCLCPP_DEBUG(get_logger(), "NMEA recv: %s", trimmed.c_str());
           handleNmeaSentence(nmea_buffer_);
           nmea_buffer_.clear();
         } else if (nmea_buffer_.size() > kNmeaMaxLineLen) {

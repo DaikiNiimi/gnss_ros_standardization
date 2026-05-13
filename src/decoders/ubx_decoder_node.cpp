@@ -83,11 +83,20 @@ class UbxDecoderNode : public rclcpp::Node {
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
     declare_parameter<double>("ephemeris.max_age_s", 7200.0);
     declare_parameter<bool>("use_gps_timestamp", false);
+    declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
 
     frame_id_ = get_parameter("frame_id").as_string();
     use_gps_timestamp_ = get_parameter("use_gps_timestamp").as_bool();
+    {
+      const auto v = get_parameter("origin").as_double_array();
+      if (v.size() == 3) {
+        origin_latitude_  = v[0];
+        origin_longitude_ = v[1];
+        origin_altitude_  = v[2];
+      }
+    }
   }
 
   void initializePublishers() {
@@ -96,6 +105,29 @@ class UbxDecoderNode : public rclcpp::Node {
     sol_pub_     = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
     imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_topic").as_string(), 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
+
+    if (origin_latitude_ != 0.0 || origin_longitude_ != 0.0) {
+      local_origin_pos_[0] = origin_latitude_  * (M_PI / 180.0);
+      local_origin_pos_[1] = origin_longitude_ * (M_PI / 180.0);
+      local_origin_pos_[2] = origin_altitude_;
+      pos2ecef(local_origin_pos_, local_origin_ecef_);
+      has_local_origin_ = true;
+      RCLCPP_INFO(get_logger(), "ENU origin set from config: lat=%.6f lon=%.6f alt=%.2f",
+        origin_latitude_, origin_longitude_, origin_altitude_);
+    }
+    logConfiguration();
+  }
+
+  void logConfiguration() {
+    auto on = [](bool v) { return v ? "ON" : "OFF"; };
+    RCLCPP_INFO(get_logger(), "Configuration:");
+    RCLCPP_INFO(get_logger(), "  GPS timestamp : %s", on(use_gps_timestamp_));
+    if (origin_latitude_ != 0.0 || origin_longitude_ != 0.0) {
+      RCLCPP_INFO(get_logger(), "  ENU origin    : fixed (lat=%.6f lon=%.6f alt=%.2f)",
+        origin_latitude_, origin_longitude_, origin_altitude_);
+    } else {
+      RCLCPP_INFO(get_logger(), "  ENU origin    : auto (first valid solution)");
+    }
   }
 
   void initializeDecoder() {
@@ -606,6 +638,9 @@ class UbxDecoderNode : public rclcpp::Node {
   bool                   saw_binary_during_grace_{false};
 
   // ENU origin
+  double origin_latitude_{0.0};
+  double origin_longitude_{0.0};
+  double origin_altitude_{0.0};
   bool   has_local_origin_{false};
   double local_origin_ecef_[3]{0.0};
   double local_origin_pos_[3]{0.0};

@@ -461,19 +461,10 @@ bool NmeaParser::parseSentence(const std::string& sentence, gnss_ros_standardiza
 }
 
 bool NmeaParser::parseGga(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution) {
-  RCLCPP_DEBUG(rclcpp::get_logger("nmea_parser"),
-    "parseGga: nfields=%zu quality='%s' lat='%s'%s lon='%s'%s",
-    fields.size(),
-    fields.size() > 6  ? fields[6].c_str()  : "?",
-    fields.size() > 2  ? fields[2].c_str()  : "?",
-    fields.size() > 3  ? fields[3].c_str()  : "",
-    fields.size() > 4  ? fields[4].c_str()  : "?",
-    fields.size() > 5  ? fields[5].c_str()  : "");
-
   if (fields.size() < 15) return false;
 
   int status = parseInteger(fields[6]);
-  
+
   // Set ROS STATUS
   switch (status) {
     case 0: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_NONE; break;
@@ -485,13 +476,17 @@ bool NmeaParser::parseGga(const std::vector<std::string>& fields, gnss_ros_stand
     default: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_NONE; break;
   }
 
-  if (solution.status == gnss_ros_standardization::msg::GnssSolution::STATUS_NONE) {
-    return true; // Still return true so the node emits the un-fixed status
-  }
-
-  // Extract lat, lon, alt
+  // Extract lat, lon, alt regardless of quality — receiver may output
+  // valid coordinates even with quality=0 (e.g. Septentrio with certain configs).
   double lat = parseCoordinate(fields[2], fields[3]);
   double lon = parseCoordinate(fields[4], fields[5]);
+
+  // Guard: if both lat and lon are 0, the coordinate fields were empty (no fix reported).
+  // Skip ECEF computation to avoid storing a bogus origin near (6378137, 0, 0).
+  if (lat == 0.0 && lon == 0.0) {
+    return solution.status != gnss_ros_standardization::msg::GnssSolution::STATUS_NONE;
+  }
+
   double msl_alt = parseDouble(fields[9]);
   double geoid_sep = parseDouble(fields[11]);
   double ell_alt = msl_alt + geoid_sep;
@@ -504,7 +499,7 @@ bool NmeaParser::parseGga(const std::vector<std::string>& fields, gnss_ros_stand
   double pos[3] = {lat * (M_PI/180.0), lon * (M_PI/180.0), ell_alt};
   double rr[3] = {0};
   pos2ecef(pos, rr);
-  
+
   solution.pos_ecef.x = rr[0];
   solution.pos_ecef.y = rr[1];
   solution.pos_ecef.z = rr[2];

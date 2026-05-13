@@ -79,7 +79,16 @@ class NovatelDecoderNode : public rclcpp::Node {
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
     declare_parameter<double>("ephemeris.max_age_s", 7200.0);
     declare_parameter<bool>("use_gps_timestamp", false);
+    declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
     use_gps_timestamp_ = get_parameter("use_gps_timestamp").as_bool();
+    {
+      const auto v = get_parameter("origin").as_double_array();
+      if (v.size() == 3) {
+        origin_latitude_  = v[0];
+        origin_longitude_ = v[1];
+        origin_altitude_  = v[2];
+      }
+    }
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
 
@@ -100,6 +109,35 @@ class NovatelDecoderNode : public rclcpp::Node {
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
     imu_scale_override_accel_ = get_parameter("imu_scale_override.accel").as_double();
     imu_scale_override_gyro_  = get_parameter("imu_scale_override.gyro").as_double();
+
+    if (origin_latitude_ != 0.0 || origin_longitude_ != 0.0) {
+      local_origin_pos_[0] = origin_latitude_  * (M_PI / 180.0);
+      local_origin_pos_[1] = origin_longitude_ * (M_PI / 180.0);
+      local_origin_pos_[2] = origin_altitude_;
+      pos2ecef(local_origin_pos_, local_origin_ecef_);
+      has_local_origin_ = true;
+      RCLCPP_INFO(get_logger(), "ENU origin set from config: lat=%.6f lon=%.6f alt=%.2f",
+        origin_latitude_, origin_longitude_, origin_altitude_);
+    }
+    logConfiguration();
+  }
+
+  void logConfiguration() {
+    auto on = [](bool v) { return v ? "ON" : "OFF"; };
+    RCLCPP_INFO(get_logger(), "Configuration:");
+    RCLCPP_INFO(get_logger(), "  GPS timestamp : %s", on(use_gps_timestamp_));
+    if (origin_latitude_ != 0.0 || origin_longitude_ != 0.0) {
+      RCLCPP_INFO(get_logger(), "  ENU origin    : fixed (lat=%.6f lon=%.6f alt=%.2f)",
+        origin_latitude_, origin_longitude_, origin_altitude_);
+    } else {
+      RCLCPP_INFO(get_logger(), "  ENU origin    : auto (first valid solution)");
+    }
+    if (imu_scale_override_accel_ != 0.0 && imu_scale_override_gyro_ != 0.0) {
+      RCLCPP_INFO(get_logger(), "  IMU scale     : override (accel=%.4e gyro=%.4e)",
+        imu_scale_override_accel_, imu_scale_override_gyro_);
+    } else {
+      RCLCPP_INFO(get_logger(), "  IMU scale     : auto (by IMU type at runtime)");
+    }
   }
 
   void initializeDecoder() {
@@ -605,6 +643,9 @@ class NovatelDecoderNode : public rclcpp::Node {
   bool                   saw_binary_during_grace_{false};
 
   // ENU local origin
+  double origin_latitude_{0.0};
+  double origin_longitude_{0.0};
+  double origin_altitude_{0.0};
   bool   has_local_origin_{false};
   double local_origin_ecef_[3]{0.0};
   double local_origin_pos_[3]{0.0};

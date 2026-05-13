@@ -81,9 +81,9 @@ struct UbxConfig {
 
   // ENU local origin settings
   bool auto_origin{true};
-  double origin_latitude{0.0};
-  double origin_longitude{0.0};
-  double origin_altitude{0.0};
+  double origin_latitude{0.0};   // populated from origin[0]
+  double origin_longitude{0.0};  // populated from origin[1]
+  double origin_altitude{0.0};   // populated from origin[2]
 
   // Ephemeris snapshot behavior
   double ephemeris_snapshot_period_s{30.0};
@@ -163,9 +163,7 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<std::string>("ephemeris_topic", config_.ephemeris_topic);
     declare_parameter<std::string>("solution_topic", config_.solution_topic);
     declare_parameter<bool>("auto_origin", config_.auto_origin);
-    declare_parameter<double>("origin.latitude", config_.origin_latitude);
-    declare_parameter<double>("origin.longitude", config_.origin_longitude);
-    declare_parameter<double>("origin.altitude", config_.origin_altitude);
+    declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
 
     declare_parameter<double>("ephemeris.snapshot_period_s", config_.ephemeris_snapshot_period_s);
     declare_parameter<double>("ephemeris.max_age_s",         config_.ephemeris_max_age_s);
@@ -204,9 +202,14 @@ class UbxDriverNode : public rclcpp::Node {
     config_.ephemeris_topic = get_parameter("ephemeris_topic").as_string();
     config_.solution_topic = get_parameter("solution_topic").as_string();
     config_.auto_origin = get_parameter("auto_origin").as_bool();
-    config_.origin_latitude = get_parameter("origin.latitude").as_double();
-    config_.origin_longitude = get_parameter("origin.longitude").as_double();
-    config_.origin_altitude = get_parameter("origin.altitude").as_double();
+    {
+      const auto v = get_parameter("origin").as_double_array();
+      if (v.size() == 3) {
+        config_.origin_latitude  = v[0];
+        config_.origin_longitude = v[1];
+        config_.origin_altitude  = v[2];
+      }
+    }
 
     config_.ephemeris_snapshot_period_s = get_parameter("ephemeris.snapshot_period_s").as_double();
     config_.ephemeris_max_age_s         = get_parameter("ephemeris.max_age_s").as_double();
@@ -249,15 +252,45 @@ class UbxDriverNode : public rclcpp::Node {
     imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(config_.imu_topic, 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
 
-    // Pre-configure ENU origin if not auto
     if (!config_.auto_origin) {
-      local_origin_pos_[0] = config_.origin_latitude * (M_PI / 180.0);
-      local_origin_pos_[1] = config_.origin_longitude * (M_PI / 180.0);
-      local_origin_pos_[2] = config_.origin_altitude;
-      pos2ecef(local_origin_pos_, local_origin_ecef_);
-      has_local_origin_ = true;
-      RCLCPP_INFO(get_logger(), "Configured local ENU origin: lat=%.6f, lon=%.6f, alt=%.2f",
-                  config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
+      if (config_.origin_latitude == 0.0 && config_.origin_longitude == 0.0) {
+        RCLCPP_WARN(get_logger(),
+          "auto_origin=false but origin is [0,0,0] — falling back to auto (first fix)");
+      } else {
+        local_origin_pos_[0] = config_.origin_latitude * (M_PI / 180.0);
+        local_origin_pos_[1] = config_.origin_longitude * (M_PI / 180.0);
+        local_origin_pos_[2] = config_.origin_altitude;
+        pos2ecef(local_origin_pos_, local_origin_ecef_);
+        has_local_origin_ = true;
+        RCLCPP_INFO(get_logger(), "ENU origin set from config: lat=%.6f lon=%.6f alt=%.2f",
+          config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
+      }
+    }
+    logEnabledMessages();
+  }
+
+  void logEnabledMessages() {
+    auto on = [](bool v) { return v ? "ON" : "OFF"; };
+    RCLCPP_INFO(get_logger(), "Enabled messages:");
+    RCLCPP_INFO(get_logger(), "  Observation  : RAWX=%s SFRBX=%s",
+      on(config_.enable_rawx), on(config_.enable_sfrbx));
+    RCLCPP_INFO(get_logger(), "  PVT (binary) : NAV-PVT=%s", on(config_.enable_nav_pvt));
+    RCLCPP_INFO(get_logger(), "  NMEA         : GGA=%s RMC=%s GSA=%s GST=%s HiPrec=%s",
+      on(config_.enable_nmea_gga), on(config_.enable_nmea_rmc),
+      on(config_.enable_nmea_gsa), on(config_.enable_nmea_gst),
+      on(config_.nmea_high_precision));
+    RCLCPP_INFO(get_logger(), "  IMU          : ESF-RAW=%s ESF-INS=%s",
+      on(config_.enable_esf_raw), on(config_.enable_esf_ins));
+    RCLCPP_INFO(get_logger(), "  Constellation: GPS=%s GLO=%s GAL=%s BDS=%s QZS=%s NavIC=%s SBAS=%s",
+      on(config_.enable_gps), on(config_.enable_glonass), on(config_.enable_galileo),
+      on(config_.enable_beidou), on(config_.enable_qzss), on(config_.enable_navic),
+      on(config_.enable_sbas));
+    RCLCPP_INFO(get_logger(), "  GPS timestamp : %s", on(config_.use_gps_timestamp));
+    if (!config_.auto_origin && (config_.origin_latitude != 0.0 || config_.origin_longitude != 0.0)) {
+      RCLCPP_INFO(get_logger(), "  ENU origin    : fixed (lat=%.6f lon=%.6f alt=%.2f)",
+        config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
+    } else {
+      RCLCPP_INFO(get_logger(), "  ENU origin    : auto (first valid solution)");
     }
   }
 

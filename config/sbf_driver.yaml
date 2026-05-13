@@ -26,6 +26,9 @@ sbf_driver_node:
     # Set to false to use the receiver's current configuration as-is
     configure_on_startup: true
 
+    # Use GPS week/tow for message header stamps instead of system clock
+    use_gps_timestamp: false
+
     # Topic Names
     observation_topic: "/gnss/observation"
     ephemeris_topic: "/gnss/ephemeris"
@@ -96,6 +99,10 @@ sbf_driver_node:
     # Ephemeris publishing — snapshot-on-change + heartbeat
     # Topic always carries the full current state; logging this one topic is
     # sufficient for both RINEX conversion and downstream positioning.
+    # ENU local origin settings
+    auto_origin: true              # false: use origin below; true: first valid fix
+    origin: [0.0, 0.0, 0.0]       # [lat_deg, lon_deg, alt_m (ellipsoidal)]
+
     ephemeris:
       snapshot_period_s: 30.0    # heartbeat interval when no new ephemeris arrives
       max_age_s:         7200.0  # drop entries older than this from snapshots (2 h)
