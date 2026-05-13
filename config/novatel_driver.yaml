@@ -52,6 +52,8 @@ novatel_driver_node:
       # /gnss/nmea_solution carries BESTPOS-derived fix with full sigma values.
       bestpos: false        # BESTPOSB → LLH + sigma → pos_enu_cov diagonal
       bestvel: false        # BESTVELB → vel_enu (refresh between BESTPOS messages)
+      psrdop: false         # PSRDOPB  (ID 174) → gdop/pdop/hdop/vdop
+      bestxyz: false        # BESTXYZB (ID 241) → pos_ecef + pos_cov_ecef diag + vel_ecef + vel_cov_ecef diag
 
       # Navigation Data (Ephemeris)
       gps_ephem: true       # GPSEPHEMB

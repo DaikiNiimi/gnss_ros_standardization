@@ -52,6 +52,8 @@ struct UbxConfig {
   bool enable_rawx{true};
   bool enable_sfrbx{true};
   bool enable_nav_pvt{false};
+  bool enable_nav_dop{false};
+  bool enable_nav_cov{false};
   bool enable_nmea_gga{false};
   bool enable_nmea_rmc{false};
   bool enable_nmea_gsa{false};
@@ -140,6 +142,8 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.rawx", config_.enable_rawx);
     declare_parameter<bool>("messages.sfrbx", config_.enable_sfrbx);
     declare_parameter<bool>("messages.nav_pvt", config_.enable_nav_pvt);
+    declare_parameter<bool>("messages.nav_dop", config_.enable_nav_dop);
+    declare_parameter<bool>("messages.nav_cov", config_.enable_nav_cov);
     declare_parameter<bool>("messages.nmea_gga", config_.enable_nmea_gga);
     declare_parameter<bool>("messages.nmea_rmc", config_.enable_nmea_rmc);
     declare_parameter<bool>("messages.nmea_gsa", config_.enable_nmea_gsa);
@@ -180,6 +184,8 @@ class UbxDriverNode : public rclcpp::Node {
     config_.enable_rawx = get_parameter("messages.rawx").as_bool();
     config_.enable_sfrbx = get_parameter("messages.sfrbx").as_bool();
     config_.enable_nav_pvt = get_parameter("messages.nav_pvt").as_bool();
+    config_.enable_nav_dop = get_parameter("messages.nav_dop").as_bool();
+    config_.enable_nav_cov = get_parameter("messages.nav_cov").as_bool();
     config_.enable_nmea_gga = get_parameter("messages.nmea_gga").as_bool();
     config_.enable_nmea_rmc = get_parameter("messages.nmea_rmc").as_bool();
     config_.enable_nmea_gsa = get_parameter("messages.nmea_gsa").as_bool();
@@ -274,7 +280,8 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Enabled messages:");
     RCLCPP_INFO(get_logger(), "  Observation  : RAWX=%s SFRBX=%s",
       on(config_.enable_rawx), on(config_.enable_sfrbx));
-    RCLCPP_INFO(get_logger(), "  PVT (binary) : NAV-PVT=%s", on(config_.enable_nav_pvt));
+    RCLCPP_INFO(get_logger(), "  PVT (binary) : NAV-PVT=%s NAV-DOP=%s NAV-COV=%s",
+      on(config_.enable_nav_pvt), on(config_.enable_nav_dop), on(config_.enable_nav_cov));
     RCLCPP_INFO(get_logger(), "  NMEA         : GGA=%s RMC=%s GSA=%s GST=%s HiPrec=%s",
       on(config_.enable_nmea_gga), on(config_.enable_nmea_rmc),
       on(config_.enable_nmea_gsa), on(config_.enable_nmea_gst),
@@ -706,6 +713,8 @@ class UbxDriverNode : public rclcpp::Node {
           {ubx::CFG_MSGOUT_UBX_RXM_RAWX_I2C  + port, config_.enable_rawx    ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_RXM_SFRBX_I2C + port, config_.enable_sfrbx   ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_NAV_PVT_I2C   + port, config_.enable_nav_pvt ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_DOP_I2C   + port, config_.enable_nav_dop ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_COV_I2C   + port, config_.enable_nav_cov ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_ESF_RAW_I2C   + port, config_.enable_esf_raw ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_ESF_INS_I2C   + port, config_.enable_esf_ins ? 1u : 0u, 1},
       };
@@ -772,6 +781,8 @@ class UbxDriverNode : public rclcpp::Node {
     sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_RAWX,  config_.enable_rawx,    "RXM-RAWX");
     sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_SFRBX, config_.enable_sfrbx,   "RXM-SFRBX");
     sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_PVT,   config_.enable_nav_pvt, "NAV-PVT");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_DOP,   config_.enable_nav_dop, "NAV-DOP");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_COV,   config_.enable_nav_cov, "NAV-COV");
     sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_RAW,   config_.enable_esf_raw, "ESF-RAW");
     sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_INS,   config_.enable_esf_ins, "ESF-INS");
 
@@ -1014,6 +1025,8 @@ class UbxDriverNode : public rclcpp::Node {
     if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_RAW) handleEsfRaw();
     if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_INS) handleEsfIns();
     if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_PVT) handleNavPvt();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_DOP) handleNavDop();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_COV) handleNavCov();
   }
 
   // Sign-extend the lower 24 bits of a uint32 into an int32.
@@ -1207,6 +1220,14 @@ class UbxDriverNode : public rclcpp::Node {
   // Warn if BINARY source was selected via YAML but no PVT has arrived after
   // a generous startup window — typically indicates a receiver-side config
   // or capability issue. Prevents silent failure under no-fallback policy.
+  void handleNavDop() {
+    ubx::nav_dop::parseNavDop(ubx_frm_payload_.data(), ubx_frm_payload_.size(), binary_solution_);
+  }
+
+  void handleNavCov() {
+    ubx::nav_cov::parseNavCov(ubx_frm_payload_.data(), ubx_frm_payload_.size(), binary_solution_);
+  }
+
   void warnIfBinaryStarvation() {
     if (source_ != SolutionSource::BINARY) return;
     if (ever_received_binary_) return;

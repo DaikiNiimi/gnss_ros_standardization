@@ -268,6 +268,8 @@ class UbxDecoderNode : public rclcpp::Node {
     if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_RAW) handleEsfRaw();
     if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_INS) handleEsfIns();
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_PVT) handleNavPvt();
+    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_DOP) handleNavDop();
+    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_COV) handleNavCov();
   }
 
   // Solution source policy (grace-period detection):
@@ -314,6 +316,14 @@ class UbxDecoderNode : public rclcpp::Node {
     if (source_ == SolutionSource::BINARY) {
       publishSolution(binary_solution_);
     }
+  }
+
+  void handleNavDop() {
+    ubx::nav_dop::parseNavDop(ubx_payload_.data(), ubx_payload_.size(), binary_solution_);
+  }
+
+  void handleNavCov() {
+    ubx::nav_cov::parseNavCov(ubx_payload_.data(), ubx_payload_.size(), binary_solution_);
   }
 
   static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {

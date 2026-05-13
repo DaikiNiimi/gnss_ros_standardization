@@ -269,6 +269,8 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (oem4_msg_id_ == novatel::ID_CORRIMUDATA) handleCorrImuData();
     if (oem4_msg_id_ == novatel::ID_BESTPOS)     handleBestPos();
     if (oem4_msg_id_ == novatel::ID_BESTVEL)     handleBestVel();
+    if (oem4_msg_id_ == novatel::ID_PSRDOP)      handlePsrDop();
+    if (oem4_msg_id_ == novatel::ID_BESTXYZ)     handleBestXyz();
   }
 
   // Solution source policy (grace-period detection):
@@ -321,6 +323,14 @@ class NovatelDecoderNode : public rclcpp::Node {
     binary_solution_.vel_ecef.x = vel_ec[0];
     binary_solution_.vel_ecef.y = vel_ec[1];
     binary_solution_.vel_ecef.z = vel_ec[2];
+  }
+
+  void handlePsrDop() {
+    novatel::pvt::parsePSRDOP(oem4_body_.data(), oem4_body_.size(), binary_solution_);
+  }
+
+  void handleBestXyz() {
+    novatel::pvt::parseBESTXYZ(oem4_body_.data(), oem4_body_.size(), binary_solution_);
   }
 
   static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {

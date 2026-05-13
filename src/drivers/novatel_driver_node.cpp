@@ -42,6 +42,8 @@ struct NovatelConfig {
   bool enable_range{false};
   bool enable_bestpos{false};
   bool enable_bestvel{false};
+  bool enable_psrdop{false};
+  bool enable_bestxyz{false};
 
   // Ephemeris
   bool enable_gps_ephem{true};
@@ -127,6 +129,8 @@ class NovatelDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.range",       config_.enable_range);
     declare_parameter<bool>("messages.bestpos",     config_.enable_bestpos);
     declare_parameter<bool>("messages.bestvel",     config_.enable_bestvel);
+    declare_parameter<bool>("messages.psrdop",      config_.enable_psrdop);
+    declare_parameter<bool>("messages.bestxyz",     config_.enable_bestxyz);
     declare_parameter<bool>("messages.gps_ephem",   config_.enable_gps_ephem);
     declare_parameter<bool>("messages.glo_ephem",   config_.enable_glo_ephem);
     declare_parameter<bool>("messages.gal_ephem",   config_.enable_gal_ephem);
@@ -171,6 +175,8 @@ class NovatelDriverNode : public rclcpp::Node {
     config_.enable_range       = get_parameter("messages.range").as_bool();
     config_.enable_bestpos     = get_parameter("messages.bestpos").as_bool();
     config_.enable_bestvel     = get_parameter("messages.bestvel").as_bool();
+    config_.enable_psrdop      = get_parameter("messages.psrdop").as_bool();
+    config_.enable_bestxyz     = get_parameter("messages.bestxyz").as_bool();
     config_.enable_gps_ephem   = get_parameter("messages.gps_ephem").as_bool();
     config_.enable_glo_ephem   = get_parameter("messages.glo_ephem").as_bool();
     config_.enable_gal_ephem   = get_parameter("messages.gal_ephem").as_bool();
@@ -245,8 +251,9 @@ class NovatelDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Enabled messages:");
     RCLCPP_INFO(get_logger(), "  Observation  : RANGECMP=%s RANGE=%s",
       on(config_.enable_rangecmp), on(config_.enable_range));
-    RCLCPP_INFO(get_logger(), "  PVT (binary) : BESTPOS=%s BESTVEL=%s",
-      on(config_.enable_bestpos), on(config_.enable_bestvel));
+    RCLCPP_INFO(get_logger(), "  PVT (binary) : BESTPOS=%s BESTVEL=%s PSRDOP=%s BESTXYZ=%s",
+      on(config_.enable_bestpos), on(config_.enable_bestvel),
+      on(config_.enable_psrdop), on(config_.enable_bestxyz));
     RCLCPP_INFO(get_logger(), "  Ephemeris    : GPS=%s GLO=%s GAL=%s BDS=%s QZS=%s NavIC=%s IONUTC=%s",
       on(config_.enable_gps_ephem), on(config_.enable_glo_ephem), on(config_.enable_gal_ephem),
       on(config_.enable_bds_ephem), on(config_.enable_qzs_ephem), on(config_.enable_navic_ephem),
@@ -340,6 +347,12 @@ class NovatelDriverNode : public rclcpp::Node {
 
     if (config_.enable_bestvel)  sendCommand("LOG " + port_pfx + novatel::LOG_BESTVEL + ontime);
     else                         sendCommand("UNLOG " + port_pfx + novatel::LOG_BESTVEL);
+
+    if (config_.enable_psrdop)   sendCommand("LOG " + port_pfx + novatel::LOG_PSRDOPB + ontime);
+    else                         sendCommand("UNLOG " + port_pfx + novatel::LOG_PSRDOPB);
+
+    if (config_.enable_bestxyz)  sendCommand("LOG " + port_pfx + novatel::LOG_BESTXYZB + ontime);
+    else                         sendCommand("UNLOG " + port_pfx + novatel::LOG_BESTXYZB);
 
     if (config_.enable_gps_ephem) {
       sendCommand("LOG " + port_pfx + novatel::LOG_GPSEPHEM + onchanged);
@@ -525,6 +538,8 @@ class NovatelDriverNode : public rclcpp::Node {
     if (oem4_msg_id_ == novatel::ID_CORRIMUDATA) handleCorrImuData();
     if (oem4_msg_id_ == novatel::ID_BESTPOS)     handleBestPos();
     if (oem4_msg_id_ == novatel::ID_BESTVEL)     handleBestVel();
+    if (oem4_msg_id_ == novatel::ID_PSRDOP)      handlePsrDop();
+    if (oem4_msg_id_ == novatel::ID_BESTXYZ)     handleBestXyz();
   }
 
   void handleBestPos() {
@@ -541,6 +556,14 @@ class NovatelDriverNode : public rclcpp::Node {
   // Warn if BINARY source was selected via YAML but no PVT has arrived after
   // a generous startup window — typically indicates a receiver-side config
   // or capability issue. Prevents silent failure under no-fallback policy.
+  void handlePsrDop() {
+    novatel::pvt::parsePSRDOP(oem4_body_.data(), oem4_body_.size(), binary_solution_);
+  }
+
+  void handleBestXyz() {
+    novatel::pvt::parseBESTXYZ(oem4_body_.data(), oem4_body_.size(), binary_solution_);
+  }
+
   void warnIfBinaryStarvation() {
     if (source_ != SolutionSource::BINARY) return;
     if (ever_received_binary_) return;

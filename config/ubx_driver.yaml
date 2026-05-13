@@ -67,7 +67,12 @@ ubx_driver_node:
       # /gnss/nmea_solution carries NAV-PVT-derived fix (hAcc/vAcc → covariance,
       # carrSoln → STATUS_FIX/FLOAT/DGPS/SINGLE classification).
       nav_pvt: false
-      
+
+      # DOP values (NAV-DOP) and full 3x3 position/velocity covariance (NAV-COV, NED→ENU).
+      # NAV-COV overwrites the diagonal-only covariance from NAV-PVT when enabled.
+      nav_dop: false       # NAV-DOP (0x01,0x04) → gdop/pdop/hdop/vdop
+      nav_cov: false       # NAV-COV (0x01,0x36) → pos_enu_cov 3x3 + vel_enu_cov 3x3
+
       # NMEA messages (disable to save bandwidth)
       nmea_gga: true 
       nmea_rmc: false

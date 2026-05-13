@@ -36,6 +36,8 @@ constexpr uint16_t ID_RANGECMP          = 140;
 constexpr uint16_t ID_RANGE             = 43;
 constexpr uint16_t ID_BESTPOS           = 42;
 constexpr uint16_t ID_BESTVEL           = 99;
+constexpr uint16_t ID_PSRDOP            = 174;
+constexpr uint16_t ID_BESTXYZ           = 241;
 
 // Ephemeris / Navigation Data
 constexpr uint16_t ID_RAWEPHEM          = 41;
@@ -81,6 +83,8 @@ constexpr const char* LOG_RANGECMP      = "RANGECMPB"; // Binary
 constexpr const char* LOG_RANGE         = "RANGEB";    // Binary
 constexpr const char* LOG_BESTPOS       = "BESTPOSB";  // Binary
 constexpr const char* LOG_BESTVEL       = "BESTVELB";  // Binary
+constexpr const char* LOG_PSRDOPB       = "PSRDOPB";   // Binary
+constexpr const char* LOG_BESTXYZB      = "BESTXYZB";  // Binary
 
 constexpr const char* LOG_RAWEPHEM      = "RAWEPHEMB";
 constexpr const char* LOG_IONUTC        = "IONUTCB";
@@ -269,6 +273,73 @@ inline bool parseBESTVEL(const uint8_t* p, size_t len,
   out.vel_enu.x = hor_speed * std::sin(trk_rad);  // East
   out.vel_enu.y = hor_speed * std::cos(trk_rad);  // North
   out.vel_enu.z = vert_speed;                     // Up
+  return true;
+}
+
+// PSRDOP body field offsets (after 28-byte OEM4 header)
+constexpr int PSRDOP_OFFSET_GDOP    = 0;   // float32
+constexpr int PSRDOP_OFFSET_PDOP    = 4;
+constexpr int PSRDOP_OFFSET_HDOP    = 8;
+constexpr int PSRDOP_OFFSET_HTDOP   = 12;
+constexpr int PSRDOP_OFFSET_TDOP    = 16;
+constexpr int PSRDOP_MIN_LEN        = 20;
+
+// BESTXYZ body field offsets (after 28-byte OEM4 header)
+constexpr int BESTXYZ_OFFSET_PX     = 8;   // double64 ECEF pos
+constexpr int BESTXYZ_OFFSET_PY     = 16;
+constexpr int BESTXYZ_OFFSET_PZ     = 24;
+constexpr int BESTXYZ_OFFSET_SPX    = 32;  // float32 pos stddev
+constexpr int BESTXYZ_OFFSET_SPY    = 36;
+constexpr int BESTXYZ_OFFSET_SPZ    = 40;
+constexpr int BESTXYZ_OFFSET_VX     = 52;  // double64 ECEF vel
+constexpr int BESTXYZ_OFFSET_VY     = 60;
+constexpr int BESTXYZ_OFFSET_VZ     = 68;
+constexpr int BESTXYZ_OFFSET_SVX    = 76;  // float32 vel stddev
+constexpr int BESTXYZ_OFFSET_SVY    = 80;
+constexpr int BESTXYZ_OFFSET_SVZ    = 84;
+constexpr int BESTXYZ_MIN_LEN       = 88;
+
+/// Parse PSRDOP body into GnssSolution.
+/// Fills: gdop, pdop, hdop; vdop derived as sqrt(max(pdop²-hdop²,0)).
+inline bool parsePSRDOP(const uint8_t* p, size_t len,
+                        gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(PSRDOP_MIN_LEN)) return false;
+  const float gdop = read_le<float>(p + PSRDOP_OFFSET_GDOP);
+  const float pdop = read_le<float>(p + PSRDOP_OFFSET_PDOP);
+  const float hdop = read_le<float>(p + PSRDOP_OFFSET_HDOP);
+  const float vdop2 = pdop * pdop - hdop * hdop;
+  out.gdop = gdop;
+  out.pdop = pdop;
+  out.hdop = hdop;
+  out.vdop = (vdop2 > 0.0f) ? std::sqrt(vdop2) : 0.0f;
+  return true;
+}
+
+/// Parse BESTXYZ body into GnssSolution.
+/// Fills: pos_ecef, pos_cov_ecef diagonal (stddev²), vel_ecef, vel_cov_ecef diagonal.
+inline bool parseBESTXYZ(const uint8_t* p, size_t len,
+                         gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(BESTXYZ_MIN_LEN)) return false;
+  out.pos_ecef.x = read_le<double>(p + BESTXYZ_OFFSET_PX);
+  out.pos_ecef.y = read_le<double>(p + BESTXYZ_OFFSET_PY);
+  out.pos_ecef.z = read_le<double>(p + BESTXYZ_OFFSET_PZ);
+  const float spx = read_le<float>(p + BESTXYZ_OFFSET_SPX);
+  const float spy = read_le<float>(p + BESTXYZ_OFFSET_SPY);
+  const float spz = read_le<float>(p + BESTXYZ_OFFSET_SPZ);
+  std::fill(out.pos_cov_ecef.begin(), out.pos_cov_ecef.end(), 0.0);
+  out.pos_cov_ecef[0] = static_cast<double>(spx) * spx;
+  out.pos_cov_ecef[4] = static_cast<double>(spy) * spy;
+  out.pos_cov_ecef[8] = static_cast<double>(spz) * spz;
+  out.vel_ecef.x = read_le<double>(p + BESTXYZ_OFFSET_VX);
+  out.vel_ecef.y = read_le<double>(p + BESTXYZ_OFFSET_VY);
+  out.vel_ecef.z = read_le<double>(p + BESTXYZ_OFFSET_VZ);
+  const float svx = read_le<float>(p + BESTXYZ_OFFSET_SVX);
+  const float svy = read_le<float>(p + BESTXYZ_OFFSET_SVY);
+  const float svz = read_le<float>(p + BESTXYZ_OFFSET_SVZ);
+  std::fill(out.vel_cov_ecef.begin(), out.vel_cov_ecef.end(), 0.0);
+  out.vel_cov_ecef[0] = static_cast<double>(svx) * svx;
+  out.vel_cov_ecef[4] = static_cast<double>(svy) * svy;
+  out.vel_cov_ecef[8] = static_cast<double>(svz) * svz;
   return true;
 }
 

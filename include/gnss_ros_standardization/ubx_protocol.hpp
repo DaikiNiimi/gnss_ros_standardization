@@ -38,6 +38,8 @@ constexpr uint8_t ID_ACK_ACK = 0x01;
 
 // NAV
 constexpr uint8_t ID_NAV_PVT = 0x07;
+constexpr uint8_t ID_NAV_DOP = 0x04;
+constexpr uint8_t ID_NAV_COV = 0x36;
 
 // ESF (External Sensor Fusion)
 constexpr uint8_t ID_ESF_RAW = 0x03;  // Raw IMU measurements (uncalibrated, IMU-internal scale)
@@ -141,6 +143,8 @@ constexpr uint32_t CFG_SIGNAL_QZSS_L5_ENA   = 0x10310017;
 constexpr uint32_t CFG_MSGOUT_UBX_RXM_RAWX_I2C  = 0x209102A4;
 constexpr uint32_t CFG_MSGOUT_UBX_RXM_SFRBX_I2C = 0x20910231;
 constexpr uint32_t CFG_MSGOUT_UBX_NAV_PVT_I2C   = 0x20910006;
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_DOP_I2C   = 0x20910038;
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_COV_I2C   = 0x20910083;
 
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_GGA_I2C   = 0x209100BA;
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_GLL_I2C   = 0x209100C9;
@@ -385,6 +389,109 @@ inline bool parseNavPvt(const uint8_t* p, size_t len,
 }
 
 }  // namespace pvt
+
+// =============================================================================
+// NAV-DOP parser (UBX-NAV-DOP, class=0x01 id=0x04)
+// =============================================================================
+namespace nav_dop {
+
+constexpr int MIN_LEN      = 14;  // need through hDOP at offset 12
+constexpr int OFFSET_GDOP  = 4;   // U2, ×0.01
+constexpr int OFFSET_PDOP  = 6;
+constexpr int OFFSET_TDOP  = 8;
+constexpr int OFFSET_VDOP  = 10;
+constexpr int OFFSET_HDOP  = 12;
+
+template <typename T>
+inline T read_le(const uint8_t* p) { T v; std::memcpy(&v, p, sizeof(T)); return v; }
+
+/// Parse UBX-NAV-DOP payload, filling gdop/pdop/hdop/vdop in GnssSolution.
+inline bool parseNavDop(const uint8_t* p, size_t len,
+                        gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(MIN_LEN)) return false;
+  out.gdop = static_cast<float>(read_le<uint16_t>(p + OFFSET_GDOP)) * 0.01f;
+  out.pdop = static_cast<float>(read_le<uint16_t>(p + OFFSET_PDOP)) * 0.01f;
+  out.hdop = static_cast<float>(read_le<uint16_t>(p + OFFSET_HDOP)) * 0.01f;
+  out.vdop = static_cast<float>(read_le<uint16_t>(p + OFFSET_VDOP)) * 0.01f;
+  return true;
+}
+
+}  // namespace nav_dop
+
+// =============================================================================
+// NAV-COV parser (UBX-NAV-COV, class=0x01 id=0x36)
+// =============================================================================
+namespace nav_cov {
+
+constexpr int MIN_LEN              = 64;
+constexpr int OFFSET_POS_COV_VALID = 6;   // U1: 1 = posCov valid
+constexpr int OFFSET_VEL_COV_VALID = 7;   // U1: 1 = velCov valid
+// posCov upper triangle (NED frame, f4): NN/NE/ND/EE/ED/DD
+constexpr int OFFSET_POS_NN = 16;
+constexpr int OFFSET_POS_NE = 20;
+constexpr int OFFSET_POS_ND = 24;
+constexpr int OFFSET_POS_EE = 28;
+constexpr int OFFSET_POS_ED = 32;
+constexpr int OFFSET_POS_DD = 36;
+// velCov upper triangle (NED frame, f4): same layout
+constexpr int OFFSET_VEL_NN = 40;
+constexpr int OFFSET_VEL_NE = 44;
+constexpr int OFFSET_VEL_ND = 48;
+constexpr int OFFSET_VEL_EE = 52;
+constexpr int OFFSET_VEL_ED = 56;
+constexpr int OFFSET_VEL_DD = 60;
+
+template <typename T>
+inline T read_le(const uint8_t* p) { T v; std::memcpy(&v, p, sizeof(T)); return v; }
+
+/// Parse UBX-NAV-COV payload, filling pos_enu_cov / vel_enu_cov (full 3x3).
+/// NED→ENU axis permutation: sign flip on cross-terms involving D axis.
+/// Overwrites pos_enu_cov only when posCovValid=1, vel_enu_cov only when velCovValid=1.
+inline bool parseNavCov(const uint8_t* p, size_t len,
+                        gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(MIN_LEN)) return false;
+  const bool pos_valid = p[OFFSET_POS_COV_VALID] != 0;
+  const bool vel_valid = p[OFFSET_VEL_COV_VALID] != 0;
+  if (!pos_valid && !vel_valid) return false;
+
+  if (pos_valid) {
+    const float nn = read_le<float>(p + OFFSET_POS_NN);
+    const float ne = read_le<float>(p + OFFSET_POS_NE);
+    const float nd = read_le<float>(p + OFFSET_POS_ND);
+    const float ee = read_le<float>(p + OFFSET_POS_EE);
+    const float ed = read_le<float>(p + OFFSET_POS_ED);
+    const float dd = read_le<float>(p + OFFSET_POS_DD);
+    out.pos_enu_cov[0] =  static_cast<double>(ee);
+    out.pos_enu_cov[1] =  static_cast<double>(ne);
+    out.pos_enu_cov[2] = -static_cast<double>(ed);
+    out.pos_enu_cov[3] =  static_cast<double>(ne);
+    out.pos_enu_cov[4] =  static_cast<double>(nn);
+    out.pos_enu_cov[5] = -static_cast<double>(nd);
+    out.pos_enu_cov[6] = -static_cast<double>(ed);
+    out.pos_enu_cov[7] = -static_cast<double>(nd);
+    out.pos_enu_cov[8] =  static_cast<double>(dd);
+  }
+  if (vel_valid) {
+    const float nn = read_le<float>(p + OFFSET_VEL_NN);
+    const float ne = read_le<float>(p + OFFSET_VEL_NE);
+    const float nd = read_le<float>(p + OFFSET_VEL_ND);
+    const float ee = read_le<float>(p + OFFSET_VEL_EE);
+    const float ed = read_le<float>(p + OFFSET_VEL_ED);
+    const float dd = read_le<float>(p + OFFSET_VEL_DD);
+    out.vel_enu_cov[0] =  static_cast<double>(ee);
+    out.vel_enu_cov[1] =  static_cast<double>(ne);
+    out.vel_enu_cov[2] = -static_cast<double>(ed);
+    out.vel_enu_cov[3] =  static_cast<double>(ne);
+    out.vel_enu_cov[4] =  static_cast<double>(nn);
+    out.vel_enu_cov[5] = -static_cast<double>(nd);
+    out.vel_enu_cov[6] = -static_cast<double>(ed);
+    out.vel_enu_cov[7] = -static_cast<double>(nd);
+    out.vel_enu_cov[8] =  static_cast<double>(dd);
+  }
+  return true;
+}
+
+}  // namespace nav_cov
 
 }  // namespace ubx
 }  // namespace gnss_ros_standardization
