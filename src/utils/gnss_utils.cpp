@@ -133,6 +133,8 @@ eph_t msgToEph(const gnss_ros_standardization::msg::GnssEphemeris& m) {
   e.svh = static_cast<int>(m.svh);
   e.sva = static_cast<int>(m.sva);
   e.code = static_cast<int>(m.code);
+  e.flag = static_cast<int>(m.flag);
+  e.fit  = static_cast<int>(m.fit);
   e.toes = m.toes;
 
   return e;
@@ -208,7 +210,9 @@ gnss_ros_standardization::msg::GnssEphemeris ephToMsg(const eph_t& e) {
   m.svh = e.svh;
   m.sva = e.sva;
   m.code = e.code;
-  
+  m.flag = static_cast<uint8_t>(e.flag);
+  m.fit  = static_cast<uint8_t>(e.fit);
+
   return m;
 }
 

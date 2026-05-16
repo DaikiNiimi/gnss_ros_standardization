@@ -644,12 +644,16 @@ class UbxDecoderNode : public rclcpp::Node {
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
 
+    // Use per-observation time, NOT raw_.time: RTKLIB advances raw_.time to
+    // the next epoch when input_*()==1 fires (the trigger is the next epoch's
+    // first byte); raw_.obs.data[*] still holds the just-completed epoch.
     int week = 0;
-    const double tow = time2gpst(raw_.time, &week);
+    const gtime_t obs_time = raw_.obs.data[0].time;
+    const double tow = time2gpst(obs_time, &week);
 
     msg::GnssObservations msg;
     msg.header.stamp    = (use_gps_timestamp_ && week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
+                          ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
     msg.header.frame_id = frame_id_;
     msg.week = static_cast<uint16_t>(week);
     msg.tow = tow;

@@ -54,7 +54,8 @@ constexpr uint16_t ID_GLONAV      = 4004;
 constexpr uint16_t ID_GALNAV      = 4002;
 constexpr uint16_t ID_BDSNAV      = 4081;
 constexpr uint16_t ID_QZSNAV      = 4095;
-constexpr uint16_t ID_NAVICNAV    = 4099;
+constexpr uint16_t ID_NAVICNAV    = 4254;   // SBF NavICLNav (decoded ephemeris).
+                                            // 4099 is ID_GNSSSymbols, not a nav block.
 
 // PVT Blocks
 constexpr uint16_t ID_PVTCARTESIAN      = 4006;

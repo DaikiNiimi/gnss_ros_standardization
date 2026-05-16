@@ -44,3 +44,7 @@ float64 f2           # SV clock drift rate [s/s²]
 
 # Group delay
 float64[] tgd        # group delay differential [s] (array length depends on constellation)
+
+# Receiver/format-specific flags (round-trip with RTKLIB eph_t)
+uint8 flag           # GPS/QZS: L2 P-data flag; other systems: unused
+uint8 fit            # GPS/QZS: fit interval [hours] (typically 4 or 6); 0 elsewhere

@@ -58,16 +58,22 @@ sbf_driver_node:
       gal_nav: true          # GALNav    (ID 4002) — Galileo decoded ephemeris
       bds_nav: true          # BDSNav    (ID 4081) — BeiDou decoded ephemeris
       qzs_nav: true          # QZSNav    (ID 4095) — QZSS decoded ephemeris
-      navic_nav: true        # NavICNav  (ID 4099) — NavIC decoded ephemeris
+      navic_nav: true        # NavICLNav (ID 4254) — NavIC decoded ephemeris
 
-      # Raw navigation subframe blocks (decoded by RTKLIB input_sbf())
+      # Raw navigation subframe blocks (decoded by RTKLIB input_sbf()).
+      # Enabling these makes the receiver emit subframes at ~6 s cadence per
+      # satellite. RTKLIB accumulates them in raw->subfrm[sat-1] and produces
+      # a fresh ephemeris within 15-30 s of decoder start — so a bag started
+      # mid-pass still captures the full visible-sat ephemeris set instead of
+      # waiting up to ~2 h for the next IODE rollover (which is when Decoded
+      # NAV blocks re-fire). Recommended ON for record/replay workflows.
       # Both decoded and raw can be enabled simultaneously; duplicates are filtered by IODE/IODC.
-      gps_nav_raw: false      # GPSRawCA    (ID 4017) — GPS L1 C/A subframe
-      glo_nav_raw: false      # GLORawCA    (ID 4026) — GLONASS L1 C/A string
-      gal_nav_raw: false      # GALRawINAV+GALRawFNAV (ID 4023+4022) — Galileo I/F-NAV
-      bds_nav_raw: false      # BDSRaw      (ID 4047) — BeiDou navigation frame
-      qzs_nav_raw: false      # QZSRawL1CA  (ID 4066) — QZSS L1 C/A subframe
-      navic_nav_raw: false    # NAVICRaw    (ID 4093) — NavIC subframe
+      gps_nav_raw: true       # GPSRawCA    (ID 4017) — GPS L1 C/A subframe
+      glo_nav_raw: true       # GLORawCA    (ID 4026) — GLONASS L1 C/A string
+      gal_nav_raw: true       # GALRawINAV+GALRawFNAV (ID 4023+4022) — Galileo I/F-NAV
+      bds_nav_raw: true       # BDSRaw      (ID 4047) — BeiDou navigation frame
+      qzs_nav_raw: true       # QZSRawL1CA  (ID 4066) — QZSS L1 C/A subframe
+      navic_nav_raw: true     # NAVICRaw    (ID 4093) — NavIC subframe
       
       # Binary PVT (preferred over NMEA when enabled — produces full-precision
       # GnssSolution with 3x3 covariance). See "Solution source policy" below.

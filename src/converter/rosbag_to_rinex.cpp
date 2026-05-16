@@ -471,16 +471,12 @@ public:
       int sys = sys_of_sat(e.sat);
       if ((sys & rnx_.navsys) == 0) continue;
       
-      // Override logic for RINEX writer specifics (flags etc)
-      e.flag = 0;
-      if (sys == SYS_QZS) {
-        if (e.code == 0) e.code = 2;
-        e.flag = 1;
-      }
-      else if (sys == SYS_GPS) {
-        if      (e.code == 1) e.flag = 0;
-        else if (e.code == 2) e.flag = 1;
-      }
+      // QZSS: RTKLIB's outrnxnavb assumes a non-zero L2 code value; preserve the
+      // decoder-provided code but coerce the legacy "0 → C/A" sentinel to 2 so
+      // outrnxnavb writes a valid RINEX code column. eph.flag and eph.fit now
+      // round-trip through the message (msg/GnssEphemeris.msg), so no override
+      // here — trust what the decoder put on the wire.
+      if (sys == SYS_QZS && e.code == 0) e.code = 2;
 
       KeyK key{e.sat, e.iode, e.iodc, e.code};
       if (seen_k_.insert(key).second) {

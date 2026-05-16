@@ -12,7 +12,6 @@
 #include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
-#include "gnss_ros_standardization/sbf_nav_decoder.hpp"
 #include "gnss_ros_standardization/sbf_protocol.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
@@ -544,12 +543,9 @@ class SbfDriverNode : public rclcpp::Node {
   void handleSbfBlock() {
     switch (sbf_id_) {
       case sbf::ID_EXTSENSORMEAS:    handleExtSensorMeas();    break;
-      case sbf::ID_GPSNAV:           handleGpsNav();           break;
-      case sbf::ID_GLONAV:           handleGloNav();           break;
-      case sbf::ID_GALNAV:           handleGalNav();           break;
-      case sbf::ID_BDSNAV:           handleBdsNav();           break;
-      case sbf::ID_QZSNAV:           handleQzsNav();           break;
-      case sbf::ID_NAVICNAV:         handleNavicNav();         break;
+      // SBF Decoded nav blocks are handled by RTKLIB input_sbf() on the
+      // parallel byte stream. See handleDecodeResult; the mini-framer is kept
+      // here only for AttEuler / ExtSensorMeas.
       case sbf::ID_PVTGEODETIC:      handlePvtGeodetic();      break;
       case sbf::ID_POSCOVGEODETIC:   handlePosCovGeodetic();   break;
       case sbf::ID_VELCOVGEODETIC:   handleVelCovGeodetic();   break;
@@ -844,57 +840,20 @@ class SbfDriverNode : public rclcpp::Node {
   }
 
   // ============================================================================
-  // Decoded *Nav block handlers
+  // Decoded *Nav block handlers — removed.
+  //
+  // SBF Decoded nav blocks (GPSNav / GLONav / GALNav / BDSNav / QZSSNav /
+  // NavICLNav) are handled by RTKLIB's input_sbf() on the parallel byte stream.
+  // Running our own parsers in parallel produced two slightly-different eph_t
+  // per satellite (different angular unit conventions and iode/iodc byte
+  // widths), which surfaced as duplicate RINEX records when converted via
+  // rosbag_to_rinex and an incorrect Galileo SVH value. The mini-framer is
+  // kept solely for AttEuler + ExtSensorMeas.
+  //
+  // config_.enable_{gps,glo,gal,bds,qzs,navic}_nav still gates whether the
+  // receiver is *told* to emit those decoded blocks (in the startup
+  // configuration command path); the runtime decoding is now done by RTKLIB.
   // ============================================================================
-
-  void handleGpsNav() {
-    if (!config_.enable_gps_nav) return;
-    eph_t eph{};
-    if (!sbf::nav::parseGPSNav(sbf_body_, eph)) return;
-    ingestAndMaybePublish(eph);
-  }
-
-  void handleGloNav() {
-    if (!config_.enable_glo_nav) return;
-    geph_t geph{};
-    if (!sbf::nav::parseGLONav(sbf_body_, geph)) return;
-    ingestAndMaybePublish(geph);
-  }
-
-  void handleGalNav() {
-    if (!config_.enable_gal_nav) return;
-    eph_t eph{};
-    if (!sbf::nav::parseGALNav(sbf_body_, eph)) return;
-    ingestAndMaybePublish(eph);
-  }
-
-  void handleBdsNav() {
-    if (!config_.enable_bds_nav) return;
-    eph_t eph{};
-    if (!sbf::nav::parseBDSNav(sbf_body_, eph)) return;
-    ingestAndMaybePublish(eph);
-  }
-
-  void handleQzsNav() {
-    if (!config_.enable_qzs_nav) return;
-    eph_t eph{};
-    if (!sbf::nav::parseQZSNav(sbf_body_, eph)) return;
-    ingestAndMaybePublish(eph);
-  }
-
-  void handleNavicNav() {
-    if (!config_.enable_navic_nav) return;
-    eph_t eph{};
-    if (!sbf::nav::parseNavICNav(sbf_body_, eph)) return;
-    ingestAndMaybePublish(eph);
-  }
-
-  void ingestAndMaybePublish(const eph_t& e) {
-    if (eph_store_.ingestEph(e)) publishSnapshot();
-  }
-  void ingestAndMaybePublish(const geph_t& g) {
-    if (eph_store_.ingestGeph(g)) publishSnapshot();
-  }
 
   // ============================================================================
   // Message Handling
@@ -1014,12 +973,17 @@ class SbfDriverNode : public rclcpp::Node {
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
 
+    // Use per-observation time (raw_.obs.data[0].time), NOT raw_.time:
+    // RTKLIB returns input_*()==1 when the *next* epoch's first byte arrives,
+    // at which point raw_.time has already advanced by one epoch period
+    // while raw_.obs.data[*] still holds the just-completed (correct) epoch.
     int week = 0;
-    const double tow = time2gpst(raw_.time, &week);
+    const gtime_t obs_time = raw_.obs.data[0].time;
+    const double tow = time2gpst(obs_time, &week);
 
     msg::GnssObservations msg;
     msg.header.stamp    = (config_.use_gps_timestamp && week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
+                          ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
     msg.header.frame_id = config_.frame_id;
     msg.week = static_cast<uint16_t>(week);
     msg.tow  = tow;

@@ -12,7 +12,6 @@
 #include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
-#include "gnss_ros_standardization/sbf_nav_decoder.hpp"
 #include "gnss_ros_standardization/sbf_protocol.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
@@ -269,12 +268,11 @@ class SbfDecoderNode : public rclcpp::Node {
   void handleSbfBlock() {
     switch (sbf_id_) {
       case sbf::ID_EXTSENSORMEAS:    handleExtSensorMeas();    break;
-      case sbf::ID_GPSNAV:           handleGpsNav();           break;
-      case sbf::ID_GLONAV:           handleGloNav();           break;
-      case sbf::ID_GALNAV:           handleGalNav();           break;
-      case sbf::ID_BDSNAV:           handleBdsNav();           break;
-      case sbf::ID_QZSNAV:           handleQzsNav();           break;
-      case sbf::ID_NAVICNAV:         handleNavicNav();         break;
+      // SBF Decoded nav blocks (GPSNav / GLONav / GALNav / BDSNav / QZSSNav /
+      // NavICLNav) are handled by RTKLIB's input_sbf() on the parallel byte
+      // stream (see pollStream → handleDecodeResult). Don't decode them twice
+      // here — doing so produced duplicate / conflicting ephemerides in
+      // EphemerisStore.
       case sbf::ID_PVTGEODETIC:      handlePvtGeodetic();      break;
       case sbf::ID_POSCOVGEODETIC:   handlePosCovGeodetic();   break;
       case sbf::ID_VELCOVGEODETIC:   handleVelCovGeodetic();   break;
@@ -597,51 +595,17 @@ class SbfDecoderNode : public rclcpp::Node {
   }
 
   // ============================================================================
-  // Decoded *Nav block handlers
+  // Decoded *Nav block handlers — removed.
+  //
+  // RTKLIB's input_sbf() decoders (decode_gpsnav / decode_glonav / decode_galnav
+  // / decode_cmpnav / decode_qzssnav in third_party/RTKLIB/src/rcv/septentrio.c)
+  // already process every decoded SBF nav block this node receives. Running our
+  // own parsers in parallel produced two slightly-different eph_t per satellite
+  // (different angular unit conventions and iode/iodc byte widths), which
+  // surfaced as duplicate RINEX records and an incorrect Galileo SVH value.
+  // The mini-framer below is kept solely for AttEuler + ExtSensorMeas, which
+  // RTKLIB does not parse.
   // ============================================================================
-
-  void handleGpsNav() {
-    eph_t eph{};
-    if (!sbf::nav::parseGPSNav(sbf_body_, eph)) return;
-    ingestAndMaybePublish(eph);
-  }
-
-  void handleGloNav() {
-    geph_t geph{};
-    if (!sbf::nav::parseGLONav(sbf_body_, geph)) return;
-    ingestAndMaybePublish(geph);
-  }
-
-  void handleGalNav() {
-    eph_t eph{};
-    if (!sbf::nav::parseGALNav(sbf_body_, eph)) return;
-    ingestAndMaybePublish(eph);
-  }
-
-  void handleBdsNav() {
-    eph_t eph{};
-    if (!sbf::nav::parseBDSNav(sbf_body_, eph)) return;
-    ingestAndMaybePublish(eph);
-  }
-
-  void handleQzsNav() {
-    eph_t eph{};
-    if (!sbf::nav::parseQZSNav(sbf_body_, eph)) return;
-    ingestAndMaybePublish(eph);
-  }
-
-  void handleNavicNav() {
-    eph_t eph{};
-    if (!sbf::nav::parseNavICNav(sbf_body_, eph)) return;
-    ingestAndMaybePublish(eph);
-  }
-
-  void ingestAndMaybePublish(const eph_t& e) {
-    if (eph_store_.ingestEph(e)) publishSnapshot();
-  }
-  void ingestAndMaybePublish(const geph_t& g) {
-    if (eph_store_.ingestGeph(g)) publishSnapshot();
-  }
 
   // ============================================================================
   // Message Handling
@@ -754,11 +718,12 @@ class SbfDecoderNode : public rclcpp::Node {
     if (raw_.obs.n <= 0) return;
 
     int week = 0;
-    const double tow = time2gpst(raw_.time, &week);
+    const gtime_t obs_time = raw_.obs.data[0].time;
+    const double tow = time2gpst(obs_time, &week);
 
     msg::GnssObservations msg;
     msg.header.stamp    = (use_gps_timestamp_ && week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
+                          ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
     msg.header.frame_id = frame_id_;
     msg.week = static_cast<uint16_t>(week);
     msg.tow  = tow;
