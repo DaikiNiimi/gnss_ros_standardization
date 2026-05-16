@@ -314,6 +314,12 @@ inline T read_le(const uint8_t* p) {
 /// vel_enu (NED→ENU), pos_enu_cov diagonal (from hAcc/vAcc), vel_enu_cov diagonal
 /// (from sAcc), pdop. time_week is left untouched (filled later from system time).
 /// Returns false if payload too short or fix invalid.
+///
+/// Covariance contract: NAV-PVT writes the diagonal of pos_enu_cov/vel_enu_cov
+/// only as a fallback when NAV-COV is not in use. A non-zero off-diagonal in
+/// pos_enu_cov (resp. vel_enu_cov) is the signal that NAV-COV has already
+/// populated the full 3×3 for this epoch; in that case the entire matrix is
+/// left untouched so the NAV-COV values survive regardless of stream order.
 inline bool parseNavPvt(const uint8_t* p, size_t len,
                         gnss_ros_standardization::msg::GnssSolution& out) {
   if (len < static_cast<size_t>(NAV_PVT_MIN_LEN)) return false;
@@ -372,18 +378,26 @@ inline bool parseNavPvt(const uint8_t* p, size_t len,
   const double v_sigma_m = static_cast<double>(v_acc_mm) * 1e-3;
   const double h_var_per_axis = (h_sigma_m * h_sigma_m) * 0.5;
   const double v_var = v_sigma_m * v_sigma_m;
-  std::fill(out.pos_enu_cov.begin(), out.pos_enu_cov.end(), 0.0);
-  out.pos_enu_cov[0] = h_var_per_axis;  // EE
-  out.pos_enu_cov[4] = h_var_per_axis;  // NN
-  out.pos_enu_cov[8] = v_var;           // UU
+  // Skip the diagonal fallback if NAV-COV has already populated this epoch
+  // (signalled by any non-zero off-diagonal entry).
+  const bool pos_cov_from_nav_cov =
+      out.pos_enu_cov[1] != 0.0 || out.pos_enu_cov[2] != 0.0 || out.pos_enu_cov[5] != 0.0;
+  if (!pos_cov_from_nav_cov) {
+    out.pos_enu_cov[0] = h_var_per_axis;  // EE
+    out.pos_enu_cov[4] = h_var_per_axis;  // NN
+    out.pos_enu_cov[8] = v_var;           // UU
+  }
 
   // Velocity covariance diagonal (sAcc is 3D speed 1-sigma; split across 3 axes)
   const double s_sigma_mps = static_cast<double>(s_acc_mms) * 1e-3;
   const double v_var_per_axis = (s_sigma_mps * s_sigma_mps) / 3.0;
-  std::fill(out.vel_enu_cov.begin(), out.vel_enu_cov.end(), 0.0);
-  out.vel_enu_cov[0] = v_var_per_axis;
-  out.vel_enu_cov[4] = v_var_per_axis;
-  out.vel_enu_cov[8] = v_var_per_axis;
+  const bool vel_cov_from_nav_cov =
+      out.vel_enu_cov[1] != 0.0 || out.vel_enu_cov[2] != 0.0 || out.vel_enu_cov[5] != 0.0;
+  if (!vel_cov_from_nav_cov) {
+    out.vel_enu_cov[0] = v_var_per_axis;
+    out.vel_enu_cov[4] = v_var_per_axis;
+    out.vel_enu_cov[8] = v_var_per_axis;
+  }
 
   return true;
 }
@@ -424,8 +438,8 @@ inline bool parseNavDop(const uint8_t* p, size_t len,
 namespace nav_cov {
 
 constexpr int MIN_LEN              = 64;
-constexpr int OFFSET_POS_COV_VALID = 6;   // U1: 1 = posCov valid
-constexpr int OFFSET_VEL_COV_VALID = 7;   // U1: 1 = velCov valid
+constexpr int OFFSET_POS_COV_VALID = 5;   // U1: 1 = posCov valid
+constexpr int OFFSET_VEL_COV_VALID = 6;   // U1: 1 = velCov valid
 // posCov upper triangle (NED frame, f4): NN/NE/ND/EE/ED/DD
 constexpr int OFFSET_POS_NN = 16;
 constexpr int OFFSET_POS_NE = 20;

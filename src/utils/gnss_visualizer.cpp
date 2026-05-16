@@ -60,7 +60,7 @@ public:
     eph_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssEphemerides>(
       "/gnss/ephemeris", rclcpp::QoS(1).transient_local(), std::bind(&GnssVisualizer::ephCallback, this, std::placeholders::_1));
     sol_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssSolution>(
-      "/gnss/solution", 10, std::bind(&GnssVisualizer::solCallback, this, std::placeholders::_1));
+      "/gnss/nmea_solution", 10, std::bind(&GnssVisualizer::solCallback, this, std::placeholders::_1));
 
     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("gnss_visualization/dashboard", 1);
 
