@@ -216,6 +216,7 @@ int main(int argc, char** argv) {
     int week = 0;
     sol.time_tow = time2gpst(t, &week);
     sol.time_week = static_cast<uint16_t>(week);
+    sol.solution_source = GnssSolution::SOLUTION_SOURCE_COMPUTED;
 
     try {
       const double a = std::stod(tok[off + 0]);

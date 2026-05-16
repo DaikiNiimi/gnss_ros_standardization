@@ -667,15 +667,31 @@ class SbfDecoderNode : public rclcpp::Node {
   // ============================================================================
 
   void publishSolution(msg::GnssSolution& sol) {
-    int week = 0;
-    const double tow = time2gpst(raw_.time, &week);
-    if (raw_.time.time != 0 && week > 0) {
-      sol.time_week = static_cast<uint16_t>(week);
-      sol.time_tow  = tow;
+    // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
+    // trusts time_week/time_tow already filled by NmeaParser from the sentence
+    // itself.
+    gtime_t t_gpst{};
+    int week_for_stamp = 0;
+    if (source_ == SolutionSource::BINARY) {
+      const double tow = time2gpst(raw_.time, &week_for_stamp);
+      if (raw_.time.time != 0 && week_for_stamp > 0) {
+        sol.time_week = static_cast<uint16_t>(week_for_stamp);
+        sol.time_tow  = tow;
+      } else {
+        week_for_stamp = 0;
+      }
+      sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
+      t_gpst = raw_.time;
+    } else {
+      sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_NMEA;
+      if (sol.time_week > 0) {
+        week_for_stamp = sol.time_week;
+        t_gpst = gpst2time(sol.time_week, sol.time_tow);
+      }
     }
 
-    sol.header.stamp    = (use_gps_timestamp_ && raw_.time.time != 0 && week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
+    sol.header.stamp    = (use_gps_timestamp_ && week_for_stamp > 0)
+                          ? gnss_utils::gpstToUtcRosTime(t_gpst) : now();
     sol.header.frame_id = frame_id_;
 
     const bool has_fix =

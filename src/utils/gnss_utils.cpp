@@ -1,6 +1,7 @@
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include <cmath>
 #include <cstring>
+#include <ctime>
 #include <algorithm>
 #include <rclcpp/logging.hpp>
 
@@ -52,6 +53,26 @@ rclcpp::Time gpstToUtcRosTime(gtime_t t_gpst) {
   const int64_t nsec = static_cast<int64_t>(t_utc.time) * 1000000000LL +
                        static_cast<int64_t>(t_utc.sec * 1e9);
   return rclcpp::Time(nsec);
+}
+
+bool nmeaUtcToGpsTime(int year, int month, int day, double hms,
+                      uint16_t& week, double& tow) {
+  if (year <= 0 || month <= 0 || day <= 0) return false;
+  const int hh = static_cast<int>(hms / 10000.0);
+  const int mm = static_cast<int>((hms - hh * 10000) / 100.0);
+  const double ss = hms - hh * 10000 - mm * 100;
+  double ep[6] = {static_cast<double>(year), static_cast<double>(month),
+                  static_cast<double>(day), static_cast<double>(hh),
+                  static_cast<double>(mm), ss};
+  gtime_t t_utc = epoch2time(ep);
+  if (t_utc.time == 0) return false;
+  gtime_t t_gpst = utc2gpst(t_utc);
+  int w = 0;
+  const double t = time2gpst(t_gpst, &w);
+  if (w <= 0) return false;
+  week = static_cast<uint16_t>(w);
+  tow = t;
+  return true;
 }
 
 // Local helper from original ros2_rinex_writer.cpp
@@ -463,6 +484,48 @@ bool NmeaParser::parseSentence(const std::string& sentence, gnss_ros_standardiza
 bool NmeaParser::parseGga(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution) {
   if (fields.size() < 15) return false;
 
+  solution.solution_source = gnss_ros_standardization::msg::GnssSolution::SOLUTION_SOURCE_NMEA;
+
+  // Time-of-day (hhmmss.ss) from field[1], combined with date from cached RMC
+  // (or system UTC as fallback). Result populates time_week / time_tow so the
+  // NMEA solution carries its own GPS time independent of any binary decoder.
+  const double hms = parseDouble(fields[1]);
+  if (hms > 0.0) {
+    int year = cached_year_, month = cached_month_, day = cached_day_;
+    if (!has_date_cache_) {
+      const std::time_t now_t = std::time(nullptr);
+      std::tm tm_utc{};
+      gmtime_r(&now_t, &tm_utc);
+      year  = tm_utc.tm_year + 1900;
+      month = tm_utc.tm_mon + 1;
+      day   = tm_utc.tm_mday;
+      RCLCPP_WARN_ONCE(rclcpp::get_logger("nmea_parser"),
+        "NMEA date unavailable (no RMC seen); falling back to system UTC date for GPSTime assembly");
+    } else {
+      // Day-rollover guard: if GGA's time-of-day is much smaller than the most
+      // recent cached time-of-day, the UTC date has just rolled over and the
+      // cache is one day stale until the next RMC arrives.
+      const double cached_hms = cached_last_hms_;
+      if (cached_hms > 0.0 && (cached_hms - hms) > 12.0 * 3600.0) {
+        std::tm tm_in{};
+        tm_in.tm_year = year - 1900;
+        tm_in.tm_mon  = month - 1;
+        tm_in.tm_mday = day + 1;
+        std::mktime(&tm_in);  // normalizes month/year on overflow
+        year  = tm_in.tm_year + 1900;
+        month = tm_in.tm_mon + 1;
+        day   = tm_in.tm_mday;
+      }
+    }
+    cached_last_hms_ = hms;
+    uint16_t week = 0;
+    double   tow  = 0.0;
+    if (nmeaUtcToGpsTime(year, month, day, hms, week, tow)) {
+      solution.time_week = week;
+      solution.time_tow  = tow;
+    }
+  }
+
   int status = parseInteger(fields[6]);
 
   // Set ROS STATUS
@@ -563,7 +626,22 @@ bool NmeaParser::parseGga(const std::vector<std::string>& fields, gnss_ros_stand
 
 bool NmeaParser::parseRmc(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& /*solution*/) {
   if (fields.size() < 10) return false;
-  
+
+  // Cache UTC date from RMC field[9] = ddmmyy. RMC publishes the date even when
+  // status is Void, so we capture it independently of the velocity branch below.
+  const std::string& date_str = fields[9];
+  if (date_str.size() == 6) {
+    int dd = parseInteger(date_str.substr(0, 2));
+    int mo = parseInteger(date_str.substr(2, 2));
+    int yy = parseInteger(date_str.substr(4, 2));
+    if (dd >= 1 && dd <= 31 && mo >= 1 && mo <= 12) {
+      cached_year_  = 2000 + yy;  // NMEA 0183 two-digit year is always 20xx
+      cached_month_ = mo;
+      cached_day_   = dd;
+      has_date_cache_ = true;
+    }
+  }
+
   if (fields[2] != "A") { // A = Active, V = Void
     has_velocity_ = false;
     return false;

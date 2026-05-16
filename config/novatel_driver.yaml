@@ -53,7 +53,12 @@ novatel_driver_node:
       bestpos: false        # BESTPOSB → LLH + sigma → pos_enu_cov diagonal
       bestvel: false        # BESTVELB → vel_enu (refresh between BESTPOS messages)
       psrdop: false         # PSRDOPB  (ID 174) → gdop/pdop/hdop/vdop
-      bestxyz: false        # BESTXYZB (ID 241) → pos_ecef + pos_cov_ecef diag + vel_ecef + vel_cov_ecef diag
+      # Enable only when velocity covariance (vel_cov_ecef / vel_enu_cov) is
+      # needed downstream. Position/velocity values are not changed by BESTXYZ
+      # (BESTPOS/BESTVEL remain the source); BESTXYZ contributes native ECEF
+      # covariance diagonals for both position and velocity, which are rotated
+      # to ENU at the current point.
+      bestxyz: false        # BESTXYZB (ID 241) → pos_cov_ecef / vel_cov_ecef diag (+ ENU rotation)
 
       # Navigation Data (Ephemeris)
       gps_ephem: true       # GPSEPHEMB

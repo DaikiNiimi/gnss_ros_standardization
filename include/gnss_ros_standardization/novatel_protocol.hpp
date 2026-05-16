@@ -227,7 +227,9 @@ inline uint8_t mapPosTypeToStatus(uint32_t pos_type) {
 
 /// Parse BESTPOS body (post-header) into GnssSolution.
 /// Fills: status, num_sats, age_diff, latitude, longitude, altitude,
-/// pos_enu_cov diagonal (from sigma values).
+/// pos_enu_cov diagonal (from lat/lon/hgt sigma; native local-tangent ENU,
+/// off-diagonals not provided). ECEF position and rotated ECEF covariance
+/// are derived downstream from LLH and the local origin.
 inline bool parseBESTPOS(const uint8_t* p, size_t len,
                          gnss_ros_standardization::msg::GnssSolution& out) {
   if (len < static_cast<size_t>(BESTPOS_MIN_LEN)) return false;
@@ -316,13 +318,21 @@ inline bool parsePSRDOP(const uint8_t* p, size_t len,
 }
 
 /// Parse BESTXYZ body into GnssSolution.
-/// Fills: pos_ecef, pos_cov_ecef diagonal (stddev²), vel_ecef, vel_cov_ecef diagonal.
+///
+/// BESTXYZ represents the same internal solution as BESTPOS/BESTVEL expressed
+/// in ECEF Cartesian coordinates. Position and velocity values are therefore
+/// redundant with BESTPOS/BESTVEL; this parser intentionally does NOT overwrite
+/// `pos_ecef` / `vel_ecef` to keep BESTPOS/BESTVEL as the single source of truth
+/// for those values.
+///
+/// What this fills: native ECEF covariance diagonals of position and velocity
+/// (`pos_cov_ecef[0,4,8]` and `vel_cov_ecef[0,4,8]`, in m² and (m/s)²
+/// respectively). Off-diagonal terms are not provided by BESTXYZ; the rotated
+/// 3x3 in ENU computed downstream is a rotated-diagonal approximation and not
+/// the true full covariance.
 inline bool parseBESTXYZ(const uint8_t* p, size_t len,
                          gnss_ros_standardization::msg::GnssSolution& out) {
   if (len < static_cast<size_t>(BESTXYZ_MIN_LEN)) return false;
-  out.pos_ecef.x = read_le<double>(p + BESTXYZ_OFFSET_PX);
-  out.pos_ecef.y = read_le<double>(p + BESTXYZ_OFFSET_PY);
-  out.pos_ecef.z = read_le<double>(p + BESTXYZ_OFFSET_PZ);
   const float spx = read_le<float>(p + BESTXYZ_OFFSET_SPX);
   const float spy = read_le<float>(p + BESTXYZ_OFFSET_SPY);
   const float spz = read_le<float>(p + BESTXYZ_OFFSET_SPZ);
@@ -330,9 +340,6 @@ inline bool parseBESTXYZ(const uint8_t* p, size_t len,
   out.pos_cov_ecef[0] = static_cast<double>(spx) * spx;
   out.pos_cov_ecef[4] = static_cast<double>(spy) * spy;
   out.pos_cov_ecef[8] = static_cast<double>(spz) * spz;
-  out.vel_ecef.x = read_le<double>(p + BESTXYZ_OFFSET_VX);
-  out.vel_ecef.y = read_le<double>(p + BESTXYZ_OFFSET_VY);
-  out.vel_ecef.z = read_le<double>(p + BESTXYZ_OFFSET_VZ);
   const float svx = read_le<float>(p + BESTXYZ_OFFSET_SVX);
   const float svy = read_le<float>(p + BESTXYZ_OFFSET_SVY);
   const float svz = read_le<float>(p + BESTXYZ_OFFSET_SVZ);

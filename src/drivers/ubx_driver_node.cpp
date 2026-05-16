@@ -1187,6 +1187,7 @@ class UbxDriverNode : public rclcpp::Node {
 
     maybePublishHeartbeat();
     warnIfBinaryStarvation();
+    maybeWatchdogFlushPendingPvt();
   }
 
   // Solution source policy:
@@ -1203,30 +1204,106 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
+  // ============================================================================
+  // PVT TOW Aggregation (mirrors SBF driver pattern; see ubx_decoder_node.cpp
+  // for design notes). All NAV-* payloads carry iTOW at offset 0.
+  // ============================================================================
+  static constexpr uint8_t COV_BIT_DOP = 0x1;
+  static constexpr uint8_t COV_BIT_COV = 0x2;
+
+  struct PendingPvt {
+    uint32_t tow_ms{UINT32_MAX};
+    bool has_pvt{false};
+    uint8_t cov_received{0};
+    uint8_t cov_ever_seen{0};
+    msg::GnssSolution buf{};
+    rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
+  };
+
+  static uint32_t readItowMs(const uint8_t* p, size_t len) {
+    if (len < 4) return UINT32_MAX;
+    uint32_t v = 0;
+    std::memcpy(&v, p, 4);
+    return v;
+  }
+
+  bool pendingComplete() const {
+    return pending_.has_pvt &&
+           pending_.cov_received == pending_.cov_ever_seen;
+  }
+
   void handleNavPvt() {
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
     if (!ubx::pvt::parseNavPvt(ubx_frm_payload_.data(), ubx_frm_payload_.size(),
-                               binary_solution_)) {
+                               pending_.buf)) {
       return;
     }
-    // Compute pos_ecef from LLH and vel_ecef from vel_enu so that the common
-    // publishSolution logic (origin/ENU derivation) works unchanged.
-    finalizeBinarySolutionGeometry(binary_solution_);
+    pending_.has_pvt = true;
+    pending_.last_update = now();
     ever_received_binary_ = true;
-    if (source_ == SolutionSource::BINARY) {
-      publishSolution(binary_solution_);
+    if (pendingComplete()) flushPending();
+  }
+
+  void handleNavDop() {
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_dop::parseNavDop(ubx_frm_payload_.data(), ubx_frm_payload_.size(),
+                                   pending_.buf)) {
+      return;
+    }
+    pending_.cov_received |= COV_BIT_DOP;
+    pending_.cov_ever_seen |= COV_BIT_DOP;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
+  }
+
+  void handleNavCov() {
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_cov::parseNavCov(ubx_frm_payload_.data(), ubx_frm_payload_.size(),
+                                   pending_.buf)) {
+      return;
+    }
+    pending_.cov_received |= COV_BIT_COV;
+    pending_.cov_ever_seen |= COV_BIT_COV;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
+  }
+
+  void flushPending() {
+    const uint8_t ever_seen = pending_.cov_ever_seen;
+    if (!pending_.has_pvt) {
+      pending_ = {};
+      pending_.cov_ever_seen = ever_seen;
+      return;
+    }
+    binary_solution_ = pending_.buf;
+    finalizeBinarySolutionGeometry(binary_solution_);
+    if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+    pending_ = {};
+    pending_.cov_ever_seen = ever_seen;
+  }
+
+  void maybeWatchdogFlushPendingPvt() {
+    if (!pending_.has_pvt && !pending_.cov_received) return;
+    if ((now() - pending_.last_update).seconds() > 1.5) {
+      flushPending();
     }
   }
 
   // Warn if BINARY source was selected via YAML but no PVT has arrived after
   // a generous startup window — typically indicates a receiver-side config
   // or capability issue. Prevents silent failure under no-fallback policy.
-  void handleNavDop() {
-    ubx::nav_dop::parseNavDop(ubx_frm_payload_.data(), ubx_frm_payload_.size(), binary_solution_);
-  }
-
-  void handleNavCov() {
-    ubx::nav_cov::parseNavCov(ubx_frm_payload_.data(), ubx_frm_payload_.size(), binary_solution_);
-  }
 
   void warnIfBinaryStarvation() {
     if (source_ != SolutionSource::BINARY) return;
@@ -1258,16 +1335,29 @@ class UbxDriverNode : public rclcpp::Node {
         return;
     }
 
-    // Determine header timestamp
-    int week = 0;
-    const double tow = time2gpst(raw_.time, &week);
-    if (week > 0) {
-      sol.time_week = static_cast<uint16_t>(week);
-      sol.time_tow = tow;
+    // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
+    // trusts time_week/time_tow already filled by NmeaParser from the sentence
+    // itself.
+    gtime_t t_gpst{};
+    int week_for_stamp = 0;
+    if (source_ == SolutionSource::BINARY) {
+      const double tow = time2gpst(raw_.time, &week_for_stamp);
+      if (week_for_stamp > 0) {
+        sol.time_week = static_cast<uint16_t>(week_for_stamp);
+        sol.time_tow  = tow;
+      }
+      sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
+      t_gpst = raw_.time;
+    } else {
+      sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_NMEA;
+      if (sol.time_week > 0) {
+        week_for_stamp = sol.time_week;
+        t_gpst = gpst2time(sol.time_week, sol.time_tow);
+      }
     }
 
-    sol.header.stamp    = (config_.use_gps_timestamp && week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
+    sol.header.stamp    = (config_.use_gps_timestamp && week_for_stamp > 0)
+                          ? gnss_utils::gpstToUtcRosTime(t_gpst) : now();
     sol.header.frame_id = config_.frame_id;
 
     // Handle ENU conversion if a reference origin exists or setup if it doesn't
@@ -1453,6 +1543,7 @@ class UbxDriverNode : public rclcpp::Node {
   std::string nmea_buffer_;
   msg::GnssSolution nmea_solution_;
   msg::GnssSolution binary_solution_;
+  PendingPvt        pending_;
   SolutionSource    source_{SolutionSource::NMEA};
   rclcpp::Time      start_time_{0, 0, RCL_ROS_TIME};
   bool              ever_received_binary_{false};

@@ -501,6 +501,7 @@ private:
 
       sol_msg->time_week = rtk_.sol.time.time / (7*24*3600);
       sol_msg->time_tow = fmod(rtk_.sol.time.time + rtk_.sol.time.sec, 7*24*3600);
+      sol_msg->solution_source = grs::GnssSolution::SOLUTION_SOURCE_COMPUTED;
 
       sol_msg->status = rtk_.sol.stat;
       sol_msg->num_sats = rtk_.sol.ns;

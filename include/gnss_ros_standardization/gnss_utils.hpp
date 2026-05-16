@@ -62,6 +62,14 @@ gnss_ros_standardization::msg::GnssObservation obsToMsg(const obsd_t& o, int kf)
  */
 rclcpp::Time gpstToUtcRosTime(gtime_t t_gpst);
 
+/**
+ * Assemble a UTC (year, month, day, hhmmss.ss) and convert to GPS week / tow
+ * using RTKLIB epoch2time() + utc2gpst() (leap-second correction included).
+ * @return true on success.
+ */
+bool nmeaUtcToGpsTime(int year, int month, int day, double hms,
+                      uint16_t& week, double& tow);
+
 // ---- Math Helpers ----
 
 /**
@@ -130,6 +138,13 @@ class NmeaParser {
 
   // Buffer state
   bool has_time_{false};
+  // Cached UTC date from the last RMC (field[9] ddmmyy) or ZDA. Used to assemble
+  // GPS week/tow when GGA-only sentences arrive (GGA carries time-of-day but no date).
+  int cached_year_{0};
+  int cached_month_{0};
+  int cached_day_{0};
+  bool has_date_cache_{false};
+  double cached_last_hms_{0.0};  // most recent GGA hhmmss.ss seen, for UTC day-rollover detection
   double last_pdop_{0.0};
   double last_hdop_{0.0};
   double last_vdop_{0.0};

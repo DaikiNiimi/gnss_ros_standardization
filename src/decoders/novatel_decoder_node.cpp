@@ -245,11 +245,21 @@ class NovatelDecoderNode : public rclcpp::Node {
       case 9:
         oem4_msg_len_ |= static_cast<uint16_t>(byte << 8);
         oem4_hdr_rem_  = static_cast<int>(oem4_hdr_len_) - 10;  // bytes already consumed: SYNC(3)+HDRLEN(1)+MSGID(2)+MSGTYPE(1)+PORT(1)+MSGLEN(2)=10
+        oem4_hdr_pos_  = 10;  // next byte's offset within the OEM4 header
+        oem4_gps_week_ = 0;
+        oem4_gps_ms_   = 0;
         oem4_body_.clear();
         oem4_body_pos_ = 0;
         oem4_state_    = (oem4_hdr_rem_ > 0) ? 10 : 11;
         break;
-      case 10:  // skip remaining header bytes
+      case 10:  // skip remaining header bytes, capturing GPS week (off 14-15) and ms (off 16-19)
+        if (oem4_hdr_pos_ == 14)      oem4_gps_week_  = byte;
+        else if (oem4_hdr_pos_ == 15) oem4_gps_week_ |= static_cast<uint16_t>(byte << 8);
+        else if (oem4_hdr_pos_ == 16) oem4_gps_ms_    = byte;
+        else if (oem4_hdr_pos_ == 17) oem4_gps_ms_   |= static_cast<uint32_t>(byte) <<  8;
+        else if (oem4_hdr_pos_ == 18) oem4_gps_ms_   |= static_cast<uint32_t>(byte) << 16;
+        else if (oem4_hdr_pos_ == 19) oem4_gps_ms_   |= static_cast<uint32_t>(byte) << 24;
+        ++oem4_hdr_pos_;
         if (--oem4_hdr_rem_ <= 0) oem4_state_ = (oem4_msg_len_ > 0) ? 11 : 13;
         break;
       case 11:  // collect body
@@ -303,34 +313,139 @@ class NovatelDecoderNode : public rclcpp::Node {
     }
   }
 
+  // ============================================================================
+  // PVT TOW Aggregation (mirrors SBF decoder pattern).
+  //
+  // TOW (GPS ms) is captured by the OEM4 mini-framer (oem4_gps_ms_). Each
+  // BEST*/PSRDOP handler aggregates into pending_ keyed on TOW; flushPending()
+  // applies the existing covariance-routing policy in one place.
+  // ============================================================================
+  static constexpr uint8_t COV_BIT_VEL = 0x1;
+  static constexpr uint8_t COV_BIT_DOP = 0x2;
+  static constexpr uint8_t COV_BIT_XYZ = 0x4;
+
+  struct PendingPvt {
+    uint32_t tow_ms{UINT32_MAX};
+    bool has_pvt{false};
+    uint8_t cov_received{0};
+    uint8_t cov_ever_seen{0};
+    msg::GnssSolution buf{};
+    rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
+  };
+
+  bool pendingComplete() const {
+    return pending_.has_pvt &&
+           pending_.cov_received == pending_.cov_ever_seen;
+  }
+
+  void aggregateEpochBoundary() {
+    if (oem4_gps_ms_ != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = oem4_gps_ms_;
+  }
+
   void handleBestPos() {
     startGraceIfNeeded();
-    if (!novatel::pvt::parseBESTPOS(oem4_body_.data(), oem4_body_.size(), binary_solution_)) return;
-    finalizeBinarySolutionGeometry(binary_solution_);
+    aggregateEpochBoundary();
+    if (!novatel::pvt::parseBESTPOS(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
+    pending_.has_pvt = true;
+    pending_.last_update = now();
     saw_binary_during_grace_ = true;
     commitSourceLockIfDue();
-    if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+    if (pendingComplete()) flushPending();
   }
 
   void handleBestVel() {
-    if (!novatel::pvt::parseBESTVEL(oem4_body_.data(), oem4_body_.size(), binary_solution_)) return;
-    double llh[3] = {binary_solution_.latitude * D2R,
-                     binary_solution_.longitude * D2R,
-                     binary_solution_.altitude};
-    double vel_e[3] = {binary_solution_.vel_enu.x, binary_solution_.vel_enu.y, binary_solution_.vel_enu.z};
-    double vel_ec[3] = {0};
-    enu2ecef(llh, vel_e, vel_ec);
-    binary_solution_.vel_ecef.x = vel_ec[0];
-    binary_solution_.vel_ecef.y = vel_ec[1];
-    binary_solution_.vel_ecef.z = vel_ec[2];
+    startGraceIfNeeded();
+    aggregateEpochBoundary();
+    if (!novatel::pvt::parseBESTVEL(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
+    pending_.cov_received  |= COV_BIT_VEL;
+    pending_.cov_ever_seen |= COV_BIT_VEL;
+    pending_.last_update = now();
+    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
+    if (pendingComplete()) flushPending();
   }
 
   void handlePsrDop() {
-    novatel::pvt::parsePSRDOP(oem4_body_.data(), oem4_body_.size(), binary_solution_);
+    startGraceIfNeeded();
+    aggregateEpochBoundary();
+    if (!novatel::pvt::parsePSRDOP(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
+    pending_.cov_received  |= COV_BIT_DOP;
+    pending_.cov_ever_seen |= COV_BIT_DOP;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
   }
 
   void handleBestXyz() {
-    novatel::pvt::parseBESTXYZ(oem4_body_.data(), oem4_body_.size(), binary_solution_);
+    // BESTXYZ provides native ECEF covariance diagonals for both position and
+    // velocity. Position/velocity values are intentionally NOT overwritten by
+    // the parser — BESTPOS/BESTVEL remain the single source of truth (BESTXYZ
+    // is the same internal solution expressed in ECEF).
+    startGraceIfNeeded();
+    aggregateEpochBoundary();
+    if (!novatel::pvt::parseBESTXYZ(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
+    saw_bestxyz_ = true;
+    pending_.cov_received  |= COV_BIT_XYZ;
+    pending_.cov_ever_seen |= COV_BIT_XYZ;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
+  }
+
+  void flushPending() {
+    const uint8_t ever_seen = pending_.cov_ever_seen;
+    if (!pending_.has_pvt) {
+      pending_ = {};
+      pending_.cov_ever_seen = ever_seen;
+      return;
+    }
+    binary_solution_ = pending_.buf;
+    finalizeBinarySolutionGeometry(binary_solution_);
+    // Covariance source policy:
+    //   - BESTXYZ not seen: BESTPOS ENU diagonals are authoritative; rotate
+    //     ENU→ECEF to fill pos_cov_ecef.
+    //   - BESTXYZ seen: BESTXYZ owns pos covariance; rotate ECEF→ENU.
+    rotatePosCovariance(binary_solution_);
+    if (pending_.cov_received & COV_BIT_XYZ) rotateVelCovariance(binary_solution_);
+    if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+    pending_ = {};
+    pending_.cov_ever_seen = ever_seen;
+  }
+
+  void maybeWatchdogFlushPendingPvt() {
+    if (!pending_.has_pvt && !pending_.cov_received) return;
+    if ((now() - pending_.last_update).seconds() > 1.5) {
+      flushPending();
+    }
+  }
+
+  // Covariance rotation helpers. Operate on diagonal-only inputs; off-diagonal
+  // terms in the output are the rotated 3x3 of a diagonal source, not the true
+  // full covariance (BESTPOS and BESTXYZ both publish diagonals only).
+  void rotatePosCovariance(msg::GnssSolution& s) {
+    const double lat = s.latitude  * D2R;
+    const double lon = s.longitude * D2R;
+    if (saw_bestxyz_) {
+      double cov_ecef[9], cov_enu[9];
+      std::copy(s.pos_cov_ecef.begin(), s.pos_cov_ecef.end(), cov_ecef);
+      gnss_utils::rotateCovariance(cov_ecef, lat, lon, cov_enu);
+      std::copy(std::begin(cov_enu), std::end(cov_enu), s.pos_enu_cov.begin());
+    } else {
+      double cov_enu[9], cov_ecef[9];
+      std::copy(s.pos_enu_cov.begin(), s.pos_enu_cov.end(), cov_enu);
+      gnss_utils::rotateCovarianceEnuToEcef(cov_enu, lat, lon, cov_ecef);
+      std::copy(std::begin(cov_ecef), std::end(cov_ecef), s.pos_cov_ecef.begin());
+    }
+  }
+
+  void rotateVelCovariance(msg::GnssSolution& s) {
+    const double lat = s.latitude  * D2R;
+    const double lon = s.longitude * D2R;
+    double cov_ecef[9], cov_enu[9];
+    std::copy(s.vel_cov_ecef.begin(), s.vel_cov_ecef.end(), cov_ecef);
+    gnss_utils::rotateCovariance(cov_ecef, lat, lon, cov_enu);
+    std::copy(std::begin(cov_enu), std::end(cov_enu), s.vel_enu_cov.begin());
   }
 
   static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
@@ -476,15 +591,32 @@ class NovatelDecoderNode : public rclcpp::Node {
   // ============================================================================
 
   void publishSolution(msg::GnssSolution& sol) {
-    int week = 0;
-    const double tow = time2gpst(raw_.time, &week);
-    if (week > 0) {
-      sol.time_week = static_cast<uint16_t>(week);
-      sol.time_tow  = tow;
+    // Time/source policy:
+    //   BINARY path: trust the RTKLIB-binary-decoder timestamp (raw_.time) and
+    //                stamp solution_source accordingly.
+    //   NMEA  path: the NmeaParser has already populated time_week/time_tow
+    //                from the sentence itself, so reassemble gtime_t from those
+    //                instead of borrowing raw_.time (which may be stale).
+    gtime_t t_gpst{};
+    int week_for_stamp = 0;
+    if (source_ == SolutionSource::BINARY) {
+      const double tow = time2gpst(raw_.time, &week_for_stamp);
+      if (week_for_stamp > 0) {
+        sol.time_week = static_cast<uint16_t>(week_for_stamp);
+        sol.time_tow  = tow;
+      }
+      sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
+      t_gpst = raw_.time;
+    } else {
+      sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_NMEA;
+      if (sol.time_week > 0) {
+        week_for_stamp = sol.time_week;
+        t_gpst = gpst2time(sol.time_week, sol.time_tow);
+      }
     }
 
-    sol.header.stamp    = (use_gps_timestamp_ && week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
+    sol.header.stamp    = (use_gps_timestamp_ && week_for_stamp > 0)
+                          ? gnss_utils::gpstToUtcRosTime(t_gpst) : now();
     sol.header.frame_id = frame_id_;
 
     const bool has_fix =
@@ -651,6 +783,7 @@ class NovatelDecoderNode : public rclcpp::Node {
   rclcpp::Time           grace_start_{0, 0, RCL_ROS_TIME};
   bool                   grace_started_{false};
   bool                   saw_binary_during_grace_{false};
+  bool                   saw_bestxyz_{false};
 
   // ENU local origin
   double origin_latitude_{0.0};
@@ -666,8 +799,12 @@ class NovatelDecoderNode : public rclcpp::Node {
   uint8_t              oem4_hdr_len_{28};
   uint16_t             oem4_msg_len_{0};
   int                  oem4_hdr_rem_{0};
+  int                  oem4_hdr_pos_{0};
+  uint16_t             oem4_gps_week_{0};
+  uint32_t             oem4_gps_ms_{0};
   int                  oem4_body_pos_{0};
   std::vector<uint8_t> oem4_body_;
+  PendingPvt           pending_;
 
   // Ephemeris dedup
   gnss_utils::EphemerisStore eph_store_;

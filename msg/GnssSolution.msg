@@ -4,6 +4,13 @@ std_msgs/Header header  # stamp = solution time (GPST); frame_id = receiver labe
 uint16 time_week        # GPS week number
 float64 time_tow        # time of week [s]
 
+# Solution Origin (where this solution — including its time — came from)
+uint8 solution_source
+uint8 SOLUTION_SOURCE_UNKNOWN=0   # unset / not determined
+uint8 SOLUTION_SOURCE_BINARY=1    # receiver binary PVT message (BESTPOS / NAV-PVT / PVTGeodetic ...)
+uint8 SOLUTION_SOURCE_NMEA=2      # receiver NMEA sentence (GGA / RMC ...)
+uint8 SOLUTION_SOURCE_COMPUTED=3  # locally computed from RAW obs + ephemerides (SPP / RTK)
+
 # Solution Status
 uint8 status
 uint8 STATUS_NONE=0     # no solution

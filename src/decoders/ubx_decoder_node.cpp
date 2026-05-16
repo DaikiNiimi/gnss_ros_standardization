@@ -216,6 +216,7 @@ class UbxDecoderNode : public rclcpp::Node {
 
     maybePublishHeartbeat();
     commitSourceLockIfDue();  // ensure grace finalizes even on idle stream
+    maybeWatchdogFlushPendingPvt();
   }
 
   // ============================================================================
@@ -304,26 +305,114 @@ class UbxDecoderNode : public rclcpp::Node {
     }
   }
 
+  // ============================================================================
+  // PVT TOW Aggregation (mirrors SBF decoder pattern)
+  //
+  // All NAV-* messages carry iTOW at payload offset 0. We buffer per-epoch into
+  // PendingPvt and flush only when the set of cov blocks seen so far is
+  // complete. cov_ever_seen is sticky and self-calibrates after the first
+  // epoch of each cov type — so the flush condition adapts to whichever subset
+  // of NAV-DOP/NAV-COV the receiver is configured to emit.
+  // ============================================================================
+  static constexpr uint8_t COV_BIT_DOP = 0x1;
+  static constexpr uint8_t COV_BIT_COV = 0x2;
+
+  struct PendingPvt {
+    uint32_t tow_ms{UINT32_MAX};
+    bool has_pvt{false};
+    uint8_t cov_received{0};
+    uint8_t cov_ever_seen{0};
+    msg::GnssSolution buf{};
+    rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
+  };
+
+  static uint32_t readItowMs(const uint8_t* p, size_t len) {
+    if (len < 4) return UINT32_MAX;
+    uint32_t v = 0;
+    std::memcpy(&v, p, 4);
+    return v;
+  }
+
+  bool pendingComplete() const {
+    return pending_.has_pvt &&
+           pending_.cov_received == pending_.cov_ever_seen;
+  }
+
   void handleNavPvt() {
     startGraceIfNeeded();
+    const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size());
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
     if (!ubx::pvt::parseNavPvt(ubx_payload_.data(), ubx_payload_.size(),
-                               binary_solution_)) {
+                               pending_.buf)) {
       return;
     }
-    finalizeBinarySolutionGeometry(binary_solution_);
+    pending_.has_pvt = true;
+    pending_.last_update = now();
     saw_binary_during_grace_ = true;
     commitSourceLockIfDue();
-    if (source_ == SolutionSource::BINARY) {
-      publishSolution(binary_solution_);
-    }
+    if (pendingComplete()) flushPending();
   }
 
   void handleNavDop() {
-    ubx::nav_dop::parseNavDop(ubx_payload_.data(), ubx_payload_.size(), binary_solution_);
+    startGraceIfNeeded();
+    const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size());
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_dop::parseNavDop(ubx_payload_.data(), ubx_payload_.size(),
+                                   pending_.buf)) {
+      return;
+    }
+    pending_.cov_received |= COV_BIT_DOP;
+    pending_.cov_ever_seen |= COV_BIT_DOP;
+    pending_.last_update = now();
+    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
+    if (pendingComplete()) flushPending();
   }
 
   void handleNavCov() {
-    ubx::nav_cov::parseNavCov(ubx_payload_.data(), ubx_payload_.size(), binary_solution_);
+    startGraceIfNeeded();
+    const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size());
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_cov::parseNavCov(ubx_payload_.data(), ubx_payload_.size(),
+                                   pending_.buf)) {
+      return;
+    }
+    pending_.cov_received |= COV_BIT_COV;
+    pending_.cov_ever_seen |= COV_BIT_COV;
+    pending_.last_update = now();
+    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
+    if (pendingComplete()) flushPending();
+  }
+
+  void flushPending() {
+    const uint8_t ever_seen = pending_.cov_ever_seen;
+    if (!pending_.has_pvt) {
+      pending_ = {};
+      pending_.cov_ever_seen = ever_seen;
+      return;
+    }
+    binary_solution_ = pending_.buf;
+    finalizeBinarySolutionGeometry(binary_solution_);
+    if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+    pending_ = {};
+    pending_.cov_ever_seen = ever_seen;
+  }
+
+  void maybeWatchdogFlushPendingPvt() {
+    if (!pending_.has_pvt && !pending_.cov_received) return;
+    if ((now() - pending_.last_update).seconds() > 1.5) {
+      flushPending();
+    }
   }
 
   static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
@@ -473,15 +562,29 @@ class UbxDecoderNode : public rclcpp::Node {
   // ============================================================================
 
   void publishSolution(msg::GnssSolution& sol) {
-    int week = 0;
-    const double tow = time2gpst(raw_.time, &week);
-    if (week > 0) {
-      sol.time_week = static_cast<uint16_t>(week);
-      sol.time_tow = tow;
+    // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
+    // trusts time_week/time_tow already filled by NmeaParser from the sentence
+    // itself.
+    gtime_t t_gpst{};
+    int week_for_stamp = 0;
+    if (source_ == SolutionSource::BINARY) {
+      const double tow = time2gpst(raw_.time, &week_for_stamp);
+      if (week_for_stamp > 0) {
+        sol.time_week = static_cast<uint16_t>(week_for_stamp);
+        sol.time_tow  = tow;
+      }
+      sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
+      t_gpst = raw_.time;
+    } else {
+      sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_NMEA;
+      if (sol.time_week > 0) {
+        week_for_stamp = sol.time_week;
+        t_gpst = gpst2time(sol.time_week, sol.time_tow);
+      }
     }
 
-    sol.header.stamp    = (use_gps_timestamp_ && week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(raw_.time) : now();
+    sol.header.stamp    = (use_gps_timestamp_ && week_for_stamp > 0)
+                          ? gnss_utils::gpstToUtcRosTime(t_gpst) : now();
     sol.header.frame_id = frame_id_;
 
     if (sol.status == msg::GnssSolution::STATUS_FIX ||
@@ -642,6 +745,7 @@ class UbxDecoderNode : public rclcpp::Node {
   std::string            nmea_buffer_;
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
+  PendingPvt             pending_;
   SolutionSource         source_{SolutionSource::UNDETERMINED};
   rclcpp::Time           grace_start_{0, 0, RCL_ROS_TIME};
   bool                   grace_started_{false};
