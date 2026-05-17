@@ -153,16 +153,37 @@ covariance from GST. No mid-session switching: if the binary stream stops,
 
 ### Local ENU
 
-The first solution sets `org_ecef` (subsequent messages keep that origin). All
+The first solution sets `pos_enu_org_ecef` (subsequent messages keep that origin). All
 subsequent `pos_enu` / `vel_enu` are relative to this origin.
 
 | Field | Type | Unit |
 |---|---|---|
-| `org_ecef` | `geometry_msgs/Point` | m (ECEF) |
+| `pos_enu_org_ecef` | `geometry_msgs/Point` | m (ECEF) |
 | `pos_enu` | `geometry_msgs/Point` | m (East, North, Up) |
 | `pos_enu_cov` | `float64[9]` | m² |
 | `vel_enu` | `geometry_msgs/Vector3` | m/s |
 | `vel_enu_cov` | `float64[9]` | (m/s)² |
+
+#### Frame conventions (important)
+
+Position and covariance/velocity use **different reference frames**:
+
+- **`pos_enu`** is anchored at `pos_enu_org_ecef`: axes aligned with the tangent plane at
+  the initial fix. The vector is a displacement from `pos_enu_org_ecef`.
+- **`pos_enu_cov`, `vel_enu`, `vel_enu_cov`** are reported in the **tangent plane
+  at the current receiver position** (not at `pos_enu_org_ecef`). This matches the
+  convention used by every receiver this library decodes (u-blox NAV-COV's NED
+  frame, Septentrio PosCovGeodetic's lat/lon/height stddev, NovAtel BESTPOS's
+  lat/lon/hgt stddev) and by RTKLIB's `.pos` `sdn/sde/sdu` columns.
+
+For sub-km baselines the two frames are equivalent within ~baseline/R_earth
+(≈ 10⁻⁴ rad). For strict frame consistency or long baselines, prefer the ECEF
+fields (`pos_cov_ecef`, `vel_cov_ecef`) which are frame-invariant.
+
+When the receiver outputs ECEF directly (Septentrio PVTCartesian/PosCovCartesian,
+u-blox NAV-POSECEF/NAV-VELECEF, NovAtel BESTXYZ), those values are used as the
+ECEF truth source. Otherwise ECEF is derived from ENU by rotation at the current
+solution's lat/lon.
 
 ---
 

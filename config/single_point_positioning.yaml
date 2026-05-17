@@ -16,7 +16,7 @@ spp_pntpos_node:
     topics:
       observation: "/gnss/observation"
       ephemeris: "/gnss/ephemeris"
-      solution: "/gnss/solution"
+      solution: "/gnss/spp_solution"
 
     # Fixed Origin for Local Position (ENU)
     # If 'pos' is set to non-zero, this position is used as the origin.

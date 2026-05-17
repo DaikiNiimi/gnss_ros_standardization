@@ -43,12 +43,24 @@ geometry_msgs/Vector3 vel_ecef  # velocity [m/s] (X, Y, Z)
 float64[9] vel_cov_ecef         # 3×3 velocity covariance, row-major [(m/s)²]
 
 # Local Coordinate System Origin — ECEF
-geometry_msgs/Point org_ecef    # ENU origin [m] (X, Y, Z); set once at first fix
+geometry_msgs/Point pos_enu_org_ecef    # ENU origin [m] (X, Y, Z); set once at first fix
 
-# Local Position — East-North-Up (ENU) relative to org_ecef
+# Local Position — East-North-Up (ENU) relative to pos_enu_org_ecef
+# Frame: axes aligned with the tangent plane at pos_enu_org_ecef (anchored at first fix).
 geometry_msgs/Point pos_enu     # position [m] (East, North, Up)
+
+# Position covariance.
+# Frame: tangent plane at the CURRENT receiver position — NOT at pos_enu_org_ecef.
+# This matches the receiver convention (NAV-COV NED, BESTPOS lat/lon/hgt stddev,
+# PosCovGeodetic) and RTKLIB .pos sdn/sde/sdu. For sub-km baselines this is
+# equivalent to pos_enu_org_ecef-anchored cov within ~baseline/R_earth (~1e-4 rad).
+# For strict frame consistency or long baselines, use pos_cov_ecef.
 float64[9] pos_enu_cov          # 3×3 position covariance, row-major [m²]
 
 # Local Velocity — ENU
+# Frame: tangent plane at the CURRENT receiver position.
 geometry_msgs/Vector3 vel_enu   # velocity [m/s] (East, North, Up)
+
+# Velocity covariance.
+# Frame: tangent plane at the CURRENT receiver position.
 float64[9] vel_enu_cov          # 3×3 velocity covariance, row-major [(m/s)²]

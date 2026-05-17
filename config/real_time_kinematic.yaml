@@ -7,7 +7,7 @@ rtk_position_node:
       rover_observation: "/gnss/observation"
       base_observation: "/base/gnss/observation"
       ephemeris: "/gnss/ephemeris"
-      solution: "/gnss/solution"
+      solution: "/gnss/rtk_solution"
     
     # TCP port for RTKPLOT stream (providing NMEA output)
     tcp_port: 8002

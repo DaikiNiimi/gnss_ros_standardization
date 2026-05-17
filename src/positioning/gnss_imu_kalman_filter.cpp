@@ -857,9 +857,9 @@ void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
   }
 
   if (origin_set_) {
-    sol.org_ecef.x = origin_ecef_(0);
-    sol.org_ecef.y = origin_ecef_(1);
-    sol.org_ecef.z = origin_ecef_(2);
+    sol.pos_enu_org_ecef.x = origin_ecef_(0);
+    sol.pos_enu_org_ecef.y = origin_ecef_(1);
+    sol.pos_enu_org_ecef.z = origin_ecef_(2);
 
     Eigen::Vector3d enu = ecefToWorkFrame(ecef_pos);
     sol.pos_enu.x = enu(0);

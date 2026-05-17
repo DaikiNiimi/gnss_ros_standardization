@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -25,9 +26,10 @@ using gnss_ros_standardization::msg::GnssSolution;
 
 struct Args {
   std::string bag_uri;
-  std::string topic = "/gnss/solution";
+  std::string topic = "/gnss/nmea_solution";
   std::string out_path;
   std::string program_name = "rosbag_to_pos";
+  bool with_velocity = false;
 };
 
 static std::string normalizeBagUri(std::string uri) {
@@ -75,12 +77,13 @@ static Args parseArgs(int argc, char** argv) {
     if      (s == "--bag")   a.bag_uri = next();
     else if (s == "--topic") a.topic   = next();
     else if (s == "--out")   a.out_path = next();
+    else if (s == "--vel")   a.with_velocity = true;
     else std::fprintf(stderr, "[warn] unknown arg %s\n", s.c_str());
   }
   return a;
 }
 
-static void writeHeader(FILE* fp, const std::string& prog) {
+static void writeHeader(FILE* fp, const std::string& prog, bool with_velocity) {
   std::fprintf(fp, "%% program   : %s\n", prog.c_str());
   std::fprintf(fp, "%% pos mode  : (from receiver / GnssSolution.status)\n");
   std::fprintf(fp, "%%\n");
@@ -88,16 +91,23 @@ static void writeHeader(FILE* fp, const std::string& prog) {
                    "Q=1:fix,2:float,3:sbas,4:dgps,5:single,6:ppp,"
                    "ns=# of satellites)\n");
   std::fprintf(fp, "%%  %-23s  %14s %14s %10s %3s %3s "
-                   "%8s %8s %8s %8s %8s %8s %6s %6s\n",
+                   "%8s %8s %8s %8s %8s %8s %6s %6s",
                "GPST",
                "latitude(deg)", "longitude(deg)", "height(m)",
                "Q", "ns",
                "sdn(m)", "sde(m)", "sdu(m)",
                "sdne(m)", "sdeu(m)", "sdun(m)",
                "age(s)", "ratio");
+  if (with_velocity) {
+    std::fprintf(fp, " %10s %10s %10s %8s %8s %8s %8s %8s %8s",
+                 "vn(m/s)", "ve(m/s)", "vu(m/s)",
+                 "sdvn", "sdve", "sdvu",
+                 "sdvne", "sdveu", "sdvun");
+  }
+  std::fprintf(fp, "\n");
 }
 
-static void writeEpoch(FILE* fp, const GnssSolution& m) {
+static void writeEpoch(FILE* fp, const GnssSolution& m, bool with_velocity) {
   const int Q = statusToQ(m.status);
   if (Q == 0) return;
 
@@ -125,23 +135,53 @@ static void writeEpoch(FILE* fp, const GnssSolution& m) {
 
   std::fprintf(fp,
     "%s  %14.9f %14.9f %10.4f %3d %3u "
-    "%8.4f %8.4f %8.4f %8.4f %8.4f %8.4f %6.2f %6.1f\n",
+    "%8.4f %8.4f %8.4f %8.4f %8.4f %8.4f %6.2f %6.1f",
     tbuf,
     m.latitude, m.longitude, m.altitude,
     Q, m.num_sats,
     sdn, sde, sdu, sdne, sdeu, sdun,
     (double)m.age_diff, (double)m.ratio);
+
+  if (with_velocity) {
+    // Same E-N-U -> N-E-U remap as position covariance.
+    const double* Cv = m.vel_enu_cov.data();
+    const double vn = m.vel_enu.y;
+    const double ve = m.vel_enu.x;
+    const double vu = m.vel_enu.z;
+    const double sdvn  = std::sqrt(std::max(0.0, Cv[4]));
+    const double sdve  = std::sqrt(std::max(0.0, Cv[0]));
+    const double sdvu  = std::sqrt(std::max(0.0, Cv[8]));
+    const double sdvne = signedSqrt(Cv[1]);
+    const double sdveu = signedSqrt(Cv[2]);
+    const double sdvun = signedSqrt(Cv[7]);
+    std::fprintf(fp,
+      " %10.5f %10.5f %10.5f %8.5f %8.5f %8.5f %8.5f %8.5f %8.5f",
+      vn, ve, vu, sdvn, sdve, sdvu, sdvne, sdveu, sdvun);
+  }
+  std::fprintf(fp, "\n");
 }
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
   Args args = parseArgs(argc, argv);
 
-  if (args.bag_uri.empty() || args.out_path.empty()) {
+  if (args.bag_uri.empty()) {
     std::fprintf(stderr,
-      "Usage: rosbag_to_pos --bag <bag_dir_or_db3> --out <out.pos> "
-      "[--topic /gnss/solution]\n");
+      "Usage: rosbag_to_pos --bag <bag_dir_or_db3> "
+      "[--out <out.pos>] [--topic /gnss/nmea_solution] [--vel]\n");
     return 2;
+  }
+
+  if (args.out_path.empty()) {
+    namespace fs = std::filesystem;
+    fs::path bag_path(args.bag_uri);
+    while (!bag_path.empty() && !bag_path.has_filename()) bag_path = bag_path.parent_path();
+    std::string stem = bag_path.stem().string();
+    if (stem.empty()) stem = "output";
+    std::string base_dir = bag_path.parent_path().string();
+    if (!base_dir.empty()) base_dir += "/";
+    args.out_path = base_dir + stem + ".pos";
+    std::fprintf(stderr, "Info: output path auto-derived: %s\n", args.out_path.c_str());
   }
 
   rosbag2_storage::StorageOptions sopt;
@@ -162,7 +202,7 @@ int main(int argc, char** argv) {
     std::perror(args.out_path.c_str());
     return 1;
   }
-  writeHeader(fp, args.program_name);
+  writeHeader(fp, args.program_name, args.with_velocity);
 
   rclcpp::Serialization<GnssSolution> ser;
   size_t n_written = 0;
@@ -180,7 +220,7 @@ int main(int argc, char** argv) {
     } catch (...) {
       continue;
     }
-    writeEpoch(fp, sol);
+    writeEpoch(fp, sol, args.with_velocity);
     ++n_written;
   }
 

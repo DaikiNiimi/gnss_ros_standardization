@@ -81,7 +81,7 @@ class UbxDecoderNode : public rclcpp::Node {
     declare_parameter<std::string>("imu_topic",     "/gnss/imu/data");
     declare_parameter<std::string>("imu_raw_topic", "/gnss/imu/data_raw");
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
-    declare_parameter<double>("ephemeris.max_age_s", 7200.0);
+    declare_parameter<double>("ephemeris.max_age_s", 0.0);  // 0 = keep all
     declare_parameter<bool>("use_gps_timestamp", false);
     declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
@@ -268,9 +268,11 @@ class UbxDecoderNode : public rclcpp::Node {
   void handleUbxFrame() {
     if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_RAW) handleEsfRaw();
     if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_INS) handleEsfIns();
-    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_PVT) handleNavPvt();
-    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_DOP) handleNavDop();
-    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_COV) handleNavCov();
+    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_PVT)     handleNavPvt();
+    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_DOP)     handleNavDop();
+    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_COV)     handleNavCov();
+    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_POSECEF) handleNavPosEcef();
+    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_VELECEF) handleNavVelEcef();
   }
 
   // Solution source policy (grace-period detection):
@@ -314,8 +316,10 @@ class UbxDecoderNode : public rclcpp::Node {
   // epoch of each cov type — so the flush condition adapts to whichever subset
   // of NAV-DOP/NAV-COV the receiver is configured to emit.
   // ============================================================================
-  static constexpr uint8_t COV_BIT_DOP = 0x1;
-  static constexpr uint8_t COV_BIT_COV = 0x2;
+  static constexpr uint8_t COV_BIT_DOP     = 0x1;
+  static constexpr uint8_t COV_BIT_COV     = 0x2;
+  static constexpr uint8_t COV_BIT_POSECEF = 0x4;
+  static constexpr uint8_t COV_BIT_VELECEF = 0x8;
 
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
@@ -394,15 +398,81 @@ class UbxDecoderNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
+  void handleNavPosEcef() {
+    startGraceIfNeeded();
+    const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size());
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_posecef::parseNavPosEcef(ubx_payload_.data(), ubx_payload_.size(),
+                                           pending_.buf)) {
+      return;
+    }
+    pending_.cov_received  |= COV_BIT_POSECEF;
+    pending_.cov_ever_seen |= COV_BIT_POSECEF;
+    pending_.last_update = now();
+    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
+    if (pendingComplete()) flushPending();
+  }
+
+  void handleNavVelEcef() {
+    startGraceIfNeeded();
+    const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size());
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_velecef::parseNavVelEcef(ubx_payload_.data(), ubx_payload_.size(),
+                                           pending_.buf)) {
+      return;
+    }
+    pending_.cov_received  |= COV_BIT_VELECEF;
+    pending_.cov_ever_seen |= COV_BIT_VELECEF;
+    pending_.last_update = now();
+    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
+    if (pendingComplete()) flushPending();
+  }
+
   void flushPending() {
     const uint8_t ever_seen = pending_.cov_ever_seen;
+    const uint8_t recv      = pending_.cov_received;
     if (!pending_.has_pvt) {
       pending_ = {};
       pending_.cov_ever_seen = ever_seen;
       return;
     }
+    // Snapshot ECEF-direct fields before LLH-driven derivation overwrites them.
+    msg::GnssSolution ecef_direct = pending_.buf;
     binary_solution_ = pending_.buf;
+
     finalizeBinarySolutionGeometry(binary_solution_);
+
+    // Derive ECEF covariance from ENU covariance via current-LLH rotation.
+    const double lat = binary_solution_.latitude  * D2R;
+    const double lon = binary_solution_.longitude * D2R;
+    double n[9], e[9];
+    std::copy(binary_solution_.pos_enu_cov.begin(),
+              binary_solution_.pos_enu_cov.end(), n);
+    gnss_utils::rotateCovarianceEnuToEcef(n, lat, lon, e);
+    std::copy(std::begin(e), std::end(e),
+              binary_solution_.pos_cov_ecef.begin());
+    std::copy(binary_solution_.vel_enu_cov.begin(),
+              binary_solution_.vel_enu_cov.end(), n);
+    gnss_utils::rotateCovarianceEnuToEcef(n, lat, lon, e);
+    std::copy(std::begin(e), std::end(e),
+              binary_solution_.vel_cov_ecef.begin());
+
+    // ECEF-direct overrides: NAV-POSECEF / NAV-VELECEF take priority if seen.
+    if (recv & COV_BIT_POSECEF) {
+      binary_solution_.pos_ecef = ecef_direct.pos_ecef;
+    }
+    if (recv & COV_BIT_VELECEF) {
+      binary_solution_.vel_ecef = ecef_direct.vel_ecef;
+    }
+
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
     pending_ = {};
     pending_.cov_ever_seen = ever_seen;
@@ -602,9 +672,9 @@ class UbxDecoderNode : public rclcpp::Node {
                     local_origin_pos_[0] * (180.0/M_PI), local_origin_pos_[1] * (180.0/M_PI), local_origin_pos_[2]);
       }
 
-      sol.org_ecef.x = local_origin_ecef_[0];
-      sol.org_ecef.y = local_origin_ecef_[1];
-      sol.org_ecef.z = local_origin_ecef_[2];
+      sol.pos_enu_org_ecef.x = local_origin_ecef_[0];
+      sol.pos_enu_org_ecef.y = local_origin_ecef_[1];
+      sol.pos_enu_org_ecef.z = local_origin_ecef_[2];
 
       double ecef[3] = {
         sol.pos_ecef.x - local_origin_ecef_[0],
@@ -618,9 +688,11 @@ class UbxDecoderNode : public rclcpp::Node {
       sol.pos_enu.y = enu[1];
       sol.pos_enu.z = enu[2];
 
+      // vel_enu uses CURRENT-position frame (matches msg comment & receiver convention).
       double vel_ecef[3] = {sol.vel_ecef.x, sol.vel_ecef.y, sol.vel_ecef.z};
       double vel_enu[3] = {0};
-      ecef2enu(local_origin_pos_, vel_ecef, vel_enu);
+      const double cur_llh[3] = {sol.latitude * D2R, sol.longitude * D2R, sol.altitude};
+      ecef2enu(cur_llh, vel_ecef, vel_enu);
 
       sol.vel_enu.x = vel_enu[0];
       sol.vel_enu.y = vel_enu[1];

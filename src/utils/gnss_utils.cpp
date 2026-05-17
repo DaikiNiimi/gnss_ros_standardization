@@ -75,6 +75,12 @@ bool nmeaUtcToGpsTime(int year, int month, int day, double hms,
   return true;
 }
 
+int canonicalGalCode(int code) {
+  if (code & (1 << 8)) return (1 << 1) | (1 << 8);             // F/NAV
+  if (code & (1 << 9)) return (1 << 0) | (1 << 2) | (1 << 9);  // I/NAV
+  return code;
+}
+
 // Local helper from original ros2_rinex_writer.cpp
 static inline gtime_t adjweek(gtime_t ref, int week, double tow_sec) {
   gtime_t t = gpst2time(week, tow_sec);

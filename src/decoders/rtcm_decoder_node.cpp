@@ -32,7 +32,7 @@ public:
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
-    declare_parameter<double>("ephemeris.max_age_s", 7200.0);
+    declare_parameter<double>("ephemeris.max_age_s", 0.0);  // 0 = keep all
 
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());

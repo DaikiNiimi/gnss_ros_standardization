@@ -51,6 +51,14 @@ gnss_ros_standardization::msg::GnssEphemeris ephToMsg(const eph_t& e);
 gnss_ros_standardization::msg::GlonassEphemeris gephToMsg(const geph_t& g);
 
 /**
+ * Normalize Galileo eph.code to canonical RINEX values. RTKLIB's raw I/NAV
+ * decode path produces 513/516/517 depending on src signal and the mix
+ * flag, but the ephemeris is the same per IODnav. Bit 8/9 selects F/NAV vs
+ * I/NAV clock reference, which is the only semantically meaningful split.
+ */
+int canonicalGalCode(int code);
+
+/**
  * Convert RTKLIB obsd_t (specific frequency index) to Ros message
  */
 gnss_ros_standardization::msg::GnssObservation obsToMsg(const obsd_t& o, int kf);

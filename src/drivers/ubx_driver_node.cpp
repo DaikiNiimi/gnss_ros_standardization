@@ -54,6 +54,8 @@ struct UbxConfig {
   bool enable_nav_pvt{false};
   bool enable_nav_dop{false};
   bool enable_nav_cov{false};
+  bool enable_nav_posecef{false};
+  bool enable_nav_velecef{false};
   bool enable_nmea_gga{false};
   bool enable_nmea_rmc{false};
   bool enable_nmea_gsa{false};
@@ -89,7 +91,7 @@ struct UbxConfig {
 
   // Ephemeris snapshot behavior
   double ephemeris_snapshot_period_s{30.0};
-  double ephemeris_max_age_s{7200.0};
+  double ephemeris_max_age_s{0.0};  // 0 = keep all
 
   bool use_gps_timestamp{false};
 };
@@ -141,9 +143,11 @@ class UbxDriverNode : public rclcpp::Node {
     // Message settings
     declare_parameter<bool>("messages.rawx", config_.enable_rawx);
     declare_parameter<bool>("messages.sfrbx", config_.enable_sfrbx);
-    declare_parameter<bool>("messages.nav_pvt", config_.enable_nav_pvt);
-    declare_parameter<bool>("messages.nav_dop", config_.enable_nav_dop);
-    declare_parameter<bool>("messages.nav_cov", config_.enable_nav_cov);
+    declare_parameter<bool>("messages.nav_pvt",     config_.enable_nav_pvt);
+    declare_parameter<bool>("messages.nav_dop",     config_.enable_nav_dop);
+    declare_parameter<bool>("messages.nav_cov",     config_.enable_nav_cov);
+    declare_parameter<bool>("messages.nav_posecef", config_.enable_nav_posecef);
+    declare_parameter<bool>("messages.nav_velecef", config_.enable_nav_velecef);
     declare_parameter<bool>("messages.nmea_gga", config_.enable_nmea_gga);
     declare_parameter<bool>("messages.nmea_rmc", config_.enable_nmea_rmc);
     declare_parameter<bool>("messages.nmea_gsa", config_.enable_nmea_gsa);
@@ -183,9 +187,11 @@ class UbxDriverNode : public rclcpp::Node {
     
     config_.enable_rawx = get_parameter("messages.rawx").as_bool();
     config_.enable_sfrbx = get_parameter("messages.sfrbx").as_bool();
-    config_.enable_nav_pvt = get_parameter("messages.nav_pvt").as_bool();
-    config_.enable_nav_dop = get_parameter("messages.nav_dop").as_bool();
-    config_.enable_nav_cov = get_parameter("messages.nav_cov").as_bool();
+    config_.enable_nav_pvt     = get_parameter("messages.nav_pvt").as_bool();
+    config_.enable_nav_dop     = get_parameter("messages.nav_dop").as_bool();
+    config_.enable_nav_cov     = get_parameter("messages.nav_cov").as_bool();
+    config_.enable_nav_posecef = get_parameter("messages.nav_posecef").as_bool();
+    config_.enable_nav_velecef = get_parameter("messages.nav_velecef").as_bool();
     config_.enable_nmea_gga = get_parameter("messages.nmea_gga").as_bool();
     config_.enable_nmea_rmc = get_parameter("messages.nmea_rmc").as_bool();
     config_.enable_nmea_gsa = get_parameter("messages.nmea_gsa").as_bool();
@@ -280,8 +286,9 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Enabled messages:");
     RCLCPP_INFO(get_logger(), "  Observation  : RAWX=%s SFRBX=%s",
       on(config_.enable_rawx), on(config_.enable_sfrbx));
-    RCLCPP_INFO(get_logger(), "  PVT (binary) : NAV-PVT=%s NAV-DOP=%s NAV-COV=%s",
-      on(config_.enable_nav_pvt), on(config_.enable_nav_dop), on(config_.enable_nav_cov));
+    RCLCPP_INFO(get_logger(), "  PVT (binary) : NAV-PVT=%s NAV-DOP=%s NAV-COV=%s NAV-POSECEF=%s NAV-VELECEF=%s",
+      on(config_.enable_nav_pvt), on(config_.enable_nav_dop), on(config_.enable_nav_cov),
+      on(config_.enable_nav_posecef), on(config_.enable_nav_velecef));
     RCLCPP_INFO(get_logger(), "  NMEA         : GGA=%s RMC=%s GSA=%s GST=%s HiPrec=%s",
       on(config_.enable_nmea_gga), on(config_.enable_nmea_rmc),
       on(config_.enable_nmea_gsa), on(config_.enable_nmea_gst),
@@ -712,9 +719,11 @@ class UbxDriverNode : public rclcpp::Node {
       std::vector<ubx::ValsetItem> items_ubx = {
           {ubx::CFG_MSGOUT_UBX_RXM_RAWX_I2C  + port, config_.enable_rawx    ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_RXM_SFRBX_I2C + port, config_.enable_sfrbx   ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_PVT_I2C   + port, config_.enable_nav_pvt ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_DOP_I2C   + port, config_.enable_nav_dop ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_COV_I2C   + port, config_.enable_nav_cov ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_PVT_I2C     + port, config_.enable_nav_pvt     ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_DOP_I2C     + port, config_.enable_nav_dop     ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_COV_I2C     + port, config_.enable_nav_cov     ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_POSECEF_I2C + port, config_.enable_nav_posecef ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_VELECEF_I2C + port, config_.enable_nav_velecef ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_ESF_RAW_I2C   + port, config_.enable_esf_raw ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_ESF_INS_I2C   + port, config_.enable_esf_ins ? 1u : 0u, 1},
       };
@@ -780,9 +789,11 @@ class UbxDriverNode : public rclcpp::Node {
 
     sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_RAWX,  config_.enable_rawx,    "RXM-RAWX");
     sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_SFRBX, config_.enable_sfrbx,   "RXM-SFRBX");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_PVT,   config_.enable_nav_pvt, "NAV-PVT");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_DOP,   config_.enable_nav_dop, "NAV-DOP");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_COV,   config_.enable_nav_cov, "NAV-COV");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_PVT,     config_.enable_nav_pvt,     "NAV-PVT");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_DOP,     config_.enable_nav_dop,     "NAV-DOP");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_COV,     config_.enable_nav_cov,     "NAV-COV");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_POSECEF, config_.enable_nav_posecef, "NAV-POSECEF");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_VELECEF, config_.enable_nav_velecef, "NAV-VELECEF");
     sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_RAW,   config_.enable_esf_raw, "ESF-RAW");
     sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_INS,   config_.enable_esf_ins, "ESF-INS");
 
@@ -1024,9 +1035,11 @@ class UbxDriverNode : public rclcpp::Node {
   void handleUbxFrame() {
     if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_RAW) handleEsfRaw();
     if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_INS) handleEsfIns();
-    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_PVT) handleNavPvt();
-    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_DOP) handleNavDop();
-    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_COV) handleNavCov();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_PVT)     handleNavPvt();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_DOP)     handleNavDop();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_COV)     handleNavCov();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_POSECEF) handleNavPosEcef();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_VELECEF) handleNavVelEcef();
   }
 
   // Sign-extend the lower 24 bits of a uint32 into an int32.
@@ -1208,8 +1221,10 @@ class UbxDriverNode : public rclcpp::Node {
   // PVT TOW Aggregation (mirrors SBF driver pattern; see ubx_decoder_node.cpp
   // for design notes). All NAV-* payloads carry iTOW at offset 0.
   // ============================================================================
-  static constexpr uint8_t COV_BIT_DOP = 0x1;
-  static constexpr uint8_t COV_BIT_COV = 0x2;
+  static constexpr uint8_t COV_BIT_DOP     = 0x1;
+  static constexpr uint8_t COV_BIT_COV     = 0x2;
+  static constexpr uint8_t COV_BIT_POSECEF = 0x4;
+  static constexpr uint8_t COV_BIT_VELECEF = 0x8;
 
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
@@ -1280,15 +1295,78 @@ class UbxDriverNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
+  void handleNavPosEcef() {
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_posecef::parseNavPosEcef(ubx_frm_payload_.data(),
+                                           ubx_frm_payload_.size(),
+                                           pending_.buf)) {
+      return;
+    }
+    pending_.cov_received  |= COV_BIT_POSECEF;
+    pending_.cov_ever_seen |= COV_BIT_POSECEF;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
+  }
+
+  void handleNavVelEcef() {
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_velecef::parseNavVelEcef(ubx_frm_payload_.data(),
+                                           ubx_frm_payload_.size(),
+                                           pending_.buf)) {
+      return;
+    }
+    pending_.cov_received  |= COV_BIT_VELECEF;
+    pending_.cov_ever_seen |= COV_BIT_VELECEF;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
+  }
+
   void flushPending() {
     const uint8_t ever_seen = pending_.cov_ever_seen;
+    const uint8_t recv      = pending_.cov_received;
     if (!pending_.has_pvt) {
       pending_ = {};
       pending_.cov_ever_seen = ever_seen;
       return;
     }
+    // Snapshot ECEF-direct fields before LLH-driven derivation overwrites them.
+    msg::GnssSolution ecef_direct = pending_.buf;
     binary_solution_ = pending_.buf;
+
+    // Derive ECEF position/velocity from LLH/ENU using current solution's LLH.
     finalizeBinarySolutionGeometry(binary_solution_);
+
+    // Derive ECEF covariance from ENU covariance via current-LLH rotation.
+    const double lat = binary_solution_.latitude  * D2R;
+    const double lon = binary_solution_.longitude * D2R;
+    double n[9], e[9];
+    std::copy(binary_solution_.pos_enu_cov.begin(),
+              binary_solution_.pos_enu_cov.end(), n);
+    gnss_utils::rotateCovarianceEnuToEcef(n, lat, lon, e);
+    std::copy(std::begin(e), std::end(e),
+              binary_solution_.pos_cov_ecef.begin());
+    std::copy(binary_solution_.vel_enu_cov.begin(),
+              binary_solution_.vel_enu_cov.end(), n);
+    gnss_utils::rotateCovarianceEnuToEcef(n, lat, lon, e);
+    std::copy(std::begin(e), std::end(e),
+              binary_solution_.vel_cov_ecef.begin());
+
+    // ECEF-direct overrides: NAV-POSECEF / NAV-VELECEF take priority if seen.
+    if (recv & COV_BIT_POSECEF) {
+      binary_solution_.pos_ecef = ecef_direct.pos_ecef;
+    }
+    if (recv & COV_BIT_VELECEF) {
+      binary_solution_.vel_ecef = ecef_direct.vel_ecef;
+    }
+
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
     pending_ = {};
     pending_.cov_ever_seen = ever_seen;
@@ -1377,9 +1455,9 @@ class UbxDriverNode : public rclcpp::Node {
                     local_origin_pos_[0] * (180.0/M_PI), local_origin_pos_[1] * (180.0/M_PI), local_origin_pos_[2]);
       }
 
-      sol.org_ecef.x = local_origin_ecef_[0];
-      sol.org_ecef.y = local_origin_ecef_[1];
-      sol.org_ecef.z = local_origin_ecef_[2];
+      sol.pos_enu_org_ecef.x = local_origin_ecef_[0];
+      sol.pos_enu_org_ecef.y = local_origin_ecef_[1];
+      sol.pos_enu_org_ecef.z = local_origin_ecef_[2];
 
       double ecef[3] = {
         sol.pos_ecef.x - local_origin_ecef_[0],
@@ -1393,9 +1471,11 @@ class UbxDriverNode : public rclcpp::Node {
       sol.pos_enu.y = enu[1];
       sol.pos_enu.z = enu[2];
 
+      // vel_enu uses CURRENT-position frame (matches msg comment & receiver convention).
       double vel_ecef[3] = {sol.vel_ecef.x, sol.vel_ecef.y, sol.vel_ecef.z};
       double vel_enu[3] = {0};
-      ecef2enu(local_origin_pos_, vel_ecef, vel_enu);
+      const double cur_llh[3] = {sol.latitude * D2R, sol.longitude * D2R, sol.altitude};
+      ecef2enu(cur_llh, vel_ecef, vel_enu);
 
       sol.vel_enu.x = vel_enu[0];
       sol.vel_enu.y = vel_enu[1];

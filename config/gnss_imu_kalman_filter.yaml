@@ -22,7 +22,7 @@ gnss_imu_kalman_filter:
       gnss_solution: "/gnss/solution"
       imu_raw: "/imu/data_raw"
       wheel_speed: "/can_twist"
-      solution: "/gnss_imu_kalman_filter/solution"
+      solution: "/gnss/fusion/ekf_solution"
 
     # ==========================================================================
     # CSV Output

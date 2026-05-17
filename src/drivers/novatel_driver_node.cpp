@@ -77,7 +77,7 @@ struct NovatelConfig {
 
   // Ephemeris snapshot behavior
   double ephemeris_snapshot_period_s{30.0};
-  double ephemeris_max_age_s{7200.0};
+  double ephemeris_max_age_s{0.0};  // 0 = keep all
 
   bool use_gps_timestamp{false};
 
@@ -859,9 +859,9 @@ class NovatelDriverNode : public rclcpp::Node {
           local_origin_pos_[2]);
       }
 
-      sol.org_ecef.x = local_origin_ecef_[0];
-      sol.org_ecef.y = local_origin_ecef_[1];
-      sol.org_ecef.z = local_origin_ecef_[2];
+      sol.pos_enu_org_ecef.x = local_origin_ecef_[0];
+      sol.pos_enu_org_ecef.y = local_origin_ecef_[1];
+      sol.pos_enu_org_ecef.z = local_origin_ecef_[2];
 
       double d_ecef[3] = {
         sol.pos_ecef.x - local_origin_ecef_[0],
@@ -880,7 +880,9 @@ class NovatelDriverNode : public rclcpp::Node {
         sol.vel_ecef.z
       };
       double vel_enu[3] = {0};
-      ecef2enu(local_origin_pos_, vel_ecef, vel_enu);
+      // vel_enu uses CURRENT-position frame (matches msg comment & receiver convention).
+      const double cur_llh[3] = {sol.latitude * D2R, sol.longitude * D2R, sol.altitude};
+      ecef2enu(cur_llh, vel_ecef, vel_enu);
       sol.vel_enu.x = vel_enu[0];
       sol.vel_enu.y = vel_enu[1];
       sol.vel_enu.z = vel_enu[2];

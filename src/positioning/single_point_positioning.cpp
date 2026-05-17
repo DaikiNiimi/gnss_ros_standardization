@@ -429,9 +429,9 @@ private:
           }
       }
 
-      sol_msg->org_ecef.x = origin_ecef_[0];
-      sol_msg->org_ecef.y = origin_ecef_[1];
-      sol_msg->org_ecef.z = origin_ecef_[2];
+      sol_msg->pos_enu_org_ecef.x = origin_ecef_[0];
+      sol_msg->pos_enu_org_ecef.y = origin_ecef_[1];
+      sol_msg->pos_enu_org_ecef.z = origin_ecef_[2];
 
       // Local Position (ENU)
       if (origin_set_) {

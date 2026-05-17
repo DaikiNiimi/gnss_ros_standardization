@@ -10,7 +10,7 @@ uint8  sva           # SV accuracy index (URA index)
 uint16 code          # GPS: L2 code flag; Galileo: signal source
 uint8  iode          # issue of data ephemeris
 uint16 iodc          # issue of data clock
-uint8  svh           # SV health flag (0 = healthy)
+uint16 svh           # SV health flag (0 = healthy; Galileo packs up to 9 bits)
 
 # Reference times (seconds since GPS epoch, i.e. GPST)
 float64 toc          # clock reference time [s]

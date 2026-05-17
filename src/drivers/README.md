@@ -43,6 +43,8 @@ requested message rates and the requested GNSS constellations.
 | `frame_id` | `gnss_link` | ROS frame_id |
 | `messages.rawx` / `.sfrbx` | `true` | Enable RXM-RAWX / RXM-SFRBX |
 | `messages.nav_pvt` | `true` | Enable NAV-PVT for `/gnss/nmea_solution` |
+| `messages.nav_dop` / `.nav_cov` | mixed | NAV-DOP / NAV-COV for DOP & ENU covariance |
+| `messages.nav_posecef` / `.nav_velecef` | `false` | Optional ECEF position/velocity blocks; when enabled they become the truth source for `pos_ecef`/`vel_ecef` (otherwise derived from LLH at current solution) |
 | `messages.nmea_gga|rmc|gsa|gst` | mixed | NMEA fallback |
 | `messages.nmea_high_precision` | `false` | Enable extended NMEA precision |
 | `messages.esf_raw` / `.esf_ins` | `false` | Raw / calibrated IMU (ZED-F9R required) |
@@ -73,8 +75,8 @@ to enable the requested SBF blocks at the requested rate.
 | `messages.meas_epoch` | Enable MeasEpoch (4027) → `/gnss/observation` |
 | `messages.{gps,glo,gal,bds,qzs,navic}_nav` | Enable receiver-assembled nav blocks |
 | `messages.{gps,glo,gal,bds,qzs,navic}_nav_raw` | Enable raw subframe blocks |
-| `messages.pvt_geodetic` / `pos_cov_geodetic` | Geodetic PVT + covariance |
-| `messages.pvt_cartesian` / `pos_cov_cartesian` | ECEF PVT + covariance |
+| `messages.pvt_geodetic` / `pos_cov_geodetic` / `vel_cov_geodetic` | Geodetic PVT + ENU covariance (recommended primary) |
+| `messages.pvt_cartesian` / `pos_cov_cartesian` / `vel_cov_cartesian` | ECEF PVT + ECEF covariance (optional; takes priority for `pos_ecef`/`vel_ecef` when enabled) |
 | `messages.ext_sensor_meas` | Enable ExtSensorMeas (4050) → `/gnss/imu/data_raw` |
 | `messages.receiver_status`, `messages.quality_ind` | Diagnostics |
 | `messages.nmea_{gga,rmc,gsa,gst}` | NMEA fallback |
@@ -160,6 +162,42 @@ datasheet.
 **EPSON G320N data-rate caveat**: the published scale depends on the IMU's
 sample rate. ID 41 assumes 125 Hz and ID 62 assumes 200 Hz; if you run the IMU
 at any other rate, use `imu_scale_override.*` instead.
+
+---
+
+## Frame conventions for `GnssSolution`
+
+All three drivers fill the same `GnssSolution` message but use slightly different
+strategies. The published message follows a unified convention:
+
+- **Position** (`latitude`/`longitude`/`altitude`, `pos_ecef`): receiver's LLH
+  is primary. `pos_ecef` is taken from the receiver's ECEF block when available
+  (SBF PVTCartesian, u-blox NAV-POSECEF, NovAtel BESTXYZ); otherwise it is
+  derived from LLH via `pos2ecef`.
+- **Velocity** (`vel_enu`, `vel_ecef`): receiver's ENU velocity is primary.
+  `vel_ecef` is taken from the receiver's ECEF block when available (SBF
+  PVTCartesian, u-blox NAV-VELECEF, NovAtel BESTXYZ); otherwise derived from ENU.
+- **Covariance** (`pos_enu_cov`, `vel_enu_cov`, `pos_cov_ecef`, `vel_cov_ecef`):
+  whichever side the receiver provides natively is the truth source. The other
+  side is derived by rotation at the current solution's lat/lon.
+- **Frame of `pos_enu_cov` / `vel_enu_cov`**: tangent plane at the **current
+  receiver position**, matching the receiver's native convention. This differs
+  from `pos_enu` (which is anchored at `pos_enu_org_ecef`). See
+  [`msg/README.md`](../../msg/README.md#frame-conventions-important) for details.
+
+### Recommended SBF configuration
+
+`PVTGeodetic` + `PosCovGeodetic` + `VelCovGeodetic` are sufficient. Enabling
+`PVTCartesian` and friends *additionally* is supported but only fills `pos_ecef`
+and `pos_cov_ecef` slightly more precisely than the LLH-derived values — for
+most users this is not worth the extra receiver bandwidth. The driver emits a
+runtime warning if both `*Geodetic` and `*Cartesian` covariance blocks are
+enabled simultaneously.
+
+### Optional u-blox configuration
+
+Enable `messages.nav_posecef` and `messages.nav_velecef` if you need the
+receiver-provided ECEF position/velocity instead of the LLH-derived values.
 
 ---
 

@@ -33,38 +33,39 @@ class EphemerisStore {
   void setSnapshotPeriod(double seconds) { snapshot_period_s_ = seconds; }
   void setMaxAge(double seconds) { max_age_s_ = seconds; }
 
-  // Insert/update a Keplerian ephemeris. Returns true if state changed
-  // (new entry, or replacement of an older toe).
-  bool ingestEph(const eph_t& e) {
-    if (e.sat <= 0 || e.sat > MAXSAT) return false;
+  // Insert/update an ephemeris. The stored entry is always refreshed to the
+  // latest received copy and the call always returns true so consumers see
+  // ttr / clock / health refinements immediately. Upstream RTKLIB decoders
+  // already filter bit-identical re-broadcasts (with -EPHALL off), so this
+  // does not produce extra publishes in normal operation. Downstream can
+  // throttle via ROS QoS if needed.
+  bool ingestEph(const eph_t& e_in) {
+    if (e_in.sat <= 0 || e_in.sat > MAXSAT) return false;
     int prn = 0;
-    if (satsys(e.sat, &prn) == SYS_GLO) return false;
+    const int sys = satsys(e_in.sat, &prn);
+    if (sys == SYS_GLO) return false;
+    eph_t e = e_in;
+    if (sys == SYS_GAL) e.code = gnss_utils::canonicalGalCode(e.code);
     const KKey k{e.sat, static_cast<int>(e.code)};
     auto it = kepler_.find(k);
-    if (it == kepler_.end()) {
-      kepler_.emplace(k, e);
-      return true;
+    // Reject toe regression (multi-source / out-of-order delivery safety).
+    // Same toe still passes through so ttr / clock / health refinements
+    // within the same IODE are captured.
+    if (it != kepler_.end() && timediff(e.toe, it->second.toe) < 0.0) {
+      return false;
     }
-    if (isNewerEph(e, it->second)) {
-      it->second = e;
-      return true;
-    }
-    return false;
+    kepler_[k] = e;
+    return true;
   }
 
-  // Insert/update a GLONASS ephemeris. Returns true if state changed.
   bool ingestGeph(const geph_t& g) {
     if (g.sat <= 0 || g.sat > MAXSAT) return false;
     auto it = glonass_.find(g.sat);
-    if (it == glonass_.end()) {
-      glonass_.emplace(g.sat, g);
-      return true;
+    if (it != glonass_.end() && timediff(g.toe, it->second.toe) < 0.0) {
+      return false;
     }
-    if (isNewerGeph(g, it->second)) {
-      it->second = g;
-      return true;
-    }
-    return false;
+    glonass_[g.sat] = g;
+    return true;
   }
 
   // True if heartbeat publish is due.
@@ -120,23 +121,6 @@ class EphemerisStore {
       return (static_cast<size_t>(k.sat) << 16) ^ static_cast<size_t>(k.code);
     }
   };
-
-  static bool isNewerEph(const eph_t& candidate, const eph_t& current) {
-    // Prefer the entry with later toe. Tie-break on iode/iodc differences.
-    const double dt = timediff(candidate.toe, current.toe);
-    if (dt > 0.0) return true;
-    if (dt < 0.0) return false;
-    if (candidate.iode != current.iode) return true;
-    if (candidate.iodc != current.iodc) return true;
-    return false;
-  }
-
-  static bool isNewerGeph(const geph_t& candidate, const geph_t& current) {
-    const double dt = timediff(candidate.toe, current.toe);
-    if (dt > 0.0) return true;
-    if (dt < 0.0) return false;
-    return candidate.iode != current.iode;
-  }
 
   static gtime_t nowGtime(const rclcpp::Time& now) {
     const double sec = static_cast<double>(now.seconds());
@@ -194,7 +178,9 @@ class EphemerisStore {
   std::unordered_map<int, geph_t> glonass_;
 
   double snapshot_period_s_{30.0};
-  double max_age_s_{7200.0};
+  // 0.0 disables aging; keep every received eph (default). Set positive to
+  // drop entries whose toe is older than this many seconds.
+  double max_age_s_{0.0};
   rclcpp::Time last_publish_{0, 0, RCL_ROS_TIME};
   bool last_publish_initialized_{false};
 };

@@ -572,9 +572,9 @@ private:
           origin_ecef[2] = rtk_.rb[2];
       }
 
-      sol_msg->org_ecef.x = origin_ecef[0];
-      sol_msg->org_ecef.y = origin_ecef[1];
-      sol_msg->org_ecef.z = origin_ecef[2];
+      sol_msg->pos_enu_org_ecef.x = origin_ecef[0];
+      sol_msg->pos_enu_org_ecef.y = origin_ecef[1];
+      sol_msg->pos_enu_org_ecef.z = origin_ecef[2];
       
       if (norm(origin_ecef, 3) > 0.0) {
           double origin_llh[3];

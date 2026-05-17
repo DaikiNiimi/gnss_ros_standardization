@@ -77,7 +77,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     declare_parameter<double>("imu_scale_override.accel", 0.0);
     declare_parameter<double>("imu_scale_override.gyro",  0.0);
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
-    declare_parameter<double>("ephemeris.max_age_s", 7200.0);
+    declare_parameter<double>("ephemeris.max_age_s", 0.0);  // 0 = keep all
     declare_parameter<bool>("use_gps_timestamp", false);
     declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
     use_gps_timestamp_ = get_parameter("use_gps_timestamp").as_bool();
@@ -638,9 +638,9 @@ class NovatelDecoderNode : public rclcpp::Node {
           local_origin_pos_[2]);
       }
 
-      sol.org_ecef.x = local_origin_ecef_[0];
-      sol.org_ecef.y = local_origin_ecef_[1];
-      sol.org_ecef.z = local_origin_ecef_[2];
+      sol.pos_enu_org_ecef.x = local_origin_ecef_[0];
+      sol.pos_enu_org_ecef.y = local_origin_ecef_[1];
+      sol.pos_enu_org_ecef.z = local_origin_ecef_[2];
 
       double d_ecef[3] = {
         sol.pos_ecef.x - local_origin_ecef_[0],
@@ -653,9 +653,11 @@ class NovatelDecoderNode : public rclcpp::Node {
       sol.pos_enu.y = enu[1];
       sol.pos_enu.z = enu[2];
 
+      // vel_enu uses CURRENT-position frame (matches msg comment & receiver convention).
       double vel_ecef[3] = {sol.vel_ecef.x, sol.vel_ecef.y, sol.vel_ecef.z};
       double vel_enu[3] = {0};
-      ecef2enu(local_origin_pos_, vel_ecef, vel_enu);
+      const double cur_llh[3] = {sol.latitude * D2R, sol.longitude * D2R, sol.altitude};
+      ecef2enu(cur_llh, vel_ecef, vel_enu);
       sol.vel_enu.x = vel_enu[0];
       sol.vel_enu.y = vel_enu[1];
       sol.vel_enu.z = vel_enu[2];

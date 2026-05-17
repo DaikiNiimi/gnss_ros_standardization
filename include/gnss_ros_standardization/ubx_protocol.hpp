@@ -37,9 +37,11 @@ constexpr uint8_t ID_ACK_NAK = 0x00;
 constexpr uint8_t ID_ACK_ACK = 0x01;
 
 // NAV
-constexpr uint8_t ID_NAV_PVT = 0x07;
-constexpr uint8_t ID_NAV_DOP = 0x04;
-constexpr uint8_t ID_NAV_COV = 0x36;
+constexpr uint8_t ID_NAV_PVT     = 0x07;
+constexpr uint8_t ID_NAV_DOP     = 0x04;
+constexpr uint8_t ID_NAV_COV     = 0x36;
+constexpr uint8_t ID_NAV_POSECEF = 0x01;
+constexpr uint8_t ID_NAV_VELECEF = 0x11;
 
 // ESF (External Sensor Fusion)
 constexpr uint8_t ID_ESF_RAW = 0x03;  // Raw IMU measurements (uncalibrated, IMU-internal scale)
@@ -142,9 +144,11 @@ constexpr uint32_t CFG_SIGNAL_QZSS_L5_ENA   = 0x10310017;
 // Base addresses (I2C = offset 0). Add port offset for UART1(+1), UART2(+2), USB(+3).
 constexpr uint32_t CFG_MSGOUT_UBX_RXM_RAWX_I2C  = 0x209102A4;
 constexpr uint32_t CFG_MSGOUT_UBX_RXM_SFRBX_I2C = 0x20910231;
-constexpr uint32_t CFG_MSGOUT_UBX_NAV_PVT_I2C   = 0x20910006;
-constexpr uint32_t CFG_MSGOUT_UBX_NAV_DOP_I2C   = 0x20910038;
-constexpr uint32_t CFG_MSGOUT_UBX_NAV_COV_I2C   = 0x20910083;
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_PVT_I2C     = 0x20910006;
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_DOP_I2C     = 0x20910038;
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_COV_I2C     = 0x20910083;
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_POSECEF_I2C = 0x20910024;
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_VELECEF_I2C = 0x2091003D;
 
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_GGA_I2C   = 0x209100BA;
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_GLL_I2C   = 0x209100C9;
@@ -506,6 +510,60 @@ inline bool parseNavCov(const uint8_t* p, size_t len,
 }
 
 }  // namespace nav_cov
+
+// =============================================================================
+// NAV-POSECEF parser (UBX-NAV-POSECEF, class=0x01 id=0x01)
+// Payload: iTOW(U4) + ecefX/Y/Z(I4, cm) + pAcc(U4, cm) = 20 bytes
+// =============================================================================
+namespace nav_posecef {
+
+constexpr int MIN_LEN     = 20;
+constexpr int OFFSET_ITOW = 0;
+constexpr int OFFSET_X    = 4;
+constexpr int OFFSET_Y    = 8;
+constexpr int OFFSET_Z    = 12;
+constexpr int OFFSET_PACC = 16;
+
+template <typename T>
+inline T read_le(const uint8_t* p) { T v; std::memcpy(&v, p, sizeof(T)); return v; }
+
+inline bool parseNavPosEcef(const uint8_t* p, size_t len,
+                            gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(MIN_LEN)) return false;
+  out.pos_ecef.x = static_cast<double>(read_le<int32_t>(p + OFFSET_X)) * 0.01;
+  out.pos_ecef.y = static_cast<double>(read_le<int32_t>(p + OFFSET_Y)) * 0.01;
+  out.pos_ecef.z = static_cast<double>(read_le<int32_t>(p + OFFSET_Z)) * 0.01;
+  return true;
+}
+
+}  // namespace nav_posecef
+
+// =============================================================================
+// NAV-VELECEF parser (UBX-NAV-VELECEF, class=0x01 id=0x11)
+// Payload: iTOW(U4) + ecefVX/VY/VZ(I4, cm/s) + sAcc(U4, cm/s) = 20 bytes
+// =============================================================================
+namespace nav_velecef {
+
+constexpr int MIN_LEN     = 20;
+constexpr int OFFSET_ITOW = 0;
+constexpr int OFFSET_VX   = 4;
+constexpr int OFFSET_VY   = 8;
+constexpr int OFFSET_VZ   = 12;
+constexpr int OFFSET_SACC = 16;
+
+template <typename T>
+inline T read_le(const uint8_t* p) { T v; std::memcpy(&v, p, sizeof(T)); return v; }
+
+inline bool parseNavVelEcef(const uint8_t* p, size_t len,
+                            gnss_ros_standardization::msg::GnssSolution& out) {
+  if (len < static_cast<size_t>(MIN_LEN)) return false;
+  out.vel_ecef.x = static_cast<double>(read_le<int32_t>(p + OFFSET_VX)) * 0.01;
+  out.vel_ecef.y = static_cast<double>(read_le<int32_t>(p + OFFSET_VY)) * 0.01;
+  out.vel_ecef.z = static_cast<double>(read_le<int32_t>(p + OFFSET_VZ)) * 0.01;
+  return true;
+}
+
+}  // namespace nav_velecef
 
 }  // namespace ubx
 }  // namespace gnss_ros_standardization
