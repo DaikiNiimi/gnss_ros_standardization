@@ -47,9 +47,10 @@ See [`config/single_point_positioning.yaml`](../../config/single_point_positioni
 
 ## `real_time_kinematic`
 
-Differential RTK (rover + base observations + broadcast ephemeris). The base
-observations are accepted either from a ROS topic (`topics.base_observation`)
-or from an internal TCP server on `tcp_port`.
+Differential RTK (rover + base observations + broadcast ephemeris). Base
+observations are accepted on the ROS topic `topics.base_observation`. The
+`tcp_port` setting exposes an outbound NMEA stream (GGA / RMC) for tools
+such as RTKPLOT.
 
 ```bash
 ros2 run gnss_ros_standardization real_time_kinematic --ros-args \
@@ -69,13 +70,14 @@ ros2 run gnss_ros_standardization real_time_kinematic --ros-args \
 
 | Group | Purpose |
 |---|---|
-| `pos1.*` | Frequency / elevation mask / dynamics / iono / tropo / sat-eph / nav-sys / SNR mask |
+| `frequencies.{enable_l1,enable_l2,enable_l5}` | Frequency selection (shared style with SPP node) |
+| `pos1.*` | Elevation mask / dynamics / iono / tropo / sat-eph / nav-sys / SNR mask |
 | `pos2.*` | AR mode and thresholds (`armode`, `arthres`, `arlockcnt`, `arelmask`, ...) |
 | `rtk_stats.*` | Process / observation noise model (`eratio*`, `prn*`, `std*`) |
 | `ant2.{postype,pos}` | Base antenna position (`llh`, `xyz`, ...) |
 | `fixed_origin.{postype,pos}` | Fixed ENU local origin (optional) |
 | `excluded_satellites` | Satellite IDs to exclude (e.g. `["G05", "E11"]`) |
-| `tcp_port` | TCP port for streaming base observations |
+| `tcp_port` | TCP port for outbound NMEA stream (GGA / RMC) for RTKPLOT-style clients |
 
 See [`config/real_time_kinematic.yaml`](../../config/real_time_kinematic.yaml) for all keys (mirrors RTKLIB `rtk.conf`).
 

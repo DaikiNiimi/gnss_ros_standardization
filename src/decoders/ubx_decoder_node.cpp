@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
@@ -316,10 +317,11 @@ class UbxDecoderNode : public rclcpp::Node {
   // epoch of each cov type — so the flush condition adapts to whichever subset
   // of NAV-DOP/NAV-COV the receiver is configured to emit.
   // ============================================================================
-  static constexpr uint8_t COV_BIT_DOP     = 0x1;
-  static constexpr uint8_t COV_BIT_COV     = 0x2;
-  static constexpr uint8_t COV_BIT_POSECEF = 0x4;
-  static constexpr uint8_t COV_BIT_VELECEF = 0x8;
+  // NAV-DOP is tracked separately in a persistent cache (last_dop_) so it can
+  // survive Pending resets and be staleness-gated against the PVT cadence.
+  static constexpr uint8_t COV_BIT_COV     = 0x1;
+  static constexpr uint8_t COV_BIT_POSECEF = 0x2;
+  static constexpr uint8_t COV_BIT_VELECEF = 0x4;
 
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
@@ -329,6 +331,14 @@ class UbxDecoderNode : public rclcpp::Node {
     msg::GnssSolution buf{};
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
+
+  gnss_utils::DopCache last_dop_;
+  uint32_t prev_pvt_tow_ms_{UINT32_MAX};
+  uint32_t pvt_period_ms_{0};
+
+  // After a publish, record the (week, tow) to suppress orphan re-publish.
+  uint16_t last_flushed_week_{0};
+  uint32_t last_flushed_tow_ms_{UINT32_MAX};
 
   static uint32_t readItowMs(const uint8_t* p, size_t len) {
     if (len < 4) return UINT32_MAX;
@@ -342,9 +352,27 @@ class UbxDecoderNode : public rclcpp::Node {
            pending_.cov_received == pending_.cov_ever_seen;
   }
 
+  // Orphan guard: if this block's TOW matches the last published TOW, it's a
+  // late arrival from an eager-flush'd epoch. Update cov_ever_seen for learning
+  // (so the next epoch waits for the full set), but do NOT re-accumulate into
+  // pending_.buf (would cause an orphan duplicate publish at next TOW boundary).
+  // NAV-* bodies don't carry GPS week directly; we fall back to TOW-only when
+  // pending_.buf.time_week is 0 (it's only set at publishSolution time).
+  bool isLateOrphan(uint32_t tow, uint8_t cov_bit) {
+    const uint16_t week = pending_.buf.time_week;
+    if (last_flushed_tow_ms_ != UINT32_MAX &&
+        tow == last_flushed_tow_ms_ &&
+        (week == 0 || week == last_flushed_week_)) {
+      pending_.cov_ever_seen |= cov_bit;
+      return true;
+    }
+    return false;
+  }
+
   void handleNavPvt() {
     startGraceIfNeeded();
     const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size());
+    if (isLateOrphan(tow, 0)) return;
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
     }
@@ -360,28 +388,34 @@ class UbxDecoderNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
+  // NAV-DOP: parsed into the persistent last_dop_ cache, NOT into pending_.
+  // Does NOT participate in completion and does NOT trigger flush. At flush
+  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
+  // enough (within 0..PVT_period after PVT) to populate the published solution.
+  // NAV-DOP carries no GPS week → last_dop_.week = 0 (helper skips week check).
   void handleNavDop() {
     startGraceIfNeeded();
     const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size());
-    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
-      flushPending();
-    }
-    pending_.tow_ms = tow;
+    msg::GnssSolution scratch{};
     if (!ubx::nav_dop::parseNavDop(ubx_payload_.data(), ubx_payload_.size(),
-                                   pending_.buf)) {
+                                   scratch)) {
       return;
     }
-    pending_.cov_received |= COV_BIT_DOP;
-    pending_.cov_ever_seen |= COV_BIT_DOP;
-    pending_.last_update = now();
+    last_dop_.valid  = true;
+    last_dop_.week   = 0;       // NAV-DOP has no week field
+    last_dop_.tow_ms = tow;
+    last_dop_.gdop   = scratch.gdop;
+    last_dop_.pdop   = scratch.pdop;
+    last_dop_.hdop   = scratch.hdop;
+    last_dop_.vdop   = scratch.vdop;
     saw_binary_during_grace_ = true;
     commitSourceLockIfDue();
-    if (pendingComplete()) flushPending();
   }
 
   void handleNavCov() {
     startGraceIfNeeded();
     const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size());
+    if (isLateOrphan(tow, COV_BIT_COV)) return;
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
     }
@@ -401,6 +435,7 @@ class UbxDecoderNode : public rclcpp::Node {
   void handleNavPosEcef() {
     startGraceIfNeeded();
     const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size());
+    if (isLateOrphan(tow, COV_BIT_POSECEF)) return;
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
     }
@@ -420,6 +455,7 @@ class UbxDecoderNode : public rclcpp::Node {
   void handleNavVelEcef() {
     startGraceIfNeeded();
     const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size());
+    if (isLateOrphan(tow, COV_BIT_VELECEF)) return;
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
     }
@@ -473,7 +509,26 @@ class UbxDecoderNode : public rclcpp::Node {
       binary_solution_.vel_ecef = ecef_direct.vel_ecef;
     }
 
+    // PVT cadence auto-detection (used by DOP staleness gate).
+    if (prev_pvt_tow_ms_ != UINT32_MAX) {
+      const uint32_t dt = pending_.tow_ms - prev_pvt_tow_ms_;
+      if (dt > 0 && dt < 10000) pvt_period_ms_ = dt;
+    }
+    prev_pvt_tow_ms_ = pending_.tow_ms;
+
+    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
+    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
+                                      binary_solution_.time_week,
+                                      pending_.tow_ms, pvt_period_ms_);
+
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+
+    // Record this epoch as the last published (week, tow) for orphan-guard.
+    // publishSolution() will have populated time_week via raw_.time mapping.
+    last_flushed_week_   = binary_solution_.time_week;
+    last_flushed_tow_ms_ = pending_.tow_ms;
+
     pending_ = {};
     pending_.cov_ever_seen = ever_seen;
   }

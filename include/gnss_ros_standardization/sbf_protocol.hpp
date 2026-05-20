@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 /// @file sbf_protocol.hpp
 /// @brief Septentrio SBF protocol constants and utility types.

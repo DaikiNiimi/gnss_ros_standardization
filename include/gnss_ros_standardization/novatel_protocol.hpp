@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 /// @file novatel_protocol.hpp
 /// @brief NovAtel OEM7/6/4 protocol constants and utility types.

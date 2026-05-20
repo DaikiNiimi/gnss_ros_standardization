@@ -17,6 +17,49 @@ nodes can map directly to/from RTKLIB internals.
 
 ---
 
+## `header.stamp` convention (applies to all messages here)
+
+`header.stamp` is a `rclcpp::Time` value. Two conventions are in use across
+producers; the field itself does not encode which:
+
+| Producer | Default `stamp` source |
+|---|---|
+| `*_driver_node` (UBX / SBF / NovAtel) | PC time at packet ingest — preferred for cross-sensor sync |
+| `*_decoder_node` | Same as the driver that fed them (PC time by default; optional GPST→ROS-Time conversion) |
+| `rinex_to_rosbag`, `pos_to_rosbag` | GPST seconds packed into `rclcpp::Time` — input file has no PC clock |
+| `rosbag_to_rinex`, `rosbag_to_pos` | n/a (reader; uses input `stamp` as-is) |
+
+For canonical, unambiguous GNSS time, **always use the explicit
+GPS-week / time-of-week fields** (`week`/`tow` in `GnssObservations`,
+`time_week`/`time_tow` in `GnssSolution`, `toes`/`toc` in `GnssEphemeris`,
+…) rather than `stamp`. Two consumers receiving the same bag will agree on
+`week`/`tow` regardless of how the producer chose to fill `stamp`.
+
+The `stamp` field is the right thing to use only when you want to align
+GNSS messages with other ROS sensors recorded in the same bag.
+
+## NaN convention for unset numeric fields
+
+When a producer cannot fill a numeric field, it sets `NaN` rather than `0`:
+
+- DOP fields (`gdop`, `pdop`, `hdop`, `vdop`) when no DOP is available for
+  the epoch (see staleness rules in [`GnssSolution.msg`](GnssSolution.msg)).
+- `ratio`, `age_diff` when not provided by the source.
+- Velocity fields (`vel_ecef`, `vel_cov_ecef`, `vel_enu`, `vel_enu_cov`)
+  when the source does not provide velocity (e.g. `.pos` without
+  `--output-vel`).
+- ENU position fields (`pos_enu`, `pos_enu_org_ecef`) when no ENU origin
+  has been established.
+
+Consumers must check with `std::isnan()` before use. The `0` value is
+*never* used as a "missing" sentinel for these fields. The single exception
+is `.pos` round-trip: RTKLIB's own `.pos` format zero-fills some unknowns
+in the file, so `pos_to_rosbag` cannot losslessly recover NaN intent for
+fields like `age_diff` — see
+[`src/converter/README.md`](../src/converter/README.md#unset-fields-nan-convention).
+
+---
+
 ## `GnssObservation.msg`
 
 Single satellite observation at one epoch. Fields prefixed by **(RTKLIB)** mirror
@@ -43,7 +86,7 @@ One epoch of observations for all tracked satellites.
 
 | Field | Type | Notes |
 |---|---|---|
-| `header` | `std_msgs/Header` | `stamp` = receiver time in GPST; `frame_id` = receiver label |
+| `header` | `std_msgs/Header` | `stamp` = ROS Time (see [header.stamp convention](#headerstamp-convention-applies-to-all-messages-here)); `frame_id` = receiver label |
 | `week` | `uint16` | GPS week of the epoch |
 | `tow` | `float64` | Time of week [s] |
 | `observations` | `GnssObservation[]` | One element per (satellite, signal) |
@@ -93,7 +136,7 @@ depth=1 and receive the full state immediately).
 
 | Field | Type | Notes |
 |---|---|---|
-| `header` | `std_msgs/Header` | `stamp` = publish time |
+| `header` | `std_msgs/Header` | `stamp` = ROS Time (see [header.stamp convention](#headerstamp-convention-applies-to-all-messages-here)) |
 | `gnss_ephemeris` | `GnssEphemeris[]` | All currently-valid Keplerian entries (GPS/Galileo/QZSS/BeiDou/NavIC/SBAS) |
 | `glonass_ephemeris` | `GlonassEphemeris[]` | All currently-valid GLONASS entries |
 
@@ -120,14 +163,14 @@ covariance from GST. No mid-session switching: if the binary stream stops,
 
 | Field | Type | Unit | Notes |
 |---|---|---|---|
-| `header` | `std_msgs/Header` | — | `stamp` = solution time (GPST) |
+| `header` | `std_msgs/Header` | — | `stamp` = ROS Time (see [header.stamp convention](#headerstamp-convention-applies-to-all-messages-here)) |
 | `time_week` | `uint16` | week | GPS week |
 | `time_tow` | `float64` | s | Time of week |
 | `status` | `uint8` | enum | See enum below |
 | `num_sats` | `uint8` | — | Satellites used |
 | `ratio` | `float32` | — | AR ratio (RTK ambiguity reliability) |
 | `age_diff` | `float32` | s | Age of differential corrections |
-| `gdop` / `pdop` / `hdop` / `vdop` | `float32` | — | DOP values |
+| `gdop` / `pdop` / `hdop` / `vdop` | `float32` | — | DOP values; **`NaN` when no fresh DOP is available for this epoch** (see "DOP semantics" below) |
 
 `status` constants:
 
@@ -186,6 +229,96 @@ ECEF truth source. Otherwise ECEF is derived from ENU by rotation at the current
 solution's lat/lon.
 
 ---
+
+### DOP semantics
+
+**Binary path** (SBF `DOP`, NovAtel `PSRDOP`, u-blox `NAV-DOP`): the most
+recently parsed DOP block is cached across PVT epochs. At publish time, the
+cached DOP is written into the message only when
+
+```
+0 <= (PVT_tow_ms - DOP_tow_ms) <= PVT_period_ms
+```
+
+That is, the cached DOP must belong to **this PVT epoch** (DOP arrived before
+PVT in the same receiver frame, `dt = 0`) or to **the immediately-prior PVT
+epoch** (DOP arrived just after the previous PVT's flush and is now attached
+to the current publish, `dt = period`). The PVT period is auto-detected from
+consecutive PVT timestamps:
+
+- 1 Hz PVT → accept `dt` in [0, 1000] ms.
+- 10 Hz PVT → accept `dt` in [0, 100] ms.
+- 0.2 Hz PVT → accept `dt` in [0, 5000] ms.
+
+On the very first PVT epoch the period is not yet known, so DOP fields are
+`NaN`. From the second epoch onward, DOP is populated whenever the cache is
+fresh and stays `NaN` whenever it is more than one period stale, comes from a
+"future" epoch, or is absent. The receiver-side staleness is bounded at one
+PVT cycle.
+
+**NMEA path**: `hdop` is taken directly from GGA field 8 (always finite when
+GGA reports a valid fix). `pdop` and `vdop` come from GSA fields 15 / 17 via a
+persistent cache that survives one cycle of "no GSA arrival" before
+invalidating to `NaN` (see the NMEA aggregator section below for details).
+`gdop` is always `NaN` (GSA has no `tdop`, so geometric DOP is not derivable).
+GSA does not gate flush timing, so this DOP path adds zero publish latency.
+
+This convention guarantees:
+
+- **Zero publish latency**: PVT is published immediately when complete; the
+  DOP handler only writes to a persistent cache and never gates the flush.
+- **No future-direction bleed-through**: a published PVT epoch never receives
+  a DOP that belongs to a *later* receiver epoch. Receiver-side staleness is
+  bounded at one PVT cycle.
+- **Clean stop on disable**: when the receiver stops emitting the DOP block,
+  the cache ages out within one cycle and all subsequent epochs return `NaN`.
+- **Explicit absence**: downstream code can detect "no DOP for this epoch"
+  with `std::isnan(msg->gdop)` and decide how to handle it (skip, hold last
+  finite value, etc.).
+
+Typical scenarios:
+
+| Receiver config | DOP rate | Field values |
+|---|---|---|
+| u-blox NAV-PVT + NAV-DOP, same rate | matches PVT | finite every epoch (after the first) |
+| Septentrio PVT 5 Hz + DOP 1 Hz | < PVT | finite once every 5 epochs (the one adjacent to a DOP arrival); **NaN** elsewhere |
+| NovAtel BESTPOS + PSRDOP, same rate | matches PVT | finite every epoch (after the first) |
+| First epoch (period not yet detected) | — | **NaN** |
+| Receiver stops emitting DOP | — | **NaN** within one cycle |
+| No DOP block enabled | — | always **NaN** |
+
+### NMEA path: per-epoch aggregator
+
+NMEA sentences are aggregated into one solution per UTC epoch. The parser
+maintains a pending buffer keyed by seconds-of-day; flushes happen either
+eagerly (when every sentence type ever seen this session has arrived for the
+current epoch) or on the boundary (when a sentence with a new sod arrives).
+Flush is gated only on GGA/RMC/GST — GSA is processed but never gates flushing,
+so it cannot introduce publish latency.
+
+- **GGA** (position, time, hdop): drives `latitude`/`longitude`/`altitude`,
+  `pos_ecef`, `time_week`/`time_tow`, `status`, `num_sats`, `age_diff`, `hdop`.
+- **RMC** (velocity): speed (knots → m/s) and course (deg true → rad) fill
+  `vel_enu.x/y/z` directly and `vel_ecef.x/y/z` via ENU→ECEF rotation using
+  GGA's lat/lon. The A/V flag is **ignored** — velocity is populated whenever
+  the numeric fields are finite, since many receivers report V even with
+  usable speed/course. Downstream consumers can gate on `solution.status`
+  (driven by GGA quality) for nav-validity.
+- **GST** (covariance): std_lat/std_lon/std_alt populate `pos_enu_cov` (diag)
+  and `pos_cov_ecef` via ENU→ECEF rotation.
+- **GSA** (PDOP/VDOP): cached in the parser across resets; applied at flush
+  if a fresh GSA arrived within the last cycle. After 2 consecutive flushes
+  without a fresh GSA, the cache invalidates and `pdop`/`vdop` go to `NaN`.
+  `gdop` stays `NaN` (GSA has no `tdop`, so geometric DOP is not derivable).
+  `hdop` is sourced from GGA (not GSA) for consistency.
+- **Velocity covariance**: NMEA has no source for `vel_enu_cov` / `vel_cov_ecef`
+  (GST provides position stddev only). Both arrays are always `NaN`.
+
+The aggregator learns the receiver's per-cycle sentence set on the first
+boundary flush; subsequent epochs eager-flush as soon as that set is complete,
+so steady-state publish latency is bounded by the time between the *last*
+expected sentence of the cycle and the next sentence. GGA-first or GGA-last
+ordering both work — no receiver-side reconfiguration is required.
 
 ## RINEX / RTKLIB correspondence
 

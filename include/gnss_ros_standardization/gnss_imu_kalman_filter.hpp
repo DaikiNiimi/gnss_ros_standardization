@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #ifndef GNSS_ROS_STANDARDIZATION_GNSS_IMU_KALMAN_FILTER_HPP
 #define GNSS_ROS_STANDARDIZATION_GNSS_IMU_KALMAN_FILTER_HPP
 
@@ -67,6 +68,23 @@ enum class GnssUpdateMode {
 };
 
 /**
+ * @brief CSV output configuration
+ *
+ * Two independent log files:
+ *  - sensors_log: time-synchronized raw sensor data (IMU, GNSS, wheel speed)
+ *  - state_log:   EKF estimated state and covariance
+ */
+struct CsvConfig {
+  std::string dir = "";  // output directory; empty = current working directory
+
+  bool        sensors_log_enabled  = true;
+  std::string sensors_log_filename = "ekf_sensors_log.csv";
+
+  bool        state_log_enabled    = false;
+  std::string state_log_filename   = "ekf_state_log.csv";
+};
+
+/**
  * @brief EKF configuration parameters
  */
 struct EkfConfig {
@@ -84,7 +102,7 @@ struct EkfConfig {
   std::string topic_solution  = "/gnss_imu_kalman_filter/solution";
 
   // CSV
-  std::string csv_output_path = "/tmp/gnss_imu_kalman_filter_log.csv";
+  CsvConfig csv;
 
   // Process noise
   double sigma_acc      = 0.1;     // accelerometer noise [m/s^2/√Hz]
@@ -102,6 +120,7 @@ struct EkfConfig {
   // GNSS update
   GnssUpdateMode gnss_update_mode = GnssUpdateMode::FIX_ONLY;
   double gnss_heading_speed_threshold = 0.5;   // [m/s]
+  double gnss_pos_gate_chi2 = 7.815;           // Mahalanobis gate threshold (3DoF 99% = 7.815)
 
   // Wheel speed
   bool   use_wheel_speed    = false;
@@ -127,6 +146,8 @@ struct EkfConfig {
 struct GnssSnapshot {
   bool valid = false;            // a new GNSS measurement arrived
   bool used_for_update = false;  // was it used in the EKF measurement update?
+
+  rclcpp::Time stamp{0, 0, RCL_ROS_TIME};  // actual GNSS measurement timestamp
 
   // Raw GNSS data
   double tow = std::numeric_limits<double>::quiet_NaN();
@@ -170,6 +191,7 @@ struct GnssSnapshot {
 struct WheelSpeedSnapshot {
   bool valid = false;
   bool used_for_update = false;
+  rclcpp::Time stamp{0, 0, RCL_ROS_TIME};  // actual wheel speed measurement timestamp
   Eigen::Vector3d linear = Eigen::Vector3d::Zero();
   Eigen::Vector3d angular = Eigen::Vector3d::Zero();
   std::array<double, 36> covariance = {};
@@ -197,7 +219,6 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   void onGnss(const gnss_ros_standardization::msg::GnssSolution::SharedPtr msg);
   void onWheelSpeedWithCov(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg);
   void onWheelSpeedPoint(const geometry_msgs::msg::TwistStamped::SharedPtr msg);
-  void processWheelSpeed(const Eigen::Vector3d& linear_velocity, const Eigen::Matrix3d& covariance);
 
   // ---- EKF operations ----
 
@@ -225,12 +246,12 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   void updateGnssHeading(double heading_rad, double heading_var);
 
   /**
-   * @brief Wheel speed velocity measurement update
-   * @param v_body  Observed velocity in body frame [m/s]
-   * @param R_vel   Measurement noise covariance (3x3)
+   * @brief Wheel speed velocity measurement update (called from onWheelSpeed* callbacks)
+   * @param linear_velocity  Observed velocity in body frame [m/s]
+   * @param covariance       Measurement noise covariance (3x3)
    */
-  void updateWheelSpeed(const Eigen::Vector3d& v_body,
-                        const Eigen::Matrix3d& R_vel);
+  void processWheelSpeed(const Eigen::Vector3d& linear_velocity,
+                         const Eigen::Matrix3d& covariance);
 
   // ---- Initialization ----
 
@@ -242,8 +263,10 @@ class GnssImuKalmanFilter : public rclcpp::Node {
 
   // ---- Output ----
   void publishSolution(const rclcpp::Time& stamp);
-  void writeCSVHeader();
-  void writeCSVRow(const rclcpp::Time& stamp);
+  void writeSensorsHeader();
+  void writeSensorsRow(const rclcpp::Time& stamp);
+  void writeStateHeader();
+  void writeStateRow(const rclcpp::Time& stamp);
 
   // ---- Quaternion helpers ----
 
@@ -327,7 +350,6 @@ class GnssImuKalmanFilter : public rclcpp::Node {
 
   // Cached initial data for initialization
   Eigen::Vector3d init_gnss_pos_ecef_ = Eigen::Vector3d::Zero();
-  Eigen::Vector3d init_gnss_pos_enu_  = Eigen::Vector3d::Zero();
   Eigen::Vector3d init_imu_acc_sum_ = Eigen::Vector3d::Zero();
   int init_imu_acc_count_ = 0;
   rclcpp::Time init_imu_start_time_{0, 0, RCL_ROS_TIME};
@@ -363,7 +385,8 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
 
   // CSV
-  std::ofstream csv_file_;
+  std::ofstream sensors_csv_;
+  std::ofstream state_csv_;
 
   // Mutex
   std::mutex mtx_;

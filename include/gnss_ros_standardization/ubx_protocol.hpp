@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 /// @file ubx_protocol.hpp
 /// @brief u-blox UBX protocol constants, CFG-VALSET keys, and utility types.

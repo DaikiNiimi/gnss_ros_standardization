@@ -1,4 +1,9 @@
-std_msgs/Header header  # stamp = solution time (GPST); frame_id = receiver label
+std_msgs/Header header  # stamp = ROS Time; frame_id = receiver label.
+                        # The stamp value is set by the producer:
+                        #   (a) PC time  — default for driver/decoder nodes (for sensor sync);
+                        #   (b) GPST-derived ROS Time — optional in driver/decoder, and always
+                        #       used by RINEX/POS converters (no PC time available).
+                        # For canonical GNSS time, always use time_week / time_tow (GPST).
 
 # GNSS Time (GPS Time System)
 uint16 time_week        # GPS week number
@@ -20,14 +25,30 @@ uint8 STATUS_SBAS=3     # SBAS-corrected
 uint8 STATUS_DGPS=4     # differential GNSS
 uint8 STATUS_SINGLE=5   # standalone GNSS
 uint8 STATUS_PPP=6      # precise point positioning
+uint8 STATUS_EKF=7      # GNSS/IMU EKF fused solution
 
 uint8 num_sats          # number of satellites used
 float32 ratio           # AR ratio: reliability of integer ambiguity resolution
 float32 age_diff        # age of differential corrections [s]
-float32 gdop            # geometric DOP
-float32 pdop            # position DOP
-float32 hdop            # horizontal DOP
-float32 vdop            # vertical DOP
+# DOP values (dilution of precision). Population rules:
+#  * Binary path (SBF DOP, NovAtel PSRDOP, UBX NAV-DOP): the most-recently-parsed
+#    DOP block is cached across PVT epochs. At publish time, the cached DOP is
+#    written into this message only when 0 <= (PVT_tow - DOP_tow) <= PVT_period,
+#    i.e. the DOP belongs to this PVT epoch (arrived before PVT in the same frame)
+#    or to the immediately-prior PVT epoch (arrived just after the previous PVT
+#    flush — common SBF/Septentrio block ordering). The PVT period is auto-
+#    detected from consecutive PVT timestamps. On the very first epoch the period
+#    is unknown so DOP fields are NaN. The receiver-side staleness is at most one
+#    PVT cycle; "future" DOP (dt < 0) and >1-cycle-stale DOP are rejected.
+#  * NMEA path: hdop is taken from GGA field 8 (always finite when GGA fix has
+#    quality > 0); pdop/vdop come from GSA fields 15/17 (cached across resets,
+#    invalidated after 2 consecutive flushes without a fresh GSA). gdop is NaN
+#    (GSA lacks tdop, so geometric DOP is not derivable).
+# In both paths, check with std::isnan() before use.
+float32 gdop            # geometric DOP (NaN when DOP unavailable for this epoch)
+float32 pdop            # position DOP  (NaN when DOP unavailable for this epoch)
+float32 hdop            # horizontal DOP (NaN when DOP unavailable for this epoch)
+float32 vdop            # vertical DOP  (NaN when DOP unavailable for this epoch)
 
 # Global Position — WGS84 ellipsoidal coordinates
 float64 latitude        # geodetic latitude  [deg], positive North

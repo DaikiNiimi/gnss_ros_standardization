@@ -1,8 +1,11 @@
+// SPDX-License-Identifier: MIT
 // GNSS/IMU/WheelSpeed Error-State EKF Node
 #include "gnss_ros_standardization/gnss_imu_kalman_filter.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include <iomanip>
 #include <sstream>
+#include <climits>
+#include <unistd.h>
 
 namespace grs = gnss_ros_standardization::msg;
 
@@ -60,7 +63,8 @@ Eigen::Vector3d GnssImuKalmanFilter::gravityVector() const {
     Eigen::Vector3d pos = x_.segment<3>(IDX_POS);
     double r = pos.norm();
     if (r < 1.0) r = 6378137.0;
-    return -(9.80665 / r) * pos;  // pointing toward center
+    constexpr double Re = 6378137.0;
+    return -(9.80665 * (Re * Re) / (r * r * r)) * pos;  // g(r) = g0*(Re/r)^2, pointing toward center
   } else {
     return Eigen::Vector3d(0.0, 0.0, -9.80665);  // ENU: up is +Z
   }
@@ -155,13 +159,36 @@ GnssImuKalmanFilter::GnssImuKalmanFilter() : Node("gnss_imu_kalman_filter") {
   solution_pub_ = create_publisher<grs::GnssSolution>(config_.topic_solution, rclcpp::QoS(10));
   odom_pub_     = create_publisher<nav_msgs::msg::Odometry>(config_.topic_solution + "_odom", rclcpp::QoS(10));
 
-  // CSV
-  csv_file_.open(config_.csv_output_path, std::ios::out | std::ios::trunc);
-  if (csv_file_.is_open()) {
-    writeCSVHeader();
-    RCLCPP_INFO(get_logger(), "CSV output: %s", config_.csv_output_path.c_str());
-  } else {
-    RCLCPP_ERROR(get_logger(), "Failed to open CSV: %s", config_.csv_output_path.c_str());
+  // CSV — resolve output directory (empty = current working directory)
+  auto resolveCsvPath = [&](const std::string& filename) -> std::string {
+    if (config_.csv.dir.empty()) {
+      char cwd[PATH_MAX];
+      if (getcwd(cwd, sizeof(cwd))) return std::string(cwd) + "/" + filename;
+      return filename;
+    }
+    return config_.csv.dir + "/" + filename;
+  };
+
+  if (config_.csv.sensors_log_enabled) {
+    std::string path = resolveCsvPath(config_.csv.sensors_log_filename);
+    sensors_csv_.open(path, std::ios::out | std::ios::trunc);
+    if (sensors_csv_.is_open()) {
+      writeSensorsHeader();
+      RCLCPP_INFO(get_logger(), "Sensors CSV: %s", path.c_str());
+    } else {
+      RCLCPP_ERROR(get_logger(), "Failed to open sensors CSV: %s", path.c_str());
+    }
+  }
+
+  if (config_.csv.state_log_enabled) {
+    std::string path = resolveCsvPath(config_.csv.state_log_filename);
+    state_csv_.open(path, std::ios::out | std::ios::trunc);
+    if (state_csv_.is_open()) {
+      writeStateHeader();
+      RCLCPP_INFO(get_logger(), "State CSV: %s", path.c_str());
+    } else {
+      RCLCPP_ERROR(get_logger(), "Failed to open state CSV: %s", path.c_str());
+    }
   }
 
   RCLCPP_INFO(get_logger(), "EKF node started. frame=%s, gnss_mode=%s, wheel=%s",
@@ -172,7 +199,8 @@ GnssImuKalmanFilter::GnssImuKalmanFilter() : Node("gnss_imu_kalman_filter") {
 }
 
 GnssImuKalmanFilter::~GnssImuKalmanFilter() {
-  if (csv_file_.is_open()) csv_file_.close();
+  if (sensors_csv_.is_open()) sensors_csv_.close();
+  if (state_csv_.is_open()) state_csv_.close();
 }
 
 // ============================================================
@@ -199,8 +227,16 @@ void GnssImuKalmanFilter::loadParameters() {
   get_parameter("topics.wheel_speed", c.topic_wheel_speed);
   get_parameter("topics.solution", c.topic_solution);
 
-  declare_parameter<std::string>("csv.output_path", c.csv_output_path);
-  get_parameter("csv.output_path", c.csv_output_path);
+  declare_parameter<std::string>("csv.dir", c.csv.dir);
+  get_parameter("csv.dir", c.csv.dir);
+  declare_parameter<bool>("csv.sensors_log_enabled", c.csv.sensors_log_enabled);
+  get_parameter("csv.sensors_log_enabled", c.csv.sensors_log_enabled);
+  declare_parameter<std::string>("csv.sensors_log_filename", c.csv.sensors_log_filename);
+  get_parameter("csv.sensors_log_filename", c.csv.sensors_log_filename);
+  declare_parameter<bool>("csv.state_log_enabled", c.csv.state_log_enabled);
+  get_parameter("csv.state_log_enabled", c.csv.state_log_enabled);
+  declare_parameter<std::string>("csv.state_log_filename", c.csv.state_log_filename);
+  get_parameter("csv.state_log_filename", c.csv.state_log_filename);
 
   declare_parameter<double>("ekf.sigma_acc", c.sigma_acc);
   declare_parameter<double>("ekf.sigma_gyr", c.sigma_gyr);
@@ -232,6 +268,9 @@ void GnssImuKalmanFilter::loadParameters() {
   declare_parameter<double>("gnss_heading_speed_threshold", c.gnss_heading_speed_threshold);
   get_parameter("gnss_heading_speed_threshold", c.gnss_heading_speed_threshold);
 
+  declare_parameter<double>("gnss_pos_gate_chi2", c.gnss_pos_gate_chi2);
+  get_parameter("gnss_pos_gate_chi2", c.gnss_pos_gate_chi2);
+
   declare_parameter<bool>("use_wheel_speed", c.use_wheel_speed);
   declare_parameter<std::string>("wheel_speed_topic_type", c.wheel_speed_topic_type);
   declare_parameter<std::string>("wheel_speed_mode", c.wheel_speed_mode);
@@ -257,6 +296,16 @@ void GnssImuKalmanFilter::loadParameters() {
   declare_parameter<std::vector<double>>("imu_orientation", {0.0, 0.0, 0.0});
   auto io = get_parameter("imu_orientation").as_double_array();
   if (io.size() >= 3) c.imu_orientation_rpy = Eigen::Vector3d(io[0], io[1], io[2]);
+
+  // Validate enum-like string parameters to catch typos early
+  if (c.coordinate_frame != "ecef" && c.coordinate_frame != "enu") {
+    throw std::invalid_argument(
+      "coordinate_frame must be 'ecef' or 'enu', got: '" + c.coordinate_frame + "'");
+  }
+  if (c.output_reference_frame != "gnss" && c.output_reference_frame != "imu") {
+    throw std::invalid_argument(
+      "output_reference_frame must be 'gnss' or 'imu', got: '" + c.output_reference_frame + "'");
+  }
 }
 
 // ============================================================
@@ -325,20 +374,10 @@ void GnssImuKalmanFilter::predict(const Eigen::Vector3d& acc_body, const Eigen::
   Eigen::Vector3d acc_corrected = acc_body - ab;
   Eigen::Vector3d gyr_corrected = gyr_body - gb;
 
-  // State propagation
+  // State propagation (lever-arm centripetal/tangential correction is negligible at typical IMU rates)
   Eigen::Vector3d acc_nav = C_bn * acc_corrected + g;
-  
-  if (config_.output_reference_frame == "gnss") {
-    // When outputting GNSS antenna position, the IMU acceleration is at the IMU origin.
-    // Strictly, a_gnss = a_imu + alpha x lever + w x (w x lever).
-    // For simplicity, we assume small angular rates/accelerations and approximate a_gnss ~= a_imu
-    // as the primary translation acceleration.
-    x_.segment<3>(IDX_POS) += x_.segment<3>(IDX_VEL) * dt + 0.5 * acc_nav * dt * dt;
-    x_.segment<3>(IDX_VEL) += acc_nav * dt;
-  } else {
-    x_.segment<3>(IDX_POS) += x_.segment<3>(IDX_VEL) * dt + 0.5 * acc_nav * dt * dt;
-    x_.segment<3>(IDX_VEL) += acc_nav * dt;
-  }
+  x_.segment<3>(IDX_POS) += x_.segment<3>(IDX_VEL) * dt + 0.5 * acc_nav * dt * dt;
+  x_.segment<3>(IDX_VEL) += acc_nav * dt;
 
   // Quaternion propagation
   Eigen::Quaterniond q = getQuaternion();
@@ -423,6 +462,15 @@ void GnssImuKalmanFilter::updateGnssPosition(const Eigen::Vector3d& z_pos,
   }
 
   Eigen::Matrix3d S = H * P_ * H.transpose() + R_pos;
+
+  // Mahalanobis distance gate — reject large outliers (multipath, spoofing, etc.)
+  double mahal_sq = innovation.transpose() * S.inverse() * innovation;
+  if (mahal_sq > config_.gnss_pos_gate_chi2) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+      "GNSS position outlier rejected (mahal^2=%.1f > %.1f)", mahal_sq, config_.gnss_pos_gate_chi2);
+    return;
+  }
+
   Eigen::Matrix<double, ERROR_STATE_DIM, 3> K = P_ * H.transpose() * S.inverse();
 
   Eigen::Matrix<double, ERROR_STATE_DIM, 1> dx = K * innovation;
@@ -438,7 +486,7 @@ void GnssImuKalmanFilter::updateGnssPosition(const Eigen::Vector3d& z_pos,
   double angle = dtheta.norm();
   if (angle > 1e-12) {
     Eigen::Quaterniond dq(Eigen::AngleAxisd(angle, dtheta / angle));
-    setQuaternion(dq * getQuaternion());
+    setQuaternion(getQuaternion() * dq);
   }
 
   // Covariance update
@@ -482,7 +530,7 @@ void GnssImuKalmanFilter::updateGnssHeading(double heading_rad, double heading_v
   double angle = dtheta.norm();
   if (angle > 1e-12) {
     Eigen::Quaterniond dq(Eigen::AngleAxisd(angle, dtheta / angle));
-    setQuaternion(dq * getQuaternion());
+    setQuaternion(getQuaternion() * dq);
   }
 
   auto I15 = Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM>::Identity();
@@ -510,10 +558,11 @@ void GnssImuKalmanFilter::onWheelSpeedWithCov(const geometry_msgs::msg::TwistWit
   {
     std::lock_guard<std::mutex> lock(mtx_);
     latest_wheel_.valid = true;
+    latest_wheel_.stamp = msg->header.stamp;
     latest_wheel_.linear = linear;
     for (int i = 0; i < 36; ++i) latest_wheel_.covariance[i] = msg->twist.covariance[i];
   }
-  
+
   processWheelSpeed(linear, R_vel);
 }
 
@@ -524,10 +573,11 @@ void GnssImuKalmanFilter::onWheelSpeedPoint(const geometry_msgs::msg::TwistStamp
   {
     std::lock_guard<std::mutex> lock(mtx_);
     latest_wheel_.valid = true;
+    latest_wheel_.stamp = msg->header.stamp;
     latest_wheel_.linear = linear;
     latest_wheel_.covariance.fill(0);
   }
-  
+
   processWheelSpeed(linear, R_vel);
 }
 
@@ -570,14 +620,14 @@ void GnssImuKalmanFilter::processWheelSpeed(const Eigen::Vector3d& linear_veloci
     double angle = dtheta.norm();
     if (angle > 1e-12) {
       Eigen::Quaterniond dq(Eigen::AngleAxisd(angle, dtheta / angle));
-      setQuaternion(dq * getQuaternion());
+      setQuaternion(getQuaternion() * dq);
     }
 
     auto I15 = Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM>::Identity();
     Eigen::Matrix<double, 1, 1> R_scalar;
     R_scalar(0,0) = covariance(0,0);
     P_ = (I15 - K * H) * P_ * (I15 - K * H).transpose() + K * R_scalar * K.transpose();
-    
+
   } else {
     // 3D velocity observation (e.g. [v_body_x, 0, 0])
     Eigen::Vector3d innovation = linear_velocity - v_body_pred;
@@ -605,7 +655,7 @@ void GnssImuKalmanFilter::processWheelSpeed(const Eigen::Vector3d& linear_veloci
     double angle = dtheta.norm();
     if (angle > 1e-12) {
       Eigen::Quaterniond dq(Eigen::AngleAxisd(angle, dtheta / angle));
-      setQuaternion(dq * getQuaternion());
+      setQuaternion(getQuaternion() * dq);
     }
 
     auto I15 = Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM>::Identity();
@@ -668,8 +718,9 @@ void GnssImuKalmanFilter::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
   prev_imu_stamp_ = stamp;
   has_prev_imu_stamp_ = true;
 
-  // Write CSV row and publish at IMU rate
-  writeCSVRow(stamp);
+  // Write CSV rows and publish at IMU rate
+  writeSensorsRow(stamp);
+  writeStateRow(stamp);
   publishSolution(stamp);
 
   // After writing CSV, clear GNSS and wheel snapshots
@@ -687,6 +738,7 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
 
   // Build snapshot regardless of update validity
   GnssSnapshot snap;
+  snap.stamp = msg->header.stamp;
   snap.tow = msg->time_tow;
   snap.week = msg->time_week;
   snap.status = msg->status;
@@ -723,7 +775,7 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
   double ve = snap.vel_enu(0), vn = snap.vel_enu(1);
   double horiz_speed = std::sqrt(ve*ve + vn*vn);
   if (horiz_speed > config_.gnss_heading_speed_threshold) {
-    snap.doppler_heading = std::atan2(ve, vn);  // heading from north, CW
+    snap.doppler_heading = std::atan2(vn, ve);  // ENU yaw: from East, CCW (matches EKF internal convention)
   }
 
   latest_gnss_ = snap;
@@ -812,15 +864,12 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
     if (!std::isnan(snap.doppler_heading) && horiz_speed > config_.gnss_heading_speed_threshold) {
       double heading_var = 0.1;  // ~18 deg std (conservative)
       if (horiz_speed > 2.0) heading_var = 0.01;  // ~6 deg at decent speed
-      double horiz_speed_local = std::sqrt(ve*ve + vn*vn);
-      // Derive heading variance from velocity covariance
-      if (horiz_speed_local > config_.gnss_heading_speed_threshold) {
-        double var_ve = snap.vel_cov_enu[0];
-        double var_vn = snap.vel_cov_enu[4];
-        double s2 = horiz_speed_local * horiz_speed_local;
-        heading_var = (var_ve * vn*vn + var_vn * ve*ve) / (s2 * s2);
-        heading_var = std::max(heading_var, 1e-4);
-      }
+      // Derive heading variance from velocity covariance (error propagation of atan2(vn,ve))
+      double var_ve = snap.vel_cov_enu[0];
+      double var_vn = snap.vel_cov_enu[4];
+      double s2 = horiz_speed * horiz_speed;
+      heading_var = (var_ve * vn*vn + var_vn * ve*ve) / (s2 * s2);
+      heading_var = std::max(heading_var, 1e-4);
       updateGnssHeading(snap.doppler_heading, heading_var);
     }
     latest_gnss_.used_for_update = true;
@@ -850,10 +899,23 @@ void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
   sol.pos_ecef.y = ecef_pos(1);
   sol.pos_ecef.z = ecef_pos(2);
 
-  // Covariance
-  for (int i = 0; i < 9; ++i) {
-    sol.pos_cov_ecef[i] = P_(EIDX_POS + i/3, EIDX_POS + i%3);
-    sol.vel_cov_ecef[i] = P_(EIDX_VEL + i/3, EIDX_VEL + i%3);
+  // Covariance: write to the frame-appropriate field; rotate ENU→ECEF for pos_cov_ecef
+  Eigen::Matrix3d P_pp = P_.block<3,3>(EIDX_POS, EIDX_POS);
+  Eigen::Matrix3d P_vv = P_.block<3,3>(EIDX_VEL, EIDX_VEL);
+  if (config_.coordinate_frame == "enu" && origin_set_) {
+    // Store ENU covariance in the ENU field
+    for (int i = 0; i < 9; ++i) sol.pos_enu_cov[i] = P_pp(i/3, i%3);
+    // Rotate ENU→ECEF for the ECEF covariance field
+    double cov_ecef[9];
+    gnss_utils::rotateCovarianceEnuToEcef(sol.pos_enu_cov.data(), origin_llh_(0), origin_llh_(1), cov_ecef);
+    for (int i = 0; i < 9; ++i) sol.pos_cov_ecef[i] = cov_ecef[i];
+    for (int i = 0; i < 9; ++i) sol.vel_enu_cov[i] = P_vv(i/3, i%3);
+    gnss_utils::rotateCovarianceEnuToEcef(sol.vel_enu_cov.data(), origin_llh_(0), origin_llh_(1), cov_ecef);
+    for (int i = 0; i < 9; ++i) sol.vel_cov_ecef[i] = cov_ecef[i];
+  } else {
+    // ECEF frame: covariance is already in ECEF
+    for (int i = 0; i < 9; ++i) sol.pos_cov_ecef[i] = P_pp(i/3, i%3);
+    for (int i = 0; i < 9; ++i) sol.vel_cov_ecef[i] = P_vv(i/3, i%3);
   }
 
   if (origin_set_) {
@@ -874,7 +936,7 @@ void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
     sol.vel_enu.z = vel(2);
   }
 
-  sol.status = grs::GnssSolution::STATUS_NONE;  // EKF output
+  sol.status = grs::GnssSolution::STATUS_EKF;
 
   solution_pub_->publish(sol);
 
@@ -911,7 +973,6 @@ void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
   odom.twist.twist.linear.z = vel_body(2);
 
   // Covariance arrays: Odometry uses 36-element arrays for 6D pose/twist
-  Eigen::Matrix3d P_vv = P_.block<3,3>(EIDX_VEL, EIDX_VEL);
   Eigen::Matrix3d P_vv_body = C_bn.transpose() * P_vv * C_bn;
   for (int min_i = 0; min_i < 3; ++min_i) {
     for (int min_j = 0; min_j < 3; ++min_j) {
@@ -928,167 +989,122 @@ void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
 }
 
 // ============================================================
-// CSV Output
+// CSV Output — Sensors Log
+//   Rows at IMU rate; GNSS/wheel columns are empty when no measurement arrived.
+//   gnss_stamp_ns lets readers verify timing offset = time_ns - gnss_stamp_ns.
 // ============================================================
-void GnssImuKalmanFilter::writeCSVHeader() {
-  if (!csv_file_.is_open()) return;
-  // Write Metadata header line
-  csv_file_ << "# config_coordinate_frame: " << config_.coordinate_frame 
-            << " | output_reference_frame: " << config_.output_reference_frame << "\n";
-  csv_file_ << std::setprecision(15);
-  csv_file_
-    // Time
-    << "ros_time_sec,ros_time_nsec,gnss_tow,gnss_week,ekf_frame"
-    // EKF estimated position (work frame)
+void GnssImuKalmanFilter::writeSensorsHeader() {
+  if (!sensors_csv_.is_open()) return;
+  sensors_csv_ << "# coordinate_frame: " << config_.coordinate_frame
+               << " | output_reference_frame: " << config_.output_reference_frame << "\n";
+  sensors_csv_ << std::setprecision(15)
+    << "time_ns"
+    << ",gnss_week,gnss_tow,gnss_stamp_ns"
+    << ",gnss_lat_deg,gnss_lon_deg,gnss_alt_m"
+    << ",gnss_status,gnss_num_sats"
+    << ",gnss_used"
+    << ",imu_acc_x,imu_acc_y,imu_acc_z"
+    << ",imu_gyr_x,imu_gyr_y,imu_gyr_z"
+    << ",ws_vel_x"
+    << ",ws_used"
+    << "\n";
+  sensors_csv_.flush();
+}
+
+void GnssImuKalmanFilter::writeSensorsRow(const rclcpp::Time& stamp) {
+  if (!sensors_csv_.is_open() || !initialized_) return;
+
+  sensors_csv_ << std::setprecision(15);
+  sensors_csv_ << stamp.nanoseconds();
+
+  // GNSS columns (empty if no measurement this row)
+  if (latest_gnss_.valid) {
+    const auto& g = latest_gnss_;
+    sensors_csv_ << "," << g.week
+                 << "," << g.tow
+                 << "," << g.stamp.nanoseconds()
+                 << "," << g.lat
+                 << "," << g.lon
+                 << "," << g.alt
+                 << "," << static_cast<int>(g.status)
+                 << "," << static_cast<int>(g.num_sats)
+                 << "," << (g.used_for_update ? 1 : 0);
+  } else {
+    sensors_csv_ << ",,,,,,,,,0";
+  }
+
+  // IMU (always present after initialization)
+  sensors_csv_ << "," << latest_imu_acc_(0)
+               << "," << latest_imu_acc_(1)
+               << "," << latest_imu_acc_(2)
+               << "," << latest_imu_gyr_(0)
+               << "," << latest_imu_gyr_(1)
+               << "," << latest_imu_gyr_(2);
+
+  // Wheel speed (empty if no measurement this row)
+  if (latest_wheel_.valid) {
+    sensors_csv_ << "," << latest_wheel_.linear(0)
+                 << "," << (latest_wheel_.used_for_update ? 1 : 0);
+  } else {
+    sensors_csv_ << ",,0";
+  }
+
+  sensors_csv_ << "\n";
+  sensors_csv_.flush();
+}
+
+// ============================================================
+// CSV Output — State Log
+//   EKF estimated state and diagonal covariance at IMU rate.
+// ============================================================
+void GnssImuKalmanFilter::writeStateHeader() {
+  if (!state_csv_.is_open()) return;
+  state_csv_ << "# coordinate_frame: " << config_.coordinate_frame
+             << " | output_reference_frame: " << config_.output_reference_frame << "\n";
+  state_csv_ << std::setprecision(15)
+    << "time_ns"
     << ",ekf_pos_0,ekf_pos_1,ekf_pos_2"
-    // EKF estimated position (LLH)
     << ",ekf_lat_deg,ekf_lon_deg,ekf_alt_m"
-    // EKF estimated position (ECEF)
-    << ",ekf_ecef_x,ekf_ecef_y,ekf_ecef_z"
-    // EKF estimated velocity
     << ",ekf_vel_0,ekf_vel_1,ekf_vel_2"
-    // EKF estimated attitude (Euler)
     << ",ekf_roll_rad,ekf_pitch_rad,ekf_yaw_rad"
-    // EKF estimated IMU biases
     << ",ekf_acc_bias_x,ekf_acc_bias_y,ekf_acc_bias_z"
     << ",ekf_gyr_bias_x,ekf_gyr_bias_y,ekf_gyr_bias_z"
-    // EKF covariance diagonal
     << ",ekf_cov_pos_0,ekf_cov_pos_1,ekf_cov_pos_2"
     << ",ekf_cov_vel_0,ekf_cov_vel_1,ekf_cov_vel_2"
     << ",ekf_cov_att_0,ekf_cov_att_1,ekf_cov_att_2"
-    << ",ekf_cov_ab_0,ekf_cov_ab_1,ekf_cov_ab_2"
-    << ",ekf_cov_gb_0,ekf_cov_gb_1,ekf_cov_gb_2"
-    // IMU
-    << ",imu_acc_x,imu_acc_y,imu_acc_z"
-    << ",imu_gyr_x,imu_gyr_y,imu_gyr_z"
-    << ",imu_acc_cov_0,imu_acc_cov_4,imu_acc_cov_8"
-    << ",imu_gyr_cov_0,imu_gyr_cov_4,imu_gyr_cov_8"
-    // Wheel speed
-    << ",ws_vel_x,ws_vel_y,ws_vel_z"
-    << ",ws_cov_0,ws_cov_7,ws_cov_14"
-    << ",ws_valid,ws_used"
-    // GNSS position (LLH)
-    << ",gnss_lat_deg,gnss_lon_deg,gnss_alt_m"
-    // GNSS position (ECEF)
-    << ",gnss_ecef_x,gnss_ecef_y,gnss_ecef_z"
-    << ",gnss_pos_cov_ecef_0,gnss_pos_cov_ecef_4,gnss_pos_cov_ecef_8"
-    // GNSS position (ENU)
-    << ",gnss_enu_e,gnss_enu_n,gnss_enu_u"
-    << ",gnss_pos_cov_enu_0,gnss_pos_cov_enu_4,gnss_pos_cov_enu_8"
-    // GNSS velocity (ECEF)
-    << ",gnss_vel_ecef_x,gnss_vel_ecef_y,gnss_vel_ecef_z"
-    << ",gnss_vel_cov_ecef_0,gnss_vel_cov_ecef_4,gnss_vel_cov_ecef_8"
-    // GNSS velocity (ENU) / Doppler
-    << ",gnss_vel_enu_e,gnss_vel_enu_n,gnss_vel_enu_u"
-    << ",gnss_vel_cov_enu_0,gnss_vel_cov_enu_4,gnss_vel_cov_enu_8"
-    << ",gnss_doppler_heading_rad"
-    // GNSS status
-    << ",gnss_status,gnss_num_sats"
-    << ",gnss_gdop,gnss_pdop,gnss_hdop,gnss_vdop"
-    << ",gnss_ratio,gnss_age_diff"
-    << ",gnss_pos_valid,gnss_received,gnss_used"
     << "\n";
-  csv_file_.flush();
+  state_csv_.flush();
 }
 
-void GnssImuKalmanFilter::writeCSVRow(const rclcpp::Time& stamp) {
-  if (!csv_file_.is_open() || !initialized_) return;
+void GnssImuKalmanFilter::writeStateRow(const rclcpp::Time& stamp) {
+  if (!state_csv_.is_open() || !initialized_) return;
 
-  Eigen::Vector3d pos = x_.segment<3>(IDX_POS);
-  Eigen::Vector3d vel = x_.segment<3>(IDX_VEL);
+  Eigen::Vector3d pos   = x_.segment<3>(IDX_POS);
+  Eigen::Vector3d vel   = x_.segment<3>(IDX_VEL);
   Eigen::Vector3d euler = quaternionToEuler(getQuaternion());
-  Eigen::Vector3d ab = x_.segment<3>(IDX_AB);
-  Eigen::Vector3d gb = x_.segment<3>(IDX_GB);
-  Eigen::Vector3d llh = workFrameToLlh(pos);
-  Eigen::Vector3d ecef = workFrameToEcef(pos);
+  Eigen::Vector3d ab    = x_.segment<3>(IDX_AB);
+  Eigen::Vector3d gb    = x_.segment<3>(IDX_GB);
+  Eigen::Vector3d llh   = workFrameToLlh(pos);
 
-  auto nan_or = [](double v) -> std::string {
-    if (std::isnan(v)) return "NaN";
-    std::ostringstream oss; oss << std::setprecision(15) << v; return oss.str();
-  };
-  auto nan3 = [&](const Eigen::Vector3d& v) -> std::string {
-    return nan_or(v(0)) + "," + nan_or(v(1)) + "," + nan_or(v(2));
-  };
-
-  csv_file_ << std::setprecision(15);
-
-  // Time + Frame
-  csv_file_ << stamp.seconds() << "," << stamp.nanoseconds();
-  // GNSS TOW/week — only if GNSS valid this row
-  if (latest_gnss_.valid) {
-    csv_file_ << "," << nan_or(latest_gnss_.tow) << "," << latest_gnss_.week;
-  } else {
-    csv_file_ << ",NaN,NaN";
-  }
-  csv_file_ << "," << config_.coordinate_frame;
-
-  // EKF position (work frame)
-  csv_file_ << "," << pos(0) << "," << pos(1) << "," << pos(2);
-  // EKF LLH
-  csv_file_ << "," << llh(0) << "," << llh(1) << "," << llh(2);
-  // EKF ECEF
-  csv_file_ << "," << ecef(0) << "," << ecef(1) << "," << ecef(2);
-  // EKF velocity
-  csv_file_ << "," << vel(0) << "," << vel(1) << "," << vel(2);
-  // EKF attitude
-  csv_file_ << "," << euler(0) << "," << euler(1) << "," << euler(2);
-  // EKF biases
-  csv_file_ << "," << ab(0) << "," << ab(1) << "," << ab(2);
-  csv_file_ << "," << gb(0) << "," << gb(1) << "," << gb(2);
-  // EKF covariance diagonal
-  for (int i = 0; i < ERROR_STATE_DIM; ++i)
-    csv_file_ << "," << P_(i,i);
-
-  // IMU
-  csv_file_ << "," << latest_imu_acc_(0) << "," << latest_imu_acc_(1) << "," << latest_imu_acc_(2);
-  csv_file_ << "," << latest_imu_gyr_(0) << "," << latest_imu_gyr_(1) << "," << latest_imu_gyr_(2);
-  csv_file_ << "," << latest_imu_acc_cov_[0] << "," << latest_imu_acc_cov_[4] << "," << latest_imu_acc_cov_[8];
-  csv_file_ << "," << latest_imu_gyr_cov_[0] << "," << latest_imu_gyr_cov_[4] << "," << latest_imu_gyr_cov_[8];
-
-  // Wheel speed
-  if (latest_wheel_.valid) {
-    csv_file_ << "," << latest_wheel_.linear(0) << "," << latest_wheel_.linear(1) << "," << latest_wheel_.linear(2);
-    csv_file_ << "," << latest_wheel_.covariance[0] << "," << latest_wheel_.covariance[7] << "," << latest_wheel_.covariance[14];
-    csv_file_ << ",1," << (latest_wheel_.used_for_update ? "1" : "0");
-  } else {
-    csv_file_ << ",NaN,NaN,NaN,NaN,NaN,NaN,0,0";
-  }
-
-  // GNSS
-  if (latest_gnss_.valid) {
-    auto& g = latest_gnss_;
-    csv_file_ << "," << nan_or(g.lat) << "," << nan_or(g.lon) << "," << nan_or(g.alt);
-    csv_file_ << "," << nan3(g.pos_ecef);
-    csv_file_ << "," << g.pos_cov_ecef[0] << "," << g.pos_cov_ecef[4] << "," << g.pos_cov_ecef[8];
-    csv_file_ << "," << nan3(g.pos_enu);
-    csv_file_ << "," << g.pos_cov_enu[0] << "," << g.pos_cov_enu[4] << "," << g.pos_cov_enu[8];
-    csv_file_ << "," << nan3(g.vel_ecef);
-    csv_file_ << "," << g.vel_cov_ecef[0] << "," << g.vel_cov_ecef[4] << "," << g.vel_cov_ecef[8];
-    csv_file_ << "," << nan3(g.vel_enu);
-    csv_file_ << "," << g.vel_cov_enu[0] << "," << g.vel_cov_enu[4] << "," << g.vel_cov_enu[8];
-    csv_file_ << "," << nan_or(g.doppler_heading);
-    csv_file_ << "," << (int)g.status << "," << (int)g.num_sats;
-    csv_file_ << "," << g.gdop << "," << g.pdop << "," << g.hdop << "," << g.vdop;
-    csv_file_ << "," << g.ratio << "," << g.age_diff;
-    csv_file_ << "," << (g.pos_is_nan ? "0" : "1");
-    csv_file_ << ",1," << (g.used_for_update ? "1" : "0");
-  } else {
-    // No GNSS data this row
-    csv_file_ << ",NaN,NaN,NaN";  // LLH
-    csv_file_ << ",NaN,NaN,NaN,NaN,NaN,NaN";  // ECEF pos + cov
-    csv_file_ << ",NaN,NaN,NaN,NaN,NaN,NaN";  // ENU pos + cov
-    csv_file_ << ",NaN,NaN,NaN,NaN,NaN,NaN";  // ECEF vel + cov
-    csv_file_ << ",NaN,NaN,NaN,NaN,NaN,NaN";  // ENU vel + cov
-    csv_file_ << ",NaN";  // doppler heading
-    csv_file_ << ",NaN,NaN";  // status, sats
-    csv_file_ << ",NaN,NaN,NaN,NaN";  // DOPs
-    csv_file_ << ",NaN,NaN";  // ratio, age
-    csv_file_ << ",NaN";  // pos_valid
-    csv_file_ << ",0,0";  // gnss_valid, gnss_used
-  }
-
-  csv_file_ << "\n";
-  csv_file_.flush();
+  state_csv_ << std::setprecision(15);
+  state_csv_ << stamp.nanoseconds()
+    << "," << pos(0)   << "," << pos(1)   << "," << pos(2)
+    << "," << llh(0)   << "," << llh(1)   << "," << llh(2)
+    << "," << vel(0)   << "," << vel(1)   << "," << vel(2)
+    << "," << euler(0) << "," << euler(1) << "," << euler(2)
+    << "," << ab(0)    << "," << ab(1)    << "," << ab(2)
+    << "," << gb(0)    << "," << gb(1)    << "," << gb(2)
+    << "," << P_(EIDX_POS+0, EIDX_POS+0)
+    << "," << P_(EIDX_POS+1, EIDX_POS+1)
+    << "," << P_(EIDX_POS+2, EIDX_POS+2)
+    << "," << P_(EIDX_VEL+0, EIDX_VEL+0)
+    << "," << P_(EIDX_VEL+1, EIDX_VEL+1)
+    << "," << P_(EIDX_VEL+2, EIDX_VEL+2)
+    << "," << P_(EIDX_ATT+0, EIDX_ATT+0)
+    << "," << P_(EIDX_ATT+1, EIDX_ATT+1)
+    << "," << P_(EIDX_ATT+2, EIDX_ATT+2)
+    << "\n";
+  state_csv_.flush();
 }
 
 }  // namespace gnss_imu_kalman_filter

@@ -1,7 +1,16 @@
+// SPDX-License-Identifier: MIT
 // Convert a ROS 2 bag containing GnssSolution messages to an RTKLIB .pos file.
 //
 // Output format: standard RTKLIB lat/lon/height .pos with GPST date column.
 // Q codes: 1=fix, 2=float, 3=sbas, 4=dgps, 5=single, 6=ppp.
+//
+// Design: single-pass streaming. Each GnssSolution message becomes one .pos
+// line. Rows where status maps to Q=0 (unknown), or where the time stamp is
+// zero, are silently dropped (typically uninitialized messages). When --vel
+// is requested but any velocity component is non-finite, the velocity
+// columns for that row are omitted so consumer tools (rtkplot) don't choke.
+// Position covariance is remapped from the message's row-major E-N-U order
+// into RTKLIB's expected N-E-U order. See the writeEpoch comments below.
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/serialization.hpp>
@@ -14,6 +23,7 @@
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
+#include "gnss_ros_standardization/bag_io_utils.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -23,6 +33,9 @@
 #include <vector>
 
 using gnss_ros_standardization::msg::GnssSolution;
+using gnss_converter_io::deserializeRos;
+using gnss_converter_io::deriveOutputPath;
+using gnss_converter_io::normalizeBagUri;
 
 struct Args {
   std::string bag_uri;
@@ -31,22 +44,6 @@ struct Args {
   std::string program_name = "rosbag_to_pos";
   bool with_velocity = false;
 };
-
-static std::string normalizeBagUri(std::string uri) {
-  while (!uri.empty() && (uri.back() == '/' || uri.back() == '\\')) uri.pop_back();
-  if (uri.size() >= 4) {
-    std::string tail = uri.substr(uri.size() - 4);
-    for (auto& c : tail) c = (char)std::tolower((unsigned char)c);
-    if (tail == ".db3") {
-      auto pos = uri.find_last_of("/\\");
-      if (pos != std::string::npos) {
-        std::string dir = uri.substr(0, pos);
-        return dir.empty() ? "." : dir;
-      }
-    }
-  }
-  return uri;
-}
 
 static int statusToQ(uint8_t status) {
   switch (status) {
@@ -78,6 +75,7 @@ static Args parseArgs(int argc, char** argv) {
     else if (s == "--topic") a.topic   = next();
     else if (s == "--out")   a.out_path = next();
     else if (s == "--vel")   a.with_velocity = true;
+    else if (s == "--pgm")   a.program_name = next();
     else std::fprintf(stderr, "[warn] unknown arg %s\n", s.c_str());
   }
   return a;
@@ -107,9 +105,10 @@ static void writeHeader(FILE* fp, const std::string& prog, bool with_velocity) {
   std::fprintf(fp, "\n");
 }
 
-static void writeEpoch(FILE* fp, const GnssSolution& m, bool with_velocity) {
+static bool writeEpoch(FILE* fp, const GnssSolution& m, bool with_velocity) {
   const int Q = statusToQ(m.status);
-  if (Q == 0) return;
+  if (Q == 0) return false;
+  if (m.time_week == 0 && m.time_tow == 0.0) return false;
 
   gtime_t t = gpst2time((int)m.time_week, m.time_tow);
   char tbuf[64];
@@ -143,44 +142,61 @@ static void writeEpoch(FILE* fp, const GnssSolution& m, bool with_velocity) {
     (double)m.age_diff, (double)m.ratio);
 
   if (with_velocity) {
-    // Same E-N-U -> N-E-U remap as position covariance.
-    const double* Cv = m.vel_enu_cov.data();
+    // Some decoders emit quiet_NaN for vel_enu when origin/velocity is
+    // unavailable (see novatel/sbf decoder NaN paths). Skip the velocity
+    // columns when any component is non-finite so consumer tools (RTKPLOT,
+    // rtkplot) don't choke on "nan" tokens; the row's Q/position/cov stay.
     const double vn = m.vel_enu.y;
     const double ve = m.vel_enu.x;
     const double vu = m.vel_enu.z;
-    const double sdvn  = std::sqrt(std::max(0.0, Cv[4]));
-    const double sdve  = std::sqrt(std::max(0.0, Cv[0]));
-    const double sdvu  = std::sqrt(std::max(0.0, Cv[8]));
-    const double sdvne = signedSqrt(Cv[1]);
-    const double sdveu = signedSqrt(Cv[2]);
-    const double sdvun = signedSqrt(Cv[7]);
-    std::fprintf(fp,
-      " %10.5f %10.5f %10.5f %8.5f %8.5f %8.5f %8.5f %8.5f %8.5f",
-      vn, ve, vu, sdvn, sdve, sdvu, sdvne, sdveu, sdvun);
+    if (std::isfinite(vn) && std::isfinite(ve) && std::isfinite(vu)) {
+      // Same E-N-U -> N-E-U remap as position covariance.
+      const double* Cv = m.vel_enu_cov.data();
+      const double sdvn  = std::sqrt(std::max(0.0, Cv[4]));
+      const double sdve  = std::sqrt(std::max(0.0, Cv[0]));
+      const double sdvu  = std::sqrt(std::max(0.0, Cv[8]));
+      const double sdvne = signedSqrt(Cv[1]);
+      const double sdveu = signedSqrt(Cv[2]);
+      const double sdvun = signedSqrt(Cv[7]);
+      std::fprintf(fp,
+        " %10.5f %10.5f %10.5f %8.5f %8.5f %8.5f %8.5f %8.5f %8.5f",
+        vn, ve, vu, sdvn, sdve, sdvu, sdvne, sdveu, sdvun);
+    }
   }
   std::fprintf(fp, "\n");
+  return true;
+}
+
+static void printUsage(FILE* out) {
+  std::fprintf(out,
+    "Usage: rosbag_to_pos --bag <bag_dir_or_db3> "
+    "[--out <out.pos>] [--topic /gnss/nmea_solution] [--vel] [--pgm <name>] "
+    "[--help] [--version]\n");
 }
 
 int main(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    std::string a = argv[i];
+    if (a == "--help" || a == "-h") { printUsage(stdout); return 0; }
+    if (a == "--version" || a == "-V") {
+#ifdef PACKAGE_VERSION
+      std::fprintf(stdout, "rosbag_to_pos %s\n", PACKAGE_VERSION);
+#else
+      std::fprintf(stdout, "rosbag_to_pos (unknown version)\n");
+#endif
+      return 0;
+    }
+  }
   rclcpp::init(argc, argv);
   Args args = parseArgs(argc, argv);
 
   if (args.bag_uri.empty()) {
-    std::fprintf(stderr,
-      "Usage: rosbag_to_pos --bag <bag_dir_or_db3> "
-      "[--out <out.pos>] [--topic /gnss/nmea_solution] [--vel]\n");
+    printUsage(stderr);
     return 2;
   }
 
   if (args.out_path.empty()) {
-    namespace fs = std::filesystem;
-    fs::path bag_path(args.bag_uri);
-    while (!bag_path.empty() && !bag_path.has_filename()) bag_path = bag_path.parent_path();
-    std::string stem = bag_path.stem().string();
-    if (stem.empty()) stem = "output";
-    std::string base_dir = bag_path.parent_path().string();
-    if (!base_dir.empty()) base_dir += "/";
-    args.out_path = base_dir + stem + ".pos";
+    args.out_path = deriveOutputPath(args.bag_uri, ".pos");
     std::fprintf(stderr, "Info: output path auto-derived: %s\n", args.out_path.c_str());
   }
 
@@ -211,17 +227,10 @@ int main(int argc, char** argv) {
     auto msg = reader.read_next();
     if (!msg) break;
     if (msg->topic_name != args.topic) continue;
-    if (!msg->serialized_data || msg->serialized_data->buffer_length == 0) continue;
 
     GnssSolution sol;
-    try {
-      rclcpp::SerializedMessage smsg(*msg->serialized_data);
-      ser.deserialize_message(&smsg, &sol);
-    } catch (...) {
-      continue;
-    }
-    writeEpoch(fp, sol, args.with_velocity);
-    ++n_written;
+    if (!deserializeRos(*msg, ser, sol)) continue;
+    if (writeEpoch(fp, sol, args.with_velocity)) ++n_written;
   }
 
   std::fclose(fp);

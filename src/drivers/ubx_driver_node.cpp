@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
@@ -252,6 +253,7 @@ class UbxDriverNode : public rclcpp::Node {
     // Lock solution source at startup. BINARY if NAV-PVT is enabled, else NMEA.
     // No mid-session switching: if binary stops, output pauses rather than falling back.
     source_ = config_.enable_nav_pvt ? SolutionSource::BINARY : SolutionSource::NMEA;
+    initPendingExpectedMask();
     start_time_ = now();
     RCLCPP_INFO(get_logger(), "Solution source locked: %s",
                 source_ == SolutionSource::BINARY ? "BINARY (UBX-NAV-PVT)" : "NMEA");
@@ -1221,19 +1223,32 @@ class UbxDriverNode : public rclcpp::Node {
   // PVT TOW Aggregation (mirrors SBF driver pattern; see ubx_decoder_node.cpp
   // for design notes). All NAV-* payloads carry iTOW at offset 0.
   // ============================================================================
-  static constexpr uint8_t COV_BIT_DOP     = 0x1;
-  static constexpr uint8_t COV_BIT_COV     = 0x2;
-  static constexpr uint8_t COV_BIT_POSECEF = 0x4;
-  static constexpr uint8_t COV_BIT_VELECEF = 0x8;
+  // NAV-DOP is tracked separately in a persistent cache (last_dop_) so it can
+  // survive Pending resets and be staleness-gated against the PVT cadence.
+  // Only NAV-COV/POSECEF/VELECEF contribute to completion.
+  static constexpr uint8_t COV_BIT_COV     = 0x1;
+  static constexpr uint8_t COV_BIT_POSECEF = 0x2;
+  static constexpr uint8_t COV_BIT_VELECEF = 0x4;
 
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
     bool has_pvt{false};
     uint8_t cov_received{0};
-    uint8_t cov_ever_seen{0};
+    uint8_t cov_expected{0};   // derived from YAML config (fixed at startup)
     msg::GnssSolution buf{};
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
+
+  gnss_utils::DopCache last_dop_;
+  uint32_t prev_pvt_tow_ms_{UINT32_MAX};
+  uint32_t pvt_period_ms_{0};
+
+  void initPendingExpectedMask() {
+    pending_.cov_expected =
+        (config_.enable_nav_cov     ? COV_BIT_COV     : uint8_t{0}) |
+        (config_.enable_nav_posecef ? COV_BIT_POSECEF : uint8_t{0}) |
+        (config_.enable_nav_velecef ? COV_BIT_VELECEF : uint8_t{0});
+  }
 
   static uint32_t readItowMs(const uint8_t* p, size_t len) {
     if (len < 4) return UINT32_MAX;
@@ -1244,10 +1259,11 @@ class UbxDriverNode : public rclcpp::Node {
 
   bool pendingComplete() const {
     return pending_.has_pvt &&
-           pending_.cov_received == pending_.cov_ever_seen;
+           pending_.cov_received == pending_.cov_expected;
   }
 
   void handleNavPvt() {
+    if (!config_.enable_nav_pvt) return;
     const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
@@ -1263,23 +1279,30 @@ class UbxDriverNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
+  // NAV-DOP: parsed into the persistent last_dop_ cache, NOT into pending_.
+  // Does NOT participate in completion and does NOT trigger flush. At flush
+  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
+  // enough (within 0..PVT_period after PVT) to populate the published solution.
+  // NAV-DOP carries no GPS week → last_dop_.week = 0 (helper skips week check).
   void handleNavDop() {
+    if (!config_.enable_nav_dop) return;
     const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
-    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
-      flushPending();
-    }
-    pending_.tow_ms = tow;
+    msg::GnssSolution scratch{};
     if (!ubx::nav_dop::parseNavDop(ubx_frm_payload_.data(), ubx_frm_payload_.size(),
-                                   pending_.buf)) {
+                                   scratch)) {
       return;
     }
-    pending_.cov_received |= COV_BIT_DOP;
-    pending_.cov_ever_seen |= COV_BIT_DOP;
-    pending_.last_update = now();
-    if (pendingComplete()) flushPending();
+    last_dop_.valid  = true;
+    last_dop_.week   = 0;
+    last_dop_.tow_ms = tow;
+    last_dop_.gdop   = scratch.gdop;
+    last_dop_.pdop   = scratch.pdop;
+    last_dop_.hdop   = scratch.hdop;
+    last_dop_.vdop   = scratch.vdop;
   }
 
   void handleNavCov() {
+    if (!config_.enable_nav_cov) return;
     const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
@@ -1290,12 +1313,12 @@ class UbxDriverNode : public rclcpp::Node {
       return;
     }
     pending_.cov_received |= COV_BIT_COV;
-    pending_.cov_ever_seen |= COV_BIT_COV;
     pending_.last_update = now();
     if (pendingComplete()) flushPending();
   }
 
   void handleNavPosEcef() {
+    if (!config_.enable_nav_posecef) return;
     const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
@@ -1307,12 +1330,12 @@ class UbxDriverNode : public rclcpp::Node {
       return;
     }
     pending_.cov_received  |= COV_BIT_POSECEF;
-    pending_.cov_ever_seen |= COV_BIT_POSECEF;
     pending_.last_update = now();
     if (pendingComplete()) flushPending();
   }
 
   void handleNavVelEcef() {
+    if (!config_.enable_nav_velecef) return;
     const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
@@ -1324,17 +1347,16 @@ class UbxDriverNode : public rclcpp::Node {
       return;
     }
     pending_.cov_received  |= COV_BIT_VELECEF;
-    pending_.cov_ever_seen |= COV_BIT_VELECEF;
     pending_.last_update = now();
     if (pendingComplete()) flushPending();
   }
 
   void flushPending() {
-    const uint8_t ever_seen = pending_.cov_ever_seen;
-    const uint8_t recv      = pending_.cov_received;
+    const uint8_t expected = pending_.cov_expected;
+    const uint8_t recv     = pending_.cov_received;
     if (!pending_.has_pvt) {
       pending_ = {};
-      pending_.cov_ever_seen = ever_seen;
+      pending_.cov_expected = expected;
       return;
     }
     // Snapshot ECEF-direct fields before LLH-driven derivation overwrites them.
@@ -1367,9 +1389,22 @@ class UbxDriverNode : public rclcpp::Node {
       binary_solution_.vel_ecef = ecef_direct.vel_ecef;
     }
 
+    // PVT cadence auto-detection (used by DOP staleness gate).
+    if (prev_pvt_tow_ms_ != UINT32_MAX) {
+      const uint32_t dt = pending_.tow_ms - prev_pvt_tow_ms_;
+      if (dt > 0 && dt < 10000) pvt_period_ms_ = dt;
+    }
+    prev_pvt_tow_ms_ = pending_.tow_ms;
+
+    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
+    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
+                                      binary_solution_.time_week,
+                                      pending_.tow_ms, pvt_period_ms_);
+
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
     pending_ = {};
-    pending_.cov_ever_seen = ever_seen;
+    pending_.cov_expected = expected;
   }
 
   void maybeWatchdogFlushPendingPvt() {

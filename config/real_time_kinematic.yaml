@@ -7,7 +7,7 @@ rtk_position_node:
       rover_observation: "/gnss/observation"
       base_observation: "/base/gnss/observation"
       ephemeris: "/gnss/ephemeris"
-      solution: "/gnss/rtk_solution"
+      solution: "/gnss/solution"
     
     # TCP port for RTKPLOT stream (providing NMEA output)
     tcp_port: 8002
@@ -16,6 +16,19 @@ rtk_position_node:
     # Excluded Satellites (e.g. ["G01", "R03", "E12"])
     # ==========================================================================
     excluded_satellites: [""]
+
+    # ==========================================================================
+    # Frequencies (shared with SPP node)
+    # ==========================================================================
+    # Enable specific frequency bands. nf is auto-derived: highest enabled band
+    # sets nf (e.g. L5 enabled => nf=3).
+    # L1: GPS L1, GLO G1, GAL E1, BDS B1, QZS L1
+    # L2: GPS L2, GLO G2, BDS B2
+    # L5: GPS L5, GAL E5a, BDS B2a, QZS L5
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false
 
     # ==========================================================================
     # Station Positions
@@ -42,8 +55,6 @@ rtk_position_node:
       # Positioning mode (2:kinematic, 1:static, 0:single) - Kinematic is default for this node
       # posmode: 2 
       
-      # Frequencies (1:l1, 2:l1+l2, 3:l1+l2+l5)
-      frequency: 2
       # Elevation mask in degrees
       elmask: 15.0
       # Dynamics model (0:off, 1:on)

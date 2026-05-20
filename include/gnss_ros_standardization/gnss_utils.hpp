@@ -1,6 +1,9 @@
+// SPDX-License-Identifier: MIT
 #ifndef GNSS_ROS_STANDARDIZATION_GNSS_UTILS_HPP
 #define GNSS_ROS_STANDARDIZATION_GNSS_UTILS_HPP
 
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 #include <rclcpp/time.hpp>
@@ -29,6 +32,12 @@ std::string systemCode(int sys);
  * Convert RTKLIB satellite number to string ID (e.g. "G01")
  */
 std::string satId(int sat);
+
+/**
+ * Convert RTKLIB solution-quality enum (SOLQ_*) to short string label
+ * ("FIX", "FLOAT", "SINGLE", "DGPS", "SBAS", "PPP", "DR", "NONE").
+ */
+std::string solqToString(int stat);
 
 /**
  * Convert Ros message to RTKLIB eph_t
@@ -112,11 +121,57 @@ struct Dops {
 };
 Dops calculateDops(const ssat_t* ssat, int ns_max, double el_min_rad);
 
+// ---- DOP cache + staleness gate (msg-coupled DOP from receiver blocks) ----
+
+/**
+ * Snapshot of the most-recently-parsed DOP block from any receiver.
+ * Persists across PVT epochs inside the decoder/driver node.
+ */
+struct DopCache {
+  bool     valid{false};
+  uint16_t week{0};   // 0 = receiver's DOP block has no week field (UBX NAV-DOP) → skip week check
+  uint32_t tow_ms{0};
+  float    gdop{std::numeric_limits<float>::quiet_NaN()};
+  float    pdop{std::numeric_limits<float>::quiet_NaN()};
+  float    hdop{std::numeric_limits<float>::quiet_NaN()};
+  float    vdop{std::numeric_limits<float>::quiet_NaN()};
+};
+
+/**
+ * Populate sol.{gdop,pdop,hdop,vdop} from the DOP cache if it belongs to the
+ * current or immediately-prior PVT epoch. The asymmetric window matches the
+ * common receiver block ordering where the DOP block follows PVT within the
+ * same frame and is therefore cached for use at the next PVT publish.
+ *
+ * Conditions for populate (all required):
+ *   - cache.valid
+ *   - cache.week == 0 OR cache.week == pvt_week
+ *   - pvt_period_ms > 0 (≥ 2 PVT epochs observed; period auto-detected)
+ *   - 0 <= (pvt_tow_ms - cache.tow_ms) <= pvt_period_ms
+ *     (DOP for this PVT epoch or the prior one — never a future epoch, never
+ *     more than one period stale).
+ *
+ * On failure, the four DOP fields are explicitly set to NaN (so the caller
+ * does not need to pre-initialize them).
+ */
+void applyDopWithStaleness(gnss_ros_standardization::msg::GnssSolution& sol,
+                           const DopCache& cache,
+                           uint16_t pvt_week,
+                           uint32_t pvt_tow_ms,
+                           uint32_t pvt_period_ms);
+
 // ---- Lightweight NMEA Parser ----
 
 /**
- * A lightweight stateful NMEA parser that specifically handles
- * GGA (position, status), RMC (velocity), and GSA (DOPs).
+ * A lightweight stateful NMEA parser that aggregates GGA / RMC / GST belonging
+ * to the same UTC epoch into a single GnssSolution.
+ *
+ * Sentence emission order varies across receivers (GGA-first vs GGA-last), so
+ * the parser buffers a "pending epoch" keyed by seconds-of-day. The epoch is
+ * eager-flushed the moment all sentence types ever observed for one cycle have
+ * arrived (latency ≈ 0 in steady state), or boundary-flushed when a sentence
+ * with a new sod arrives (one-epoch latency only during the initial learning
+ * cycle).
  */
 class NmeaParser {
  public:
@@ -124,49 +179,86 @@ class NmeaParser {
   ~NmeaParser() = default;
 
   /**
-   * Parse a single NMEA sentence (starting with $ and ending with \r\n).
+   * Feed one NMEA sentence (starting with '$', checksum optional but verified
+   * if present).
    * @param sentence Single ASCII NMEA sentence string.
-   * @param[out] solution Populated GnssSolution message. May only be partially
-   *             populated depending on the sentences received so far.
-   * @return True if a GGA was parsed and the system should consider the solution
-   *         updated/ready for publishing.
+   * @param[out] solution Populated only when the return value is true. The
+   *             fields supplied by sentences not seen in this epoch are
+   *             written as NaN.
+   * @return True iff an epoch was flushed into `solution` by this call.
    */
   bool parseSentence(const std::string& sentence, gnss_ros_standardization::msg::GnssSolution& solution);
 
  private:
-  bool parseGga(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution);
-  bool parseRmc(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution);
-  bool parseGsa(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution);
-  bool parseGst(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution);
-  
+  // Sentence-type bits for pending_received_ / sentences_ever_seen_.
+  enum SentenceBit : uint8_t {
+    SENT_GGA = 1 << 0,
+    SENT_RMC = 1 << 1,
+    SENT_GST = 1 << 2,
+  };
+
+  // Dispatchers fill pending_* state; they do NOT decide flushing.
+  bool applyGga(const std::vector<std::string>& fields);
+  bool applyRmc(const std::vector<std::string>& fields);
+  bool applyGsa(const std::vector<std::string>& fields);
+  bool applyGst(const std::vector<std::string>& fields);
+
+  // Compose the final solution from pending_* state and reset for the next epoch.
+  void flushPending(gnss_ros_standardization::msg::GnssSolution& out);
+  void resetPending();
+
   static std::vector<std::string> splitString(const std::string& str, char delimiter);
   static double parseCoordinate(const std::string& coord_str, const std::string& hem);
   static double parseDouble(const std::string& str);
   static int parseInteger(const std::string& str);
 
-  // Buffer state
-  bool has_time_{false};
-  // Cached UTC date from the last RMC (field[9] ddmmyy) or ZDA. Used to assemble
-  // GPS week/tow when GGA-only sentences arrive (GGA carries time-of-day but no date).
+  // ---- Date cache (RMC field[9] supplies the date; GGA only carries time-of-day) ----
   int cached_year_{0};
   int cached_month_{0};
   int cached_day_{0};
   bool has_date_cache_{false};
-  double cached_last_hms_{0.0};  // most recent GGA hhmmss.ss seen, for UTC day-rollover detection
-  double last_pdop_{0.0};
-  double last_hdop_{0.0};
-  double last_vdop_{0.0};
-  
-  // RMC buffered velocity (EN components)
-  double vel_east_{0.0};
-  double vel_north_{0.0};
-  bool has_velocity_{false};
-  
-  // GST buffered variance
-  double var_lat_{0.0};
-  double var_lon_{0.0};
-  double var_alt_{0.0};
-  bool has_variance_{false};
+  double cached_last_hms_{0.0};  // most recent GGA hhmmss.ss for UTC day-rollover detection
+
+  // ---- Pending epoch state ----
+  double pending_sod_{-1.0};        // seconds-of-day of the epoch being assembled; <0 = none
+  uint8_t pending_received_{0};     // SentenceBit OR'd as each type arrives
+  uint8_t sentences_ever_seen_{0};  // learned set of types this receiver emits per epoch
+  bool learned_{false};             // true after first boundary flush (enables eager flush)
+
+  // GGA fields (raw, applied to solution at flush time)
+  bool   pgga_present_{false};
+  uint16_t pgga_week_{0};
+  double pgga_tow_{0.0};
+  uint8_t pgga_status_{0};
+  double pgga_lat_{0.0};
+  double pgga_lon_{0.0};
+  double pgga_alt_{0.0};
+  uint8_t pgga_num_sats_{0};
+  double pgga_age_diff_{0.0};
+  float  pgga_hdop_{0.0f};
+
+  // RMC fields
+  bool   prmc_present_{false};   // RMC parsed AND status=Active
+  double prmc_vel_east_{0.0};
+  double prmc_vel_north_{0.0};
+
+  // GST fields
+  bool   pgst_present_{false};
+  double pgst_var_lat_{0.0};
+  double pgst_var_lon_{0.0};
+  double pgst_var_alt_{0.0};
+
+  // GSA fields. Persistent across resetPending so they survive flushes;
+  // staleness gated by cycles_since_gsa_ (≤1 = fresh, >1 = invalidated).
+  // GSA has no timestamp, so it never gates flushing; it just rides along.
+  bool    pgsa_present_{false};
+  float   pgsa_pdop_{0.0f};
+  float   pgsa_vdop_{0.0f};
+  uint8_t cycles_since_gsa_{0};
+
+  // ---- Epoch period learning (for sameEpoch tolerance) ----
+  double last_gga_sod_{-1.0};
+  double epoch_period_{-1.0};
 };
 
 } // namespace gnss_utils

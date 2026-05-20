@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 /// @file ins_utils.hpp
 /// @brief Covariance helpers for sensor_msgs/Imu used by IMU decoder/driver nodes.

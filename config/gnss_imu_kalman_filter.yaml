@@ -19,16 +19,10 @@ gnss_imu_kalman_filter:
     # Topic Names
     # ==========================================================================
     topics:
-      gnss_solution: "/gnss/solution"
-      imu_raw: "/imu/data_raw"
+      gnss_solution: "/gnss/nmea_solution"
+      imu_raw: "/gnss/imu/data_raw"
       wheel_speed: "/can_twist"
       solution: "/gnss/fusion/ekf_solution"
-
-    # ==========================================================================
-    # CSV Output
-    # ==========================================================================
-    csv:
-      output_path: "/tmp/gnss_imu_kalman_filter_log.csv"
 
     # ==========================================================================
     # EKF Parameters
@@ -75,7 +69,7 @@ gnss_imu_kalman_filter:
 
     # Initial yaw angle [deg]. If set, EKF can initialize while stationary without waiting for
     # Doppler heading. Comment out or omit to use Doppler heading (default behavior).
-    # init_yaw_deg: 0.0
+    init_yaw_deg: 0.0
 
     # ==========================================================================
     # State Update Thresholds

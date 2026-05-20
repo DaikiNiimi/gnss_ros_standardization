@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
@@ -306,6 +307,10 @@ class SbfDecoderNode : public rclcpp::Node {
   // TOW into pending_.buf. blocks_ever_seen is learned at runtime (the decoder
   // doesn't know in advance which blocks the receiver will emit); flush triggers
   // when blocks_received == blocks_ever_seen, or when a new TOW arrives.
+  //
+  // DOP is tracked separately in a persistent (across-epoch) cache; see
+  // last_dop_ below. The DOP block does not participate in completion and does
+  // not gate flushing.
   struct Pending {
     uint32_t tow_ms{UINT32_MAX};
     uint8_t  blocks_received{0};
@@ -313,6 +318,20 @@ class SbfDecoderNode : public rclcpp::Node {
     msg::GnssSolution buf{};
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
+
+  // Persistent DOP snapshot — updated by handleDop() and consumed at flush time.
+  // Survives Pending resets so the gate can compare against any past DOP block.
+  gnss_utils::DopCache last_dop_;
+  uint32_t prev_pvt_tow_ms_{UINT32_MAX};
+  uint32_t pvt_period_ms_{0};
+
+  // After a flush, record the (week, tow) that was published. Subsequent blocks
+  // at the same (week, tow) are "late arrivals" — eager-flush already picked up
+  // an incomplete view of this epoch, so we must not re-accumulate into pending_
+  // (would cause an orphan duplicate publish at the next TOW boundary).
+  // Still update blocks_ever_seen so the NEXT epoch waits for the full set.
+  uint16_t last_flushed_week_{0};
+  uint32_t last_flushed_tow_ms_{UINT32_MAX};
 
   // Solution source policy (grace-period detection):
   //   Start in UNDETERMINED. Wait kGracePeriodSec to detect whether the stream
@@ -360,6 +379,23 @@ class SbfDecoderNode : public rclcpp::Node {
     const uint8_t* p = sbf_body_.data();
     const size_t   len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
+
+    // Already-published epoch guard: if this block's TOW equals the most
+    // recently flushed (week, tow), it's a late arrival from the eager flush's
+    // incomplete view. Only update learning; do NOT re-accumulate into pending_
+    // (would cause an orphan duplicate publish at the next TOW boundary).
+    // Week comparison uses pending_.buf.time_week which is set by PVT-class
+    // parsers when they arrive in this epoch; if no PVT yet seen this epoch,
+    // we fall back to TOW-only (week==0 sentinel) — safe because last_flushed_*
+    // sentinel is also (0, UINT32_MAX).
+    const uint16_t week = pending_.buf.time_week;
+    if (last_flushed_tow_ms_ != UINT32_MAX &&
+        tow == last_flushed_tow_ms_ &&
+        (week == 0 || week == last_flushed_week_)) {
+      pending_.blocks_ever_seen |= bit;
+      return;
+    }
+
     if (tow != pending_.tow_ms && pending_.blocks_received != 0) {
       flushPending();  // TOW boundary — flush previous epoch
     }
@@ -379,10 +415,22 @@ class SbfDecoderNode : public rclcpp::Node {
   void handlePosCovCartesian(){ mergeBlock(BLK_POS_XYZ, &sbf::pvt::parsePosCovCartesian);}
   void handleVelCovCartesian(){ mergeBlock(BLK_VEL_XYZ, &sbf::pvt::parseVelCovCartesian);}
 
-  // DOP block is independent of the PVT/Cov TOW aggregation: sticky-write the
-  // latest value into binary_solution_; next publish picks it up.
+  // DOP block: parsed into the persistent last_dop_ cache, NOT into pending_.
+  // Does NOT participate in completion and does NOT trigger flush. At flush
+  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
+  // enough (within 0..PVT_period after PVT) to populate the published solution.
   void handleDop() {
-    sbf::pvt::parseDop(sbf_body_.data(), sbf_body_.size(), binary_solution_);
+    const uint8_t* p   = sbf_body_.data();
+    const size_t   len = sbf_body_.size();
+    msg::GnssSolution scratch{};
+    if (!sbf::pvt::parseDop(p, len, scratch)) return;
+    last_dop_.valid  = true;
+    last_dop_.week   = sbf::pvt::getWeek(p, len);   // from SBF block header (WNc)
+    last_dop_.tow_ms = sbf::pvt::getTowMs(p, len);
+    last_dop_.gdop   = scratch.gdop;
+    last_dop_.pdop   = scratch.pdop;
+    last_dop_.hdop   = scratch.hdop;
+    last_dop_.vdop   = scratch.vdop;
   }
 
   void flushPending() {
@@ -460,7 +508,25 @@ class SbfDecoderNode : public rclcpp::Node {
       binary_solution_.vel_ecef = xyz_direct.vel_ecef;
     }
 
+    // PVT cadence auto-detection (used by DOP staleness gate).
+    if (prev_pvt_tow_ms_ != UINT32_MAX) {
+      const uint32_t dt = pending_.tow_ms - prev_pvt_tow_ms_;
+      if (dt > 0 && dt < 10000) pvt_period_ms_ = dt;
+    }
+    prev_pvt_tow_ms_ = pending_.tow_ms;
+
+    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
+    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
+                                      binary_solution_.time_week,
+                                      pending_.tow_ms, pvt_period_ms_);
+
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+
+    // Record this epoch as the last published (week, tow) for orphan-guard.
+    last_flushed_week_   = binary_solution_.time_week;
+    last_flushed_tow_ms_ = pending_.tow_ms;
+
     pending_ = {};
     pending_.blocks_ever_seen = ever_seen;
   }
@@ -539,9 +605,9 @@ class SbfDecoderNode : public rclcpp::Node {
     imu.linear_acceleration.z = esm_accel_[2];
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
-    imu.angular_velocity.x = esm_gyro_[0];
-    imu.angular_velocity.y = esm_gyro_[1];
-    imu.angular_velocity.z = esm_gyro_[2];
+    imu.angular_velocity.x = esm_gyro_[0] * (M_PI / 180.0);
+    imu.angular_velocity.y = esm_gyro_[1] * (M_PI / 180.0);
+    imu.angular_velocity.z = esm_gyro_[2] * (M_PI / 180.0);
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
 
     imu_raw_pub_->publish(imu);

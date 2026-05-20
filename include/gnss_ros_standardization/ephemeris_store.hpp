@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #ifndef GNSS_ROS_STANDARDIZATION_EPHEMERIS_STORE_HPP
 #define GNSS_ROS_STANDARDIZATION_EPHEMERIS_STORE_HPP
 
@@ -20,8 +21,12 @@ extern "C" {
 namespace gnss_utils {
 
 // Unified ephemeris store shared by all publishers (drivers, RTCM decoder) and
-// all consumers (SPP, RTK, visualizer). Holds the latest valid ephemeris for
-// every (sat, code) pair and provides snapshot publishing with heartbeat.
+// all consumers (SPP, RTK, visualizer). Keyed by (sat, code, iode, iodc, toe)
+// for GNSS and (sat, iode, toe, tof) for GLO so that distinct broadcast frames
+// (e.g. BeiDou AODE counter increments, GLONASS rebroadcasts with same toe but
+// different tof) are preserved as separate entries — matching convbin's
+// per-reception RINEX output. RTKLIB's seleph() picks the toe-closest entry
+// downstream, so SPP/RTK semantics are unchanged.
 //
 // Publish semantics: emit a snapshot whenever ingest() reports a change, OR
 // whenever heartbeatDue() returns true. Both publisher restart and late-join
@@ -46,11 +51,13 @@ class EphemerisStore {
     if (sys == SYS_GLO) return false;
     eph_t e = e_in;
     if (sys == SYS_GAL) e.code = gnss_utils::canonicalGalCode(e.code);
-    const KKey k{e.sat, static_cast<int>(e.code)};
+    const KKey k = makeKKey(e);
+    // Within the same key, allow refresh (ttr / clock / health refinements
+    // arrive on rebroadcast). Different (iode/iodc/toe) lands in a separate
+    // slot, so the toe regression check is per-key and effectively a no-op
+    // — kept here to preserve refresh-only semantics when receivers replay
+    // bit-identical frames out of order.
     auto it = kepler_.find(k);
-    // Reject toe regression (multi-source / out-of-order delivery safety).
-    // Same toe still passes through so ttr / clock / health refinements
-    // within the same IODE are captured.
     if (it != kepler_.end() && timediff(e.toe, it->second.toe) < 0.0) {
       return false;
     }
@@ -60,11 +67,12 @@ class EphemerisStore {
 
   bool ingestGeph(const geph_t& g) {
     if (g.sat <= 0 || g.sat > MAXSAT) return false;
-    auto it = glonass_.find(g.sat);
+    const GKey k = makeGKey(g);
+    auto it = glonass_.find(k);
     if (it != glonass_.end() && timediff(g.toe, it->second.toe) < 0.0) {
       return false;
     }
-    glonass_[g.sat] = g;
+    glonass_[k] = g;
     return true;
   }
 
@@ -111,16 +119,62 @@ class EphemerisStore {
   size_t glonassCount() const { return glonass_.size(); }
 
  private:
+  // Composite key matching RTKLIB's most-strict dedup (decode_galrawinav etc.):
+  // distinct (iode, iodc, toe) within the same (sat, code) are preserved as
+  // separate entries — required to keep BeiDou AODE history and out-of-order
+  // raw-path receptions.
   struct KKey {
     int sat;
     int code;
-    bool operator==(const KKey& o) const { return sat == o.sat && code == o.code; }
+    int iode;
+    int iodc;
+    int64_t toe_s;
+    bool operator==(const KKey& o) const {
+      return sat == o.sat && code == o.code && iode == o.iode &&
+             iodc == o.iodc && toe_s == o.toe_s;
+    }
   };
   struct KKeyHash {
     size_t operator()(const KKey& k) const {
-      return (static_cast<size_t>(k.sat) << 16) ^ static_cast<size_t>(k.code);
+      size_t h = static_cast<size_t>(k.sat) << 16;
+      h ^= static_cast<size_t>(k.code) << 24;
+      h ^= static_cast<size_t>(k.iode);
+      h ^= static_cast<size_t>(k.iodc) << 8;
+      h ^= static_cast<size_t>(k.toe_s) << 1;
+      return h;
     }
   };
+  // GLONASS: tof must also distinguish entries because RTKLIB's decode_glostr
+  // dedup is (iode, svh, toe) only — same-toe rebroadcasts with different tof
+  // reach ingest and need to be retained for convbin-compatible RINEX output.
+  struct GKey {
+    int sat;
+    int iode;
+    int64_t toe_s;
+    int64_t tof_s;
+    bool operator==(const GKey& o) const {
+      return sat == o.sat && iode == o.iode &&
+             toe_s == o.toe_s && tof_s == o.tof_s;
+    }
+  };
+  struct GKeyHash {
+    size_t operator()(const GKey& k) const {
+      size_t h = static_cast<size_t>(k.sat) << 24;
+      h ^= static_cast<size_t>(k.iode) << 16;
+      h ^= static_cast<size_t>(k.toe_s);
+      h ^= static_cast<size_t>(k.tof_s) << 1;
+      return h;
+    }
+  };
+
+  static KKey makeKKey(const eph_t& e) {
+    return KKey{e.sat, static_cast<int>(e.code), e.iode, e.iodc,
+                static_cast<int64_t>(e.toe.time)};
+  }
+  static GKey makeGKey(const geph_t& g) {
+    return GKey{g.sat, g.iode, static_cast<int64_t>(g.toe.time),
+                static_cast<int64_t>(g.tof.time)};
+  }
 
   static gtime_t nowGtime(const rclcpp::Time& now) {
     const double sec = static_cast<double>(now.seconds());
@@ -138,10 +192,17 @@ class EphemerisStore {
     return std::fabs(timediff(now_gt, toe)) > max_age_s_;
   }
 
+  // upsert conditions must mirror KKey/GKey, otherwise distinct store entries
+  // collapse into one slot in nav.eph[] and the per-reception preservation
+  // intended by the store key is lost downstream.
   static void upsertEphInNav(nav_t& nav, const eph_t& e) {
     if (e.sat <= 0 || e.sat > MAXSAT) return;
     for (int i = 0; i < nav.n; ++i) {
-      if (nav.eph[i].sat == e.sat && nav.eph[i].code == e.code) {
+      if (nav.eph[i].sat == e.sat &&
+          nav.eph[i].code == e.code &&
+          nav.eph[i].iode == e.iode &&
+          nav.eph[i].iodc == e.iodc &&
+          timediff(nav.eph[i].toe, e.toe) == 0.0) {
         nav.eph[i] = e;
         return;
       }
@@ -159,7 +220,10 @@ class EphemerisStore {
   static void upsertGephInNav(nav_t& nav, const geph_t& g) {
     if (g.sat <= 0 || g.sat > MAXSAT) return;
     for (int i = 0; i < nav.ng; ++i) {
-      if (nav.geph[i].sat == g.sat) {
+      if (nav.geph[i].sat == g.sat &&
+          nav.geph[i].iode == g.iode &&
+          timediff(nav.geph[i].toe, g.toe) == 0.0 &&
+          timediff(nav.geph[i].tof, g.tof) == 0.0) {
         nav.geph[i] = g;
         return;
       }
@@ -175,7 +239,7 @@ class EphemerisStore {
   }
 
   std::unordered_map<KKey, eph_t, KKeyHash> kepler_;
-  std::unordered_map<int, geph_t> glonass_;
+  std::unordered_map<GKey, geph_t, GKeyHash> glonass_;
 
   double snapshot_period_s_{30.0};
   // 0.0 disables aging; keep every received eph (default). Set positive to

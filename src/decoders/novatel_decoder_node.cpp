@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
@@ -320,9 +321,10 @@ class NovatelDecoderNode : public rclcpp::Node {
   // BEST*/PSRDOP handler aggregates into pending_ keyed on TOW; flushPending()
   // applies the existing covariance-routing policy in one place.
   // ============================================================================
+  // PSRDOP is tracked separately in a persistent cache (last_dop_) so it can
+  // survive Pending resets and be staleness-gated against the PVT cadence.
   static constexpr uint8_t COV_BIT_VEL = 0x1;
-  static constexpr uint8_t COV_BIT_DOP = 0x2;
-  static constexpr uint8_t COV_BIT_XYZ = 0x4;
+  static constexpr uint8_t COV_BIT_XYZ = 0x2;
 
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
@@ -333,9 +335,28 @@ class NovatelDecoderNode : public rclcpp::Node {
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
 
+  gnss_utils::DopCache last_dop_;
+  uint32_t prev_pvt_tow_ms_{UINT32_MAX};
+  uint32_t pvt_period_ms_{0};
+
+  // After a publish, record the (week, tow) to suppress orphan re-publish.
+  uint16_t last_flushed_week_{0};
+  uint32_t last_flushed_tow_ms_{UINT32_MAX};
+
   bool pendingComplete() const {
     return pending_.has_pvt &&
            pending_.cov_received == pending_.cov_ever_seen;
+  }
+
+  // Orphan guard: same TOW as last published → only update learning.
+  bool isLateOrphan(uint8_t cov_bit) {
+    if (last_flushed_tow_ms_ != UINT32_MAX &&
+        oem4_gps_ms_   == last_flushed_tow_ms_ &&
+        oem4_gps_week_ == last_flushed_week_) {
+      pending_.cov_ever_seen |= cov_bit;
+      return true;
+    }
+    return false;
   }
 
   void aggregateEpochBoundary() {
@@ -347,6 +368,7 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   void handleBestPos() {
     startGraceIfNeeded();
+    if (isLateOrphan(0)) return;
     aggregateEpochBoundary();
     if (!novatel::pvt::parseBESTPOS(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
     pending_.has_pvt = true;
@@ -358,6 +380,7 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   void handleBestVel() {
     startGraceIfNeeded();
+    if (isLateOrphan(COV_BIT_VEL)) return;
     aggregateEpochBoundary();
     if (!novatel::pvt::parseBESTVEL(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
     pending_.cov_received  |= COV_BIT_VEL;
@@ -368,14 +391,21 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
+  // PSRDOP: parsed into the persistent last_dop_ cache, NOT into pending_.
+  // Does NOT participate in completion and does NOT trigger flush. At flush
+  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
+  // enough (within 0..PVT_period after PVT) to populate the published solution.
   void handlePsrDop() {
     startGraceIfNeeded();
-    aggregateEpochBoundary();
-    if (!novatel::pvt::parsePSRDOP(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
-    pending_.cov_received  |= COV_BIT_DOP;
-    pending_.cov_ever_seen |= COV_BIT_DOP;
-    pending_.last_update = now();
-    if (pendingComplete()) flushPending();
+    msg::GnssSolution scratch{};
+    if (!novatel::pvt::parsePSRDOP(oem4_body_.data(), oem4_body_.size(), scratch)) return;
+    last_dop_.valid  = true;
+    last_dop_.week   = oem4_gps_week_;
+    last_dop_.tow_ms = oem4_gps_ms_;
+    last_dop_.gdop   = scratch.gdop;
+    last_dop_.pdop   = scratch.pdop;
+    last_dop_.hdop   = scratch.hdop;
+    last_dop_.vdop   = scratch.vdop;
   }
 
   void handleBestXyz() {
@@ -384,6 +414,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     // the parser — BESTPOS/BESTVEL remain the single source of truth (BESTXYZ
     // is the same internal solution expressed in ECEF).
     startGraceIfNeeded();
+    if (isLateOrphan(COV_BIT_XYZ)) return;
     aggregateEpochBoundary();
     if (!novatel::pvt::parseBESTXYZ(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
     saw_bestxyz_ = true;
@@ -408,7 +439,26 @@ class NovatelDecoderNode : public rclcpp::Node {
     //   - BESTXYZ seen: BESTXYZ owns pos covariance; rotate ECEF→ENU.
     rotatePosCovariance(binary_solution_);
     if (pending_.cov_received & COV_BIT_XYZ) rotateVelCovariance(binary_solution_);
+
+    // PVT cadence auto-detection (used by DOP staleness gate).
+    if (prev_pvt_tow_ms_ != UINT32_MAX) {
+      const uint32_t dt = pending_.tow_ms - prev_pvt_tow_ms_;
+      if (dt > 0 && dt < 10000) pvt_period_ms_ = dt;
+    }
+    prev_pvt_tow_ms_ = pending_.tow_ms;
+
+    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
+    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
+                                      binary_solution_.time_week,
+                                      pending_.tow_ms, pvt_period_ms_);
+
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+
+    // Record this epoch as the last published (week, tow) for orphan-guard.
+    last_flushed_week_   = binary_solution_.time_week;
+    last_flushed_tow_ms_ = pending_.tow_ms;
+
     pending_ = {};
     pending_.cov_ever_seen = ever_seen;
   }

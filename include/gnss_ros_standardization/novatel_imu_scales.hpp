@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 /// @file novatel_imu_scales.hpp
 /// @brief Counts → SI scale factors for NovAtel RAWIMUSX, indexed by IMUType.

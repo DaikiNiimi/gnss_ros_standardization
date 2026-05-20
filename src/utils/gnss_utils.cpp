@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: MIT
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include <cmath>
+#include <limits>
 #include <cstring>
 #include <ctime>
 #include <algorithm>
@@ -24,6 +26,20 @@ std::string satId(int sat) {
   char id[8] = {0};
   satno2id(sat, id);
   return std::string(id);
+}
+
+std::string solqToString(int stat) {
+  switch (stat) {
+    case SOLQ_FIX:    return "FIX";
+    case SOLQ_FLOAT:  return "FLOAT";
+    case SOLQ_SBAS:   return "SBAS";
+    case SOLQ_DGPS:   return "DGPS";
+    case SOLQ_SINGLE: return "SINGLE";
+    case SOLQ_PPP:    return "PPP";
+    case SOLQ_DR:     return "DR";
+    case SOLQ_NONE:
+    default:          return "NONE";
+  }
 }
 
 // Helper to determine satellite number from msg fields
@@ -136,6 +152,16 @@ eph_t msgToEph(const gnss_ros_standardization::msg::GnssEphemeris& m) {
 
   e.iode = static_cast<int>(m.iode);
   e.iodc = static_cast<int>(m.iodc);
+
+  // Fix RTKLIB's synthetic pseudo-IODE for BeiDou
+  // For BDS, RTKLIB generates a pseudo-iode = (toc/720) % 240 which breaks RINEX AODE.
+  // The true AODE (5 bits, 0-31) is typically preserved in iodc (AODC).
+  if (m.system == "C") {
+      if (e.iode > 31 && e.iodc <= 31) {
+          e.iode = e.iodc;
+      }
+  }
+
   e.svh = static_cast<int>(m.svh);
   e.sva = static_cast<int>(m.sva);
   e.code = static_cast<int>(m.code);
@@ -213,6 +239,16 @@ gnss_ros_standardization::msg::GnssEphemeris ephToMsg(const eph_t& e) {
 
   m.iode = e.iode;
   m.iodc = e.iodc;
+
+  // Fix RTKLIB's synthetic pseudo-IODE for BeiDou
+  // If the internal iode is a pseudo-value (>31), fallback to iodc (AODC)
+  // to ensure downstream nodes and RINEX files receive the correct AODE.
+  if (m.system == "C") {
+      if (m.iode > 31 && m.iodc <= 31) {
+          m.iode = m.iodc;
+      }
+  }
+
   m.svh = e.svh;
   m.sva = e.sva;
   m.code = e.code;
@@ -270,7 +306,7 @@ gnss_ros_standardization::msg::GnssObservation obsToMsg(const obsd_t& o, int kf)
   obs.l             = o.L[kf];
   obs.d             = o.D[kf];
   obs.snr           = static_cast<float>(o.SNR[kf]);
-  obs.lli           = o.LLI[kf] & 0x03;
+  obs.lli           = o.LLI[kf] & 0x07;   // bit0 SLIP | bit1 HALFC | bit2 BOCTRK
 
   return obs;
 }
@@ -385,6 +421,34 @@ Dops calculateDops(const ssat_t* ssat, int ns_max, double el_min_rad) {
     return d;
 }
 
+// ---- DOP cache + staleness gate (msg-coupled DOP from receiver blocks) ----
+
+void applyDopWithStaleness(gnss_ros_standardization::msg::GnssSolution& sol,
+                           const DopCache& cache,
+                           uint16_t pvt_week,
+                           uint32_t pvt_tow_ms,
+                           uint32_t pvt_period_ms) {
+  constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+  auto set_nan = [&]() {
+    sol.gdop = kNaN; sol.pdop = kNaN; sol.hdop = kNaN; sol.vdop = kNaN;
+  };
+  if (!cache.valid) { set_nan(); return; }
+  if (cache.week != 0 && cache.week != pvt_week) { set_nan(); return; }
+  if (pvt_period_ms == 0) { set_nan(); return; }
+  // Asymmetric acceptance window [0, period]: DOP must belong to this PVT
+  // epoch (dt = 0, arrived before PVT in same frame) or the immediately-prior
+  // PVT epoch (dt = period, DOP arrived just after the previous PVT flush —
+  // common SBF block ordering). Reject future-direction (dt < 0) and >1-cycle
+  // stale (dt > period).
+  const int64_t dt = static_cast<int64_t>(pvt_tow_ms) -
+                     static_cast<int64_t>(cache.tow_ms);
+  if (dt < 0 || dt > static_cast<int64_t>(pvt_period_ms)) { set_nan(); return; }
+  sol.gdop = cache.gdop;
+  sol.pdop = cache.pdop;
+  sol.hdop = cache.hdop;
+  sol.vdop = cache.vdop;
+}
+
 // ---- Lightweight NMEA Parser ----
 
 std::vector<std::string> NmeaParser::splitString(const std::string& str, char delimiter) {
@@ -439,6 +503,31 @@ double NmeaParser::parseCoordinate(const std::string& coord_str, const std::stri
   return decimal_deg;
 }
 
+namespace {
+
+// hhmmss.ss (e.g. 123459.50) → seconds-of-day.
+// Returns -1.0 sentinel for non-finite, negative, or out-of-range inputs.
+double hmsToSecondsOfDay(double hms) {
+  if (!std::isfinite(hms) || hms < 0.0) return -1.0;
+  const int ihms = static_cast<int>(hms);
+  const int hh =  ihms / 10000;
+  const int mm = (ihms / 100) % 100;
+  const double ss = hms - hh * 10000 - mm * 100;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0.0 || ss >= 60.0) return -1.0;
+  return hh * 3600.0 + mm * 60.0 + ss;
+}
+
+// Same-epoch check for two seconds-of-day values with UTC day-rollover handling.
+// Returns false if either sod is the -1 sentinel.
+bool sameEpoch(double sod_a, double sod_b, double tol_sec) {
+  if (sod_a < 0.0 || sod_b < 0.0) return false;
+  double dt = std::abs(sod_a - sod_b);
+  if (dt > 43200.0) dt = 86400.0 - dt;  // shortest wrap (00:00 UTC crossing)
+  return dt < tol_sec;
+}
+
+}  // namespace
+
 bool NmeaParser::parseSentence(const std::string& sentence, gnss_ros_standardization::msg::GnssSolution& solution) {
   if (sentence.empty() || sentence[0] != '$') return false;
 
@@ -454,51 +543,85 @@ bool NmeaParser::parseSentence(const std::string& sentence, gnss_ros_standardiza
     try {
       provided_checksum = std::stoi(provided_checksum_str, nullptr, 16);
     } catch (...) {}
-    
+
     if (checksum != provided_checksum) {
       RCLCPP_DEBUG(rclcpp::get_logger("nmea_parser"),
         "NMEA checksum mismatch: got %02X want %02X head='%s'",
         provided_checksum, checksum,
         sentence.substr(0, std::min<size_t>(sentence.size(), 12)).c_str());
-      return false; // Invalid checksum
+      return false;
     }
   }
 
-  // Extract payload (between $ and *)
   std::string payload = sentence.substr(1, asterisk_pos != std::string::npos ? asterisk_pos - 1 : std::string::npos);
   std::vector<std::string> fields = splitString(payload, ',');
-
   if (fields.empty()) return false;
-
   std::string type = fields[0];
   if (type.length() < 3) return false;
-  
   std::string sentence_id = type.substr(type.length() - 3);
 
-  if (sentence_id == "GGA") {
-    return parseGga(fields, solution);
-  } else if (sentence_id == "RMC") {
-    parseRmc(fields, solution);
-    return false;
-  } else if (sentence_id == "GSA") {
-    parseGsa(fields, solution);
-    return false;
-  } else if (sentence_id == "GST") {
-    parseGst(fields, solution);
+  // GSA is recognized but intentionally ignored. PDOP/VDOP from GSA have no
+  // robust TOW-match against GGA (GSA has no timestamp), so we never apply it.
+  if (sentence_id == "GSA") {
+    applyGsa(fields);
     return false;
   }
 
-  return false;
+  // GGA/RMC/GST all carry hhmmss.ss in field[1]; derive the epoch sod for the
+  // pending-buffer state machine.
+  uint8_t bit = 0;
+  if      (sentence_id == "GGA") bit = SENT_GGA;
+  else if (sentence_id == "RMC") bit = SENT_RMC;
+  else if (sentence_id == "GST") bit = SENT_GST;
+  else return false;
+
+  if (fields.size() < 2) return false;
+  const double sod = hmsToSecondsOfDay(parseDouble(fields[1]));
+  if (sod < 0.0) return false;
+
+  // Tolerance for sameEpoch: half of learned epoch period, default 0.5s.
+  const double tol = (epoch_period_ > 0.0) ? std::max(0.05, epoch_period_ * 0.5) : 0.5;
+
+  // ---- Step 1: epoch-boundary flush ----
+  // If a pending epoch exists and this sentence's sod is outside its tolerance,
+  // the previous epoch is over. Flush it (NaN for unseen types) and start fresh.
+  bool produced = false;
+  if (pending_sod_ >= 0.0 && !sameEpoch(pending_sod_, sod, tol)) {
+    flushPending(solution);
+    produced = true;
+    learned_ = true;  // first complete boundary flush — enable eager flush
+  }
+
+  // ---- Step 2: apply the new sentence to (possibly fresh) pending ----
+  if (pending_sod_ < 0.0) pending_sod_ = sod;
+
+  switch (bit) {
+    case SENT_GGA: applyGga(fields); break;
+    case SENT_RMC: applyRmc(fields); break;
+    case SENT_GST: applyGst(fields); break;
+    default: break;
+  }
+  pending_received_ |= bit;
+  sentences_ever_seen_ |= bit;
+
+  // ---- Step 3: eager flush ----
+  // Only after the learning phase (first boundary observed) do we trust the
+  // ever-seen set. Eager-flush also requires GGA in this epoch — a solution
+  // without GGA has no position and is not worth publishing.
+  if (!produced && learned_ &&
+      (pending_received_ & SENT_GGA) &&
+      pending_received_ == sentences_ever_seen_) {
+    flushPending(solution);
+    produced = true;
+  }
+
+  return produced;
 }
 
-bool NmeaParser::parseGga(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& solution) {
+bool NmeaParser::applyGga(const std::vector<std::string>& fields) {
   if (fields.size() < 15) return false;
 
-  solution.solution_source = gnss_ros_standardization::msg::GnssSolution::SOLUTION_SOURCE_NMEA;
-
-  // Time-of-day (hhmmss.ss) from field[1], combined with date from cached RMC
-  // (or system UTC as fallback). Result populates time_week / time_tow so the
-  // NMEA solution carries its own GPS time independent of any binary decoder.
+  // Time-of-day → GPS week/tow using cached date (or system UTC fallback).
   const double hms = parseDouble(fields[1]);
   if (hms > 0.0) {
     int year = cached_year_, month = cached_month_, day = cached_day_;
@@ -512,16 +635,14 @@ bool NmeaParser::parseGga(const std::vector<std::string>& fields, gnss_ros_stand
       RCLCPP_WARN_ONCE(rclcpp::get_logger("nmea_parser"),
         "NMEA date unavailable (no RMC seen); falling back to system UTC date for GPSTime assembly");
     } else {
-      // Day-rollover guard: if GGA's time-of-day is much smaller than the most
-      // recent cached time-of-day, the UTC date has just rolled over and the
-      // cache is one day stale until the next RMC arrives.
+      // Day-rollover guard: cached date may be one day stale until the next RMC.
       const double cached_hms = cached_last_hms_;
       if (cached_hms > 0.0 && (cached_hms - hms) > 12.0 * 3600.0) {
         std::tm tm_in{};
         tm_in.tm_year = year - 1900;
         tm_in.tm_mon  = month - 1;
         tm_in.tm_mday = day + 1;
-        std::mktime(&tm_in);  // normalizes month/year on overflow
+        std::mktime(&tm_in);
         year  = tm_in.tm_year + 1900;
         month = tm_in.tm_mon + 1;
         day   = tm_in.tm_mday;
@@ -531,174 +652,245 @@ bool NmeaParser::parseGga(const std::vector<std::string>& fields, gnss_ros_stand
     uint16_t week = 0;
     double   tow  = 0.0;
     if (nmeaUtcToGpsTime(year, month, day, hms, week, tow)) {
-      solution.time_week = week;
-      solution.time_tow  = tow;
+      pgga_week_ = week;
+      pgga_tow_  = tow;
     }
   }
 
-  int status = parseInteger(fields[6]);
-
-  // Set ROS STATUS
+  using Sol = gnss_ros_standardization::msg::GnssSolution;
+  const int status = parseInteger(fields[6]);
   switch (status) {
-    case 0: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_NONE; break;
-    case 1: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_SINGLE; break;
-    case 2: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_DGPS; break;
-    case 4: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_FIX; break;
-    case 5: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_FLOAT; break;
-    case 6: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_NONE; break; // DR
-    default: solution.status = gnss_ros_standardization::msg::GnssSolution::STATUS_NONE; break;
+    case 0: pgga_status_ = Sol::STATUS_NONE;   break;
+    case 1: pgga_status_ = Sol::STATUS_SINGLE; break;
+    case 2: pgga_status_ = Sol::STATUS_DGPS;   break;
+    case 4: pgga_status_ = Sol::STATUS_FIX;    break;
+    case 5: pgga_status_ = Sol::STATUS_FLOAT;  break;
+    case 6: pgga_status_ = Sol::STATUS_NONE;   break;  // DR
+    default: pgga_status_ = Sol::STATUS_NONE;  break;
   }
 
-  // Extract lat, lon, alt regardless of quality — receiver may output
-  // valid coordinates even with quality=0 (e.g. Septentrio with certain configs).
-  double lat = parseCoordinate(fields[2], fields[3]);
-  double lon = parseCoordinate(fields[4], fields[5]);
+  pgga_lat_ = parseCoordinate(fields[2], fields[3]);
+  pgga_lon_ = parseCoordinate(fields[4], fields[5]);
+  const double msl_alt   = parseDouble(fields[9]);
+  const double geoid_sep = parseDouble(fields[11]);
+  pgga_alt_      = msl_alt + geoid_sep;
+  pgga_num_sats_ = static_cast<uint8_t>(parseInteger(fields[7]));
+  pgga_age_diff_ = parseDouble(fields[13]);
+  pgga_hdop_     = static_cast<float>(parseDouble(fields[8]));
+  pgga_present_  = true;
 
-  // Guard: if both lat and lon are 0, the coordinate fields were empty (no fix reported).
-  // Skip ECEF computation to avoid storing a bogus origin near (6378137, 0, 0).
-  if (lat == 0.0 && lon == 0.0) {
-    return solution.status != gnss_ros_standardization::msg::GnssSolution::STATUS_NONE;
+  // Learn epoch period from successive GGA sod (used by sameEpoch tolerance).
+  const double gga_sod = hmsToSecondsOfDay(hms);
+  if (last_gga_sod_ >= 0.0 && gga_sod >= 0.0) {
+    double dt = gga_sod - last_gga_sod_;
+    if (dt < 0.0) dt += 86400.0;
+    if (dt > 0.0 && dt < 10.0) epoch_period_ = dt;
   }
-
-  double msl_alt = parseDouble(fields[9]);
-  double geoid_sep = parseDouble(fields[11]);
-  double ell_alt = msl_alt + geoid_sep;
-
-  solution.latitude = lat;
-  solution.longitude = lon;
-  solution.altitude = ell_alt;
-
-  // Convert to ECEF (using MALIB pos2ecef)
-  double pos[3] = {lat * (M_PI/180.0), lon * (M_PI/180.0), ell_alt};
-  double rr[3] = {0};
-  pos2ecef(pos, rr);
-
-  solution.pos_ecef.x = rr[0];
-  solution.pos_ecef.y = rr[1];
-  solution.pos_ecef.z = rr[2];
-
-  // Other GGA fields
-  solution.num_sats = parseInteger(fields[7]);
-  last_hdop_ = parseDouble(fields[8]);
-  solution.age_diff = parseDouble(fields[13]);
-
-  // Apply buffered DOP / Velocity
-  solution.hdop = last_hdop_;
-  solution.pdop = last_pdop_;
-  solution.vdop = last_vdop_;
-
-  // Apply buffered Covariance (GST) or 0.0 if not available
-  if (has_variance_) {
-    // NMEA GST is: 6=lat(N), 7=lon(E), 8=alt(U). We buffered them as var_lat, var_lon, var_alt
-    solution.pos_enu_cov[0] = var_lon_; // East-East
-    solution.pos_enu_cov[4] = var_lat_; // North-North
-    solution.pos_enu_cov[8] = var_alt_; // Up-Up
-    
-    // ENU Covariance (diagonal only) -> ECEF Covariance
-    double cov_enu[9] = {0};
-    cov_enu[0] = var_lon_;
-    cov_enu[4] = var_lat_;
-    cov_enu[8] = var_alt_;
-
-    double cov_ecef[9] = {0};
-    rotateCovarianceEnuToEcef(cov_enu, lat * (M_PI/180.0), lon * (M_PI/180.0), cov_ecef);
-
-    for (int i = 0; i < 9; ++i) {
-      solution.pos_cov_ecef[i] = cov_ecef[i];
-    }
-  } else {
-    // Zero out covariance
-    for (int i = 0; i < 9; ++i) {
-      solution.pos_enu_cov[i] = 0.0;
-      solution.pos_cov_ecef[i] = 0.0;
-    }
-  }
-
-  if (has_velocity_) {
-    // Note: Since NMEA only gives horizontal velocity component, 
-    // vertical is strictly 0 and accuracy is limited. 
-    // Need ENU to ECEF for vel_ecef using MALIB's enu2ecef.
-    double vel_enu[3] = {vel_east_, vel_north_, 0.0};
-    double vel_ecef[3] = {0};
-    enu2ecef(pos, vel_enu, vel_ecef);
-    
-    solution.vel_ecef.x = vel_ecef[0];
-    solution.vel_ecef.y = vel_ecef[1];
-    solution.vel_ecef.z = vel_ecef[2];
-  } else {
-    solution.vel_ecef.x = 0;
-    solution.vel_ecef.y = 0;
-    solution.vel_ecef.z = 0;
-  }
-
+  last_gga_sod_ = gga_sod;
   return true;
 }
 
-bool NmeaParser::parseRmc(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& /*solution*/) {
+bool NmeaParser::applyRmc(const std::vector<std::string>& fields) {
   if (fields.size() < 10) return false;
 
-  // Cache UTC date from RMC field[9] = ddmmyy. RMC publishes the date even when
-  // status is Void, so we capture it independently of the velocity branch below.
+  // Cache UTC date from RMC field[9] = ddmmyy (independent of velocity branch).
   const std::string& date_str = fields[9];
   if (date_str.size() == 6) {
     int dd = parseInteger(date_str.substr(0, 2));
     int mo = parseInteger(date_str.substr(2, 2));
     int yy = parseInteger(date_str.substr(4, 2));
     if (dd >= 1 && dd <= 31 && mo >= 1 && mo <= 12) {
-      cached_year_  = 2000 + yy;  // NMEA 0183 two-digit year is always 20xx
-      cached_month_ = mo;
-      cached_day_   = dd;
+      cached_year_   = 2000 + yy;
+      cached_month_  = mo;
+      cached_day_    = dd;
       has_date_cache_ = true;
     }
   }
 
-  if (fields[2] != "A") { // A = Active, V = Void
-    has_velocity_ = false;
+  // Accept velocity regardless of the A/V flag. The flag indicates nav-validity,
+  // not whether the speed/course values exist — many receivers report V even
+  // when valid speed/course are present (e.g. fixed-position mode). Downstream
+  // consumers can gate on solution.status (driven by GGA quality) instead.
+  const double speed_kt   = parseDouble(fields[7]);
+  const double course_deg = parseDouble(fields[8]);
+  if (!std::isfinite(speed_kt) || !std::isfinite(course_deg)) {
+    prmc_present_ = false;
     return false;
   }
-
-  double speed_knots = parseDouble(fields[7]);
-  double true_course_deg = parseDouble(fields[8]);
-
-  double speed_ms = speed_knots * 0.514444; // static KNOT2M from RTKLIB
-
-  // Convert course to EN components
-  // Course is clockwise from true North
-  double course_rad = true_course_deg * (M_PI / 180.0);
-  
-  vel_north_ = speed_ms * cos(course_rad);
-  vel_east_ = speed_ms * sin(course_rad);
-  has_velocity_ = true;
-
+  const double speed_ms   = speed_kt * 0.514444;             // knots → m/s
+  const double course_rad = course_deg * (M_PI / 180.0);
+  prmc_vel_north_ = speed_ms * std::cos(course_rad);
+  prmc_vel_east_  = speed_ms * std::sin(course_rad);
+  prmc_present_   = true;
   return true;
 }
 
-bool NmeaParser::parseGsa(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& /*solution*/) {
+bool NmeaParser::applyGsa(const std::vector<std::string>& fields) {
+  // $xxGSA fields: 1=mode, 2=fix_type, 3..14=PRNs, 15=PDOP, 16=HDOP, 17=VDOP, cs
+  // GSA has no timestamp — it never gates flushing (not in pending_received_).
+  // Values cached persistently across resetPending() and invalidated by the
+  // cycles_since_gsa_ counter inside flushPending().
   if (fields.size() < 18) return false;
-  
-  // NMEA specifies indices: 15=PDOP, 16=HDOP, 17=VDOP
-  last_pdop_ = parseDouble(fields[15]);
-  last_hdop_ = parseDouble(fields[16]);
-  last_vdop_ = parseDouble(fields[17]);
-  
+  const double pdop = parseDouble(fields[15]);
+  const double vdop = parseDouble(fields[17]);
+  if (!std::isfinite(pdop) || !std::isfinite(vdop) || pdop <= 0.0 || vdop <= 0.0) {
+    return false;
+  }
+  pgsa_pdop_         = static_cast<float>(pdop);
+  pgsa_vdop_         = static_cast<float>(vdop);
+  pgsa_present_      = true;
+  cycles_since_gsa_  = 0;
   return true;
 }
 
-bool gnss_utils::NmeaParser::parseGst(const std::vector<std::string>& fields, gnss_ros_standardization::msg::GnssSolution& /*solution*/) {
+bool NmeaParser::applyGst(const std::vector<std::string>& fields) {
   if (fields.size() < 9) return false;
-  
   // $xxGST,time,rms_range,std_major,std_minor,orient,std_lat,std_lon,std_alt,cs
-  // 6: std_lat, 7: std_lon, 8: std_alt
-  double std_lat = parseDouble(fields[6]);
-  double std_lon = parseDouble(fields[7]);
-  double std_alt = parseDouble(fields[8]);
-
-  var_lat_ = std_lat * std_lat;
-  var_lon_ = std_lon * std_lon;
-  var_alt_ = std_alt * std_alt;
-  has_variance_ = true;
-
+  const double std_lat = parseDouble(fields[6]);
+  const double std_lon = parseDouble(fields[7]);
+  const double std_alt = parseDouble(fields[8]);
+  pgst_var_lat_ = std_lat * std_lat;
+  pgst_var_lon_ = std_lon * std_lon;
+  pgst_var_alt_ = std_alt * std_alt;
+  pgst_present_ = true;
   return true;
+}
+
+void NmeaParser::flushPending(gnss_ros_standardization::msg::GnssSolution& solution) {
+  using Sol = gnss_ros_standardization::msg::GnssSolution;
+  const double nan_d = std::numeric_limits<double>::quiet_NaN();
+  const float  nan_f = std::numeric_limits<float>::quiet_NaN();
+
+  solution.solution_source = Sol::SOLUTION_SOURCE_NMEA;
+
+  // ---- Time / position from GGA ----
+  if (pgga_present_) {
+    solution.time_week = pgga_week_;
+    solution.time_tow  = pgga_tow_;
+    solution.status    = pgga_status_;
+    solution.latitude  = pgga_lat_;
+    solution.longitude = pgga_lon_;
+    solution.altitude  = pgga_alt_;
+    solution.num_sats  = pgga_num_sats_;
+    solution.age_diff  = pgga_age_diff_;
+    solution.hdop      = pgga_hdop_;
+    if (!(pgga_lat_ == 0.0 && pgga_lon_ == 0.0)) {
+      double pos[3] = {pgga_lat_ * (M_PI/180.0), pgga_lon_ * (M_PI/180.0), pgga_alt_};
+      double rr[3]  = {0};
+      pos2ecef(pos, rr);
+      solution.pos_ecef.x = rr[0];
+      solution.pos_ecef.y = rr[1];
+      solution.pos_ecef.z = rr[2];
+    } else {
+      solution.pos_ecef.x = nan_d;
+      solution.pos_ecef.y = nan_d;
+      solution.pos_ecef.z = nan_d;
+    }
+  } else {
+    // No GGA this epoch — boundary-flush with only RMC/GST. Mark position
+    // fields invalid; downstream sees status=NONE and NaN position.
+    solution.time_week = 0;
+    solution.time_tow  = 0.0;
+    solution.status    = Sol::STATUS_NONE;
+    solution.latitude  = 0.0;
+    solution.longitude = 0.0;
+    solution.altitude  = 0.0;
+    solution.num_sats  = 0;
+    solution.age_diff  = 0.0;
+    solution.hdop      = nan_f;
+    solution.pos_ecef.x = nan_d;
+    solution.pos_ecef.y = nan_d;
+    solution.pos_ecef.z = nan_d;
+  }
+
+  // PDOP/VDOP from cached GSA if fresh (≤1 cycle since arrival). GDOP is not
+  // derivable from GSA (no tdop). HDOP keeps the value already set from GGA.
+  if (pgsa_present_ && cycles_since_gsa_ <= 1) {
+    solution.pdop = pgsa_pdop_;
+    solution.vdop = pgsa_vdop_;
+  } else {
+    solution.pdop = nan_f;
+    solution.vdop = nan_f;
+  }
+  solution.gdop = nan_f;
+
+  // Velocity covariance has no NMEA source.
+  for (int i = 0; i < 9; ++i) {
+    solution.vel_enu_cov[i]  = nan_d;
+    solution.vel_cov_ecef[i] = nan_d;
+  }
+
+  // ---- Velocity from RMC ----
+  // ENU velocity comes directly from RMC speed/course (no rotation).
+  // ECEF velocity needs GGA's lat/lon for ENU→ECEF rotation.
+  if (prmc_present_ && pgga_present_ &&
+      !(pgga_lat_ == 0.0 && pgga_lon_ == 0.0)) {
+    solution.vel_enu.x = prmc_vel_east_;
+    solution.vel_enu.y = prmc_vel_north_;
+    solution.vel_enu.z = 0.0;
+
+    double pos[3]      = {pgga_lat_ * (M_PI/180.0), pgga_lon_ * (M_PI/180.0), pgga_alt_};
+    double vel_enu[3]  = {prmc_vel_east_, prmc_vel_north_, 0.0};
+    double vel_ecef[3] = {0};
+    enu2ecef(pos, vel_enu, vel_ecef);
+    solution.vel_ecef.x = vel_ecef[0];
+    solution.vel_ecef.y = vel_ecef[1];
+    solution.vel_ecef.z = vel_ecef[2];
+  } else {
+    solution.vel_enu.x  = nan_d;
+    solution.vel_enu.y  = nan_d;
+    solution.vel_enu.z  = nan_d;
+    solution.vel_ecef.x = nan_d;
+    solution.vel_ecef.y = nan_d;
+    solution.vel_ecef.z = nan_d;
+  }
+
+  // ---- Position covariance from GST ----
+  if (pgst_present_ && pgga_present_ &&
+      !(pgga_lat_ == 0.0 && pgga_lon_ == 0.0)) {
+    for (int i = 0; i < 9; ++i) solution.pos_enu_cov[i] = 0.0;
+    solution.pos_enu_cov[0] = pgst_var_lon_;  // East-East
+    solution.pos_enu_cov[4] = pgst_var_lat_;  // North-North
+    solution.pos_enu_cov[8] = pgst_var_alt_;  // Up-Up
+
+    double cov_enu[9] = {0};
+    cov_enu[0] = pgst_var_lon_;
+    cov_enu[4] = pgst_var_lat_;
+    cov_enu[8] = pgst_var_alt_;
+    double cov_ecef[9] = {0};
+    rotateCovarianceEnuToEcef(cov_enu, pgga_lat_ * (M_PI/180.0), pgga_lon_ * (M_PI/180.0), cov_ecef);
+    for (int i = 0; i < 9; ++i) solution.pos_cov_ecef[i] = cov_ecef[i];
+  } else {
+    for (int i = 0; i < 9; ++i) {
+      solution.pos_enu_cov[i]  = nan_d;
+      solution.pos_cov_ecef[i] = nan_d;
+    }
+  }
+
+  resetPending();
+
+  // GSA staleness counter: advance after each flush. The cache survives one
+  // cycle without a fresh GSA; after that, pgsa_present_ is cleared so DOP
+  // goes to NaN until GSA returns.
+  if (cycles_since_gsa_ < 255) ++cycles_since_gsa_;
+  if (cycles_since_gsa_ > 1) pgsa_present_ = false;
+}
+
+void NmeaParser::resetPending() {
+  pending_sod_       = -1.0;
+  pending_received_  = 0;
+  pgga_present_      = false;
+  prmc_present_      = false;
+  pgst_present_      = false;
+  pgga_week_         = 0;
+  pgga_tow_          = 0.0;
+  pgga_status_       = 0;
+  pgga_lat_ = pgga_lon_ = pgga_alt_ = 0.0;
+  pgga_num_sats_     = 0;
+  pgga_age_diff_     = 0.0;
+  pgga_hdop_         = 0.0f;
+  prmc_vel_east_ = prmc_vel_north_ = 0.0;
+  pgst_var_lat_ = pgst_var_lon_ = pgst_var_alt_ = 0.0;
 }
 
 } // namespace gnss_utils

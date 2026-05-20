@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
@@ -598,6 +599,11 @@ class SbfDriverNode : public rclcpp::Node {
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
 
+  // Persistent DOP cache + PVT cadence tracking for the staleness gate.
+  gnss_utils::DopCache last_dop_;
+  uint32_t prev_pvt_tow_ms_{UINT32_MAX};
+  uint32_t pvt_period_ms_{0};
+
   enum class SolutionSource { BINARY, NMEA };
 
   void initPendingExpectedMasks() {
@@ -654,11 +660,23 @@ class SbfDriverNode : public rclcpp::Node {
     mergeBlock(BLK_VEL_XYZ, &sbf::pvt::parseVelCovCartesian);
   }
 
-  // DOP block is independent of the PVT/Cov TOW aggregation: it can be rated
-  // differently and is temporally smooth, so sticky-write the latest value.
+  // DOP block: parsed into the persistent last_dop_ cache, NOT into pending_.
+  // Does NOT participate in completion and does NOT trigger flush. At flush
+  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
+  // enough (within 0..PVT_period after PVT) to populate the published solution.
   void handleDop() {
     if (!config_.enable_dop) return;
-    sbf::pvt::parseDop(sbf_body_.data(), sbf_body_.size(), binary_solution_);
+    const uint8_t* p   = sbf_body_.data();
+    const size_t   len = sbf_body_.size();
+    msg::GnssSolution scratch{};
+    if (!sbf::pvt::parseDop(p, len, scratch)) return;
+    last_dop_.valid  = true;
+    last_dop_.week   = sbf::pvt::getWeek(p, len);
+    last_dop_.tow_ms = sbf::pvt::getTowMs(p, len);
+    last_dop_.gdop   = scratch.gdop;
+    last_dop_.pdop   = scratch.pdop;
+    last_dop_.hdop   = scratch.hdop;
+    last_dop_.vdop   = scratch.vdop;
   }
 
   void flushPending() {
@@ -739,6 +757,19 @@ class SbfDriverNode : public rclcpp::Node {
       binary_solution_.pos_ecef = xyz_direct.pos_ecef;
       binary_solution_.vel_ecef = xyz_direct.vel_ecef;
     }
+
+    // PVT cadence auto-detection (used by DOP staleness gate).
+    if (prev_pvt_tow_ms_ != UINT32_MAX) {
+      const uint32_t dt = pending_.tow_ms - prev_pvt_tow_ms_;
+      if (dt > 0 && dt < 10000) pvt_period_ms_ = dt;
+    }
+    prev_pvt_tow_ms_ = pending_.tow_ms;
+
+    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
+    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
+                                      binary_solution_.time_week,
+                                      pending_.tow_ms, pvt_period_ms_);
 
     ever_received_binary_ = true;
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
