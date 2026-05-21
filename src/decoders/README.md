@@ -246,20 +246,12 @@ For the RAWIMUSX per-IMU scale-factor table and how to extend it, see
 
 ## Frame conventions for `GnssSolution`
 
-The decoder nodes follow the same publishing convention as the drivers — see
-[`../drivers/README.md`](../drivers/README.md#frame-conventions-for-gnsssolution)
-for details. In brief:
-
-- `pos_enu` is anchored at `pos_enu_org_ecef` (first fix).
-- `pos_enu_cov` / `vel_enu` / `vel_enu_cov` are in the tangent plane at the
-  current receiver position (matches the receiver's native frame).
-- ECEF covariance is derived from ENU covariance by rotation at the current
-  solution's lat/lon, unless the receiver provides ECEF blocks directly
-  (SBF PVTCartesian / PosCovCartesian / VelCovCartesian, u-blox NAV-POSECEF /
-  NAV-VELECEF, NovAtel BESTXYZ).
-
-Decoders do not configure the receiver — what gets aggregated depends on which
-blocks are present in the incoming stream.
+Decoder output follows the same message-level frame conventions as everything else
+in this package — see
+[`../../msg/README.md`](../../msg/README.md#frame-conventions-important)
+for the canonical definition (pos_enu anchoring, current-tangent covariance,
+ECEF derivation). Decoders do not configure the receiver, so what gets aggregated
+depends on which blocks are present in the incoming stream.
 
 ---
 

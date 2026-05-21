@@ -1,4 +1,10 @@
-# gnss_visualizer
+# utils
+
+This directory hosts the `gnss_visualizer` node (described below) and
+`gnss_utils.cpp`, a small shared helper library used across other components
+(time conversions, ENU/ECEF rotations, status-string formatting).
+
+## `gnss_visualizer`
 
 A ROS 2 node that renders a four-panel live GNSS dashboard using OpenCV:
 
