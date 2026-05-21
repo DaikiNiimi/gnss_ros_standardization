@@ -11,9 +11,7 @@ namespace grs = gnss_ros_standardization::msg;
 
 namespace gnss_imu_kalman_filter {
 
-// ============================================================
 // Quaternion helpers
-// ============================================================
 Eigen::Quaterniond GnssImuKalmanFilter::getQuaternion() const {
   return Eigen::Quaterniond(x_(IDX_QUAT), x_(IDX_QUAT+1),
                             x_(IDX_QUAT+2), x_(IDX_QUAT+3));
@@ -54,9 +52,7 @@ Eigen::Vector3d GnssImuKalmanFilter::computeLeverArmCorrection() const {
   return C_bn * config_.lever_arm;
 }
 
-// ============================================================
 // Coordinate helpers
-// ============================================================
 Eigen::Vector3d GnssImuKalmanFilter::gravityVector() const {
   if (config_.coordinate_frame == "ecef") {
     // Approximate: gravity in ECEF at current position
@@ -104,9 +100,7 @@ Eigen::Vector3d GnssImuKalmanFilter::workFrameToLlh(const Eigen::Vector3d& pos) 
   return Eigen::Vector3d(llh[0] * 180.0 / M_PI, llh[1] * 180.0 / M_PI, llh[2]);
 }
 
-// ============================================================
 // Constructor / Destructor
-// ============================================================
 GnssImuKalmanFilter::GnssImuKalmanFilter() : Node("gnss_imu_kalman_filter") {
   x_.setZero();
   P_.setZero();
@@ -203,9 +197,7 @@ GnssImuKalmanFilter::~GnssImuKalmanFilter() {
   if (state_csv_.is_open()) state_csv_.close();
 }
 
-// ============================================================
 // Parameter loading
-// ============================================================
 void GnssImuKalmanFilter::loadParameters() {
   auto& c = config_;
 
@@ -305,9 +297,7 @@ void GnssImuKalmanFilter::loadParameters() {
   }
 }
 
-// ============================================================
 // Initialization
-// ============================================================
 bool GnssImuKalmanFilter::tryInitialize() {
   if (!has_initial_gnss_ || !has_initial_imu_ || !has_initial_yaw_) return false;
 
@@ -355,9 +345,7 @@ bool GnssImuKalmanFilter::tryInitialize() {
   return true;
 }
 
-// ============================================================
 // EKF Prediction (IMU-driven)
-// ============================================================
 void GnssImuKalmanFilter::predict(const Eigen::Vector3d& acc_body, const Eigen::Vector3d& gyr_body, double dt) {
   if (dt <= 0.0 || dt > 1.0) return;
 
@@ -429,9 +417,7 @@ void GnssImuKalmanFilter::predict(const Eigen::Vector3d& acc_body, const Eigen::
   P_ = F * P_ * F.transpose() + Q;
 }
 
-// ============================================================
 // GNSS Position Update
-// ============================================================
 void GnssImuKalmanFilter::updateGnssPosition(const Eigen::Vector3d& z_pos,
                                   const Eigen::Matrix3d& R_pos) {
   // Observation: GNSS Antenna Position z_pos = p_gnss
@@ -494,9 +480,7 @@ void GnssImuKalmanFilter::updateGnssPosition(const Eigen::Vector3d& z_pos,
   P_ = (I15 - K * H) * P_ * (I15 - K * H).transpose() + K * R_pos * K.transpose();
 }
 
-// ============================================================
 // GNSS Heading Update (from Doppler velocity)
-// ============================================================
 void GnssImuKalmanFilter::updateGnssHeading(double heading_rad, double heading_var) {
   Eigen::Quaterniond q_pred = getQuaternion();
   Eigen::Vector3d euler = quaternionToEuler(q_pred);
@@ -539,9 +523,7 @@ void GnssImuKalmanFilter::updateGnssHeading(double heading_rad, double heading_v
   P_ = (I15 - K * H) * P_ * (I15 - K * H).transpose() + K * R_scalar * K.transpose();
 }
 
-// ============================================================
 // Wheel Speed Update
-// ============================================================
 void GnssImuKalmanFilter::onWheelSpeedWithCov(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg) {
   Eigen::Vector3d linear(msg->twist.twist.linear.x, msg->twist.twist.linear.y, msg->twist.twist.linear.z);
   Eigen::Matrix3d R_vel = Eigen::Matrix3d::Identity() * config_.wheel_speed_sigma * config_.wheel_speed_sigma;
@@ -665,9 +647,7 @@ void GnssImuKalmanFilter::processWheelSpeed(const Eigen::Vector3d& linear_veloci
   latest_wheel_.used_for_update = true;
 }
 
-// ============================================================
 // IMU Callback
-// ============================================================
 void GnssImuKalmanFilter::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
   std::lock_guard<std::mutex> lock(mtx_);
 
@@ -731,9 +711,7 @@ void GnssImuKalmanFilter::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
   publishSolution(stamp);
 }
 
-// ============================================================
 // GNSS Callback
-// ============================================================
 void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
   std::lock_guard<std::mutex> lock(mtx_);
 
@@ -879,9 +857,7 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
 
 
 
-// ============================================================
 // Publish Solution
-// ============================================================
 void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
   auto sol = grs::GnssSolution();
   sol.header.stamp = stamp;
@@ -989,11 +965,9 @@ void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
   odom_pub_->publish(odom);
 }
 
-// ============================================================
 // CSV Output — Sensors Log
 //   Rows at IMU rate; GNSS/wheel columns are empty when no measurement arrived.
 //   gnss_stamp_ns lets readers verify timing offset = time_ns - gnss_stamp_ns.
-// ============================================================
 void GnssImuKalmanFilter::writeSensorsHeader() {
   if (!sensors_csv_.is_open()) return;
   sensors_csv_ << "# coordinate_frame: " << config_.coordinate_frame
@@ -1054,10 +1028,8 @@ void GnssImuKalmanFilter::writeSensorsRow(const rclcpp::Time& stamp) {
   sensors_csv_.flush();
 }
 
-// ============================================================
 // CSV Output — State Log
 //   EKF estimated state and diagonal covariance at IMU rate.
-// ============================================================
 void GnssImuKalmanFilter::writeStateHeader() {
   if (!state_csv_.is_open()) return;
   state_csv_ << "# coordinate_frame: " << config_.coordinate_frame
@@ -1110,9 +1082,7 @@ void GnssImuKalmanFilter::writeStateRow(const rclcpp::Time& stamp) {
 
 }  // namespace gnss_imu_kalman_filter
 
-// ============================================================
 // main
-// ============================================================
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<gnss_imu_kalman_filter::GnssImuKalmanFilter>();

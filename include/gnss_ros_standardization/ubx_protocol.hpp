@@ -18,9 +18,7 @@
 namespace gnss_ros_standardization {
 namespace ubx {
 
-// =============================================================================
 // UBX Message Classes
-// =============================================================================
 constexpr uint8_t CLASS_NAV = 0x01;
 constexpr uint8_t CLASS_RXM = 0x02;
 constexpr uint8_t CLASS_ACK = 0x05;
@@ -29,9 +27,7 @@ constexpr uint8_t CLASS_MON = 0x0A;
 constexpr uint8_t CLASS_ESF = 0x10;  // External Sensor Fusion (ZED-F9R / IMU-enabled)
 constexpr uint8_t CLASS_HNR = 0x28;  // High Navigation Rate (legacy F9R)
 
-// =============================================================================
 // UBX Message IDs
-// =============================================================================
 
 // ACK
 constexpr uint8_t ID_ACK_NAK = 0x00;
@@ -88,9 +84,7 @@ constexpr uint8_t ID_CFG_NAV5  = 0x24;
 constexpr uint8_t ID_CFG_GNSS  = 0x3E;
 constexpr uint8_t ID_CFG_VALSET = 0x8A;
 
-// =============================================================================
 // NMEA Message IDs (Class 0xF0)
-// =============================================================================
 constexpr uint8_t NMEA_GGA = 0x00;
 constexpr uint8_t NMEA_GLL = 0x01;
 constexpr uint8_t NMEA_GSA = 0x02;
@@ -100,15 +94,11 @@ constexpr uint8_t NMEA_VTG = 0x05;
 constexpr uint8_t NMEA_GST = 0x07;
 constexpr uint8_t NMEA_ZDA = 0x08;
 
-// =============================================================================
 // UBX Sync Bytes
-// =============================================================================
 constexpr uint8_t SYNC1 = 0xB5;
 constexpr uint8_t SYNC2 = 0x62;
 
-// =============================================================================
 // CFG-VALSET Keys (Gen 10+)
-// =============================================================================
 
 // --- Measurement Rate ---
 constexpr uint32_t CFG_RATE_MEAS     = 0x30210001;  // U2: Measurement period (ms)
@@ -188,15 +178,11 @@ constexpr int PORT_UART1 = 1;
 constexpr int PORT_UART2 = 2;
 constexpr int PORT_USB   = 3;
 
-// =============================================================================
 // CFG-RST Payload Constants
-// =============================================================================
 constexpr uint16_t RST_BBR_HOTSTART = 0x0000;
 constexpr uint8_t  RST_MODE_GNSS_ONLY = 0x02;  // Controlled GNSS-only restart
 
-// =============================================================================
 // Dynamic Model
-// =============================================================================
 enum class DynamicModel : uint8_t {
   kPortable    = 0,
   kWatch       = 1,
@@ -221,18 +207,14 @@ inline DynamicModel parseDynamicModel(const std::string& model) {
   return DynamicModel::kPortable;
 }
 
-// =============================================================================
 // CFG-VALSET Item
-// =============================================================================
 struct ValsetItem {
   uint32_t key;
   uint32_t value;
   int size;  ///< Value size in bytes (1, 2, or 4)
 };
 
-// =============================================================================
 // Stream Type Definition
-// =============================================================================
 struct StreamTypeDef {
   std::string_view prefix;
   int type;
@@ -246,9 +228,7 @@ constexpr StreamTypeDef kStreamTypes[] = {
     {"file://", STR_FILE},
 };
 
-// =============================================================================
 // Timing Constants
-// =============================================================================
 constexpr size_t READ_BUFFER_SIZE = 4096;
 constexpr size_t NMEA_MAX_LINE_LEN = 256;
 constexpr int ACK_TIMEOUT_MS   = 3000;
@@ -256,9 +236,7 @@ constexpr int GNSS_RESET_WAIT_MS = 3000;
 constexpr int RETRY_DELAY_MS   = 500;
 constexpr int MAX_RETRIES      = 2;
 
-// =============================================================================
 // UBX Frame Utility
-// =============================================================================
 
 /// Build a complete UBX frame (sync + header + payload + checksum).
 inline std::vector<uint8_t> buildUbxFrame(uint8_t msg_class, uint8_t msg_id,
@@ -284,9 +262,7 @@ inline std::vector<uint8_t> buildUbxFrame(uint8_t msg_class, uint8_t msg_id,
   return frame;
 }
 
-// =============================================================================
 // Binary PVT parser (UBX-NAV-PVT)
-// =============================================================================
 namespace pvt {
 
 constexpr int NAV_PVT_MIN_LEN = 92;
@@ -423,9 +399,7 @@ inline bool parseNavPvt(const uint8_t* p, size_t len,
 
 }  // namespace pvt
 
-// =============================================================================
 // NAV-DOP parser (UBX-NAV-DOP, class=0x01 id=0x04)
-// =============================================================================
 namespace nav_dop {
 
 constexpr int MIN_LEN      = 14;  // need through hDOP at offset 12
@@ -451,9 +425,7 @@ inline bool parseNavDop(const uint8_t* p, size_t len,
 
 }  // namespace nav_dop
 
-// =============================================================================
 // NAV-COV parser (UBX-NAV-COV, class=0x01 id=0x36)
-// =============================================================================
 namespace nav_cov {
 
 constexpr int MIN_LEN              = 64;
@@ -526,10 +498,8 @@ inline bool parseNavCov(const uint8_t* p, size_t len,
 
 }  // namespace nav_cov
 
-// =============================================================================
 // NAV-POSECEF parser (UBX-NAV-POSECEF, class=0x01 id=0x01)
 // Payload: iTOW(U4) + ecefX/Y/Z(I4, cm) + pAcc(U4, cm) = 20 bytes
-// =============================================================================
 namespace nav_posecef {
 
 constexpr int MIN_LEN     = 20;
@@ -553,10 +523,8 @@ inline bool parseNavPosEcef(const uint8_t* p, size_t len,
 
 }  // namespace nav_posecef
 
-// =============================================================================
 // NAV-VELECEF parser (UBX-NAV-VELECEF, class=0x01 id=0x11)
 // Payload: iTOW(U4) + ecefVX/VY/VZ(I4, cm/s) + sAcc(U4, cm/s) = 20 bytes
-// =============================================================================
 namespace nav_velecef {
 
 constexpr int MIN_LEN     = 20;

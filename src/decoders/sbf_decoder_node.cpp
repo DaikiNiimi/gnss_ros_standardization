@@ -55,9 +55,7 @@ class SbfDecoderNode : public rclcpp::Node {
   }
 
  private:
-  // ============================================================================
   // Initialization
-  // ============================================================================
 
   void initializeParameters() {
     declare_parameter<std::string>("stream_path", "serial:///dev/ttyUSB0:115200");
@@ -136,9 +134,7 @@ class SbfDecoderNode : public rclcpp::Node {
     timer_ = create_wall_timer(kTimerInterval, std::bind(&SbfDecoderNode::pollStream, this));
   }
 
-  // ============================================================================
   // Stream Management
-  // ============================================================================
 
   void openStream() {
     const std::string stream_path = get_parameter("stream_path").as_string();
@@ -172,9 +168,7 @@ class SbfDecoderNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Stream opened: %s", stream_path.c_str());
   }
 
-  // ============================================================================
   // Polling
-  // ============================================================================
 
   void pollStream() {
     uint8_t buffer[sbf::READ_BUFFER_SIZE];
@@ -222,12 +216,10 @@ class SbfDecoderNode : public rclcpp::Node {
     commitSourceLockIfDue();  // ensure grace finalizes even on idle stream
   }
 
-  // ============================================================================
   // SBF Mini-Framer (parallel to RTKLIB, for AttEuler)
   //
   // SBF block layout: SYNC1('$') SYNC2('@') CRC(2) ID(2,LE) Length(2,LE) Body(Length-8)
   // ID bits 0-12 are the block number; bits 13-15 are the revision.
-  // ============================================================================
 
   void parseSbfByte(uint8_t byte) {
     switch (sbf_state_) {
@@ -281,9 +273,7 @@ class SbfDecoderNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Binary PVT handlers (per-system TOW aggregation, first-msg source lock)
-  // ============================================================================
   // Decoder is passive: it cannot know which cov blocks the receiver was
   // configured to emit. Instead, `cov_ever_seen` is a sticky bitmask updated
   // whenever a cov block arrives — so the flush condition self-calibrates after
@@ -601,7 +591,6 @@ class SbfDecoderNode : public rclcpp::Node {
     esm_gyro_[0]  = esm_gyro_[1]  = esm_gyro_[2]  = 0.0;
   }
 
-  // ============================================================================
   // Decoded *Nav block handlers — removed.
   //
   // RTKLIB's input_sbf() decoders (decode_gpsnav / decode_glonav / decode_galnav
@@ -612,11 +601,8 @@ class SbfDecoderNode : public rclcpp::Node {
   // surfaced as duplicate RINEX records and an incorrect Galileo SVH value.
   // The mini-framer below is kept solely for AttEuler + ExtSensorMeas, which
   // RTKLIB does not parse.
-  // ============================================================================
 
-  // ============================================================================
   // Message Handling
-  // ============================================================================
 
   void handleNmeaSentence(const std::string& sentence) {
     startGraceIfNeeded();
@@ -633,9 +619,7 @@ class SbfDecoderNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Solution Publishing
-  // ============================================================================
 
   void publishSolution(msg::GnssSolution& sol) {
     // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
@@ -719,9 +703,7 @@ class SbfDecoderNode : public rclcpp::Node {
     sol_pub_->publish(sol);
   }
 
-  // ============================================================================
   // Observation Publishing
-  // ============================================================================
 
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
@@ -753,9 +735,7 @@ class SbfDecoderNode : public rclcpp::Node {
       sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
-  // ============================================================================
   // Ephemeris Publishing (snapshot-on-change + heartbeat via EphemerisStore)
-  // ============================================================================
 
   void publishEphemerides() {
     bool changed = false;
@@ -780,9 +760,7 @@ class SbfDecoderNode : public rclcpp::Node {
       m.gnss_ephemeris.size(), m.glonass_ephemeris.size());
   }
 
-  // ============================================================================
   // Member Variables
-  // ============================================================================
 
   std::string frame_id_;
   bool        use_gps_timestamp_{false};

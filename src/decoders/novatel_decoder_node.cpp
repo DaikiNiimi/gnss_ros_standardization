@@ -58,9 +58,7 @@ class NovatelDecoderNode : public rclcpp::Node {
   }
 
  private:
-  // ============================================================================
   // Initialization
-  // ============================================================================
 
   void initializeParameters() {
     declare_parameter<std::string>("stream_path", "serial:///dev/ttyUSB0:115200");
@@ -150,9 +148,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     timer_ = create_wall_timer(kTimerInterval, std::bind(&NovatelDecoderNode::pollStream, this));
   }
 
-  // ============================================================================
   // Stream Management
-  // ============================================================================
 
   void openStream() {
     const std::string stream_path = get_parameter("stream_path").as_string();
@@ -186,9 +182,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Stream opened: %s", stream_path.c_str());
   }
 
-  // ============================================================================
   // Polling
-  // ============================================================================
 
   void pollStream() {
     uint8_t buffer[novatel::READ_BUFFER_SIZE];
@@ -223,12 +217,10 @@ class NovatelDecoderNode : public rclcpp::Node {
     commitSourceLockIfDue();  // ensure grace finalizes even on idle stream
   }
 
-  // ============================================================================
   // OEM4 Mini-Framer (parallel to RTKLIB, for CORRIMUDATA)
   //
   // OEM4 binary frame: SYNC(0xAA,0x44,0x12) HDRLEN(1) MSGID(2,LE) MSGTYPE(1)
   //                    PORT(1) MSGLEN(2,LE) ... rest of header ... BODY CRC32
-  // ============================================================================
 
   void parseOem4Byte(uint8_t byte) {
     switch (oem4_state_) {
@@ -312,13 +304,11 @@ class NovatelDecoderNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // PVT TOW Aggregation (mirrors SBF decoder pattern).
   //
   // TOW (GPS ms) is captured by the OEM4 mini-framer (oem4_gps_ms_). Each
   // BEST*/PSRDOP handler aggregates into pending_ keyed on TOW; flushPending()
   // applies the existing covariance-routing policy in one place.
-  // ============================================================================
   // PSRDOP is tracked separately in a persistent cache (last_dop_) so it can
   // survive Pending resets and be staleness-gated against the PVT cadence.
   static constexpr uint8_t COV_BIT_VEL = 0x1;
@@ -613,9 +603,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     imu_pub_->publish(imu);
   }
 
-  // ============================================================================
   // Message Handling
-  // ============================================================================
 
   void handleNmeaSentence(const std::string& sentence) {
     startGraceIfNeeded();
@@ -632,9 +620,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Solution Publishing
-  // ============================================================================
 
   void publishSolution(msg::GnssSolution& sol) {
     // Time/source policy:
@@ -719,9 +705,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     sol_pub_->publish(sol);
   }
 
-  // ============================================================================
   // Observation Publishing
-  // ============================================================================
 
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
@@ -756,9 +740,7 @@ class NovatelDecoderNode : public rclcpp::Node {
       sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
-  // ============================================================================
   // Ephemeris Publishing
-  // ============================================================================
 
   void publishEphemerides() {
     bool changed = false;
@@ -783,9 +765,7 @@ class NovatelDecoderNode : public rclcpp::Node {
       m.gnss_ephemeris.size(), m.glonass_ephemeris.size());
   }
 
-  // ============================================================================
   // Member Variables
-  // ============================================================================
 
   std::string format_{"oem4"};
   std::string frame_id_;

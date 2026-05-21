@@ -49,9 +49,7 @@ public:
   }
 
 private:
-  // ============================================================================
   // Initialization
-  // ============================================================================
 
   void initializeParameters() {
     declare_parameter<std::string>("stream_path", "");

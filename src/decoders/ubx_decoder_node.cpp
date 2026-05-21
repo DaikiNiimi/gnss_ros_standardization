@@ -62,9 +62,7 @@ class UbxDecoderNode : public rclcpp::Node {
   }
 
  private:
-  // ============================================================================
   // Initialization
-  // ============================================================================
 
   void initializeParameters() {
     declare_parameter<std::string>("stream_path", "serial:///dev/ttyACM0:115200");
@@ -141,9 +139,7 @@ class UbxDecoderNode : public rclcpp::Node {
     timer_ = create_wall_timer(kTimerInterval, std::bind(&UbxDecoderNode::pollStream, this));
   }
 
-  // ============================================================================
   // Stream Management
-  // ============================================================================
 
   void openStream() {
     const std::string stream_path = get_parameter("stream_path").as_string();
@@ -215,9 +211,7 @@ class UbxDecoderNode : public rclcpp::Node {
     maybeWatchdogFlushPendingPvt();
   }
 
-  // ============================================================================
   // UBX Mini-Framer (parallel to RTKLIB, for ESF-INS and NAV-ATT)
-  // ============================================================================
 
   void parseUbxByte(uint8_t byte) {
     switch (ubx_state_) {
@@ -303,7 +297,6 @@ class UbxDecoderNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // PVT TOW Aggregation (mirrors SBF decoder pattern)
   //
   // All NAV-* messages carry iTOW at payload offset 0. We buffer per-epoch into
@@ -311,7 +304,6 @@ class UbxDecoderNode : public rclcpp::Node {
   // complete. cov_ever_seen is sticky and self-calibrates after the first
   // epoch of each cov type — so the flush condition adapts to whichever subset
   // of NAV-DOP/NAV-COV the receiver is configured to emit.
-  // ============================================================================
   // NAV-DOP is tracked separately in a persistent cache (last_dop_) so it can
   // survive Pending resets and be staleness-gated against the PVT cadence.
   static constexpr uint8_t COV_BIT_COV     = 0x1;
@@ -645,9 +637,7 @@ class UbxDecoderNode : public rclcpp::Node {
     imu_pub_->publish(imu);
   }
 
-  // ============================================================================
   // Message Handling
-  // ============================================================================
 
   void handleNmeaSentence(const std::string& sentence) {
     startGraceIfNeeded();
@@ -666,9 +656,7 @@ class UbxDecoderNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Solution Publishing
-  // ============================================================================
 
   void publishSolution(msg::GnssSolution& sol) {
     // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
@@ -748,9 +736,7 @@ class UbxDecoderNode : public rclcpp::Node {
     sol_pub_->publish(sol);
   }
 
-  // ============================================================================
   // Observation Publishing
-  // ============================================================================
 
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
@@ -785,9 +771,7 @@ class UbxDecoderNode : public rclcpp::Node {
       sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
-  // ============================================================================
   // Ephemeris Publishing
-  // ============================================================================
 
   void publishEphemerides() {
     bool changed = false;
@@ -812,9 +796,7 @@ class UbxDecoderNode : public rclcpp::Node {
       m.gnss_ephemeris.size(), m.glonass_ephemeris.size());
   }
 
-  // ============================================================================
   // Member Variables
-  // ============================================================================
 
   std::string frame_id_;
   bool        use_gps_timestamp_{false};

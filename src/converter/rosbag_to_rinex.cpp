@@ -477,15 +477,6 @@ public:
 
       for (const auto &m : glo_sorted) {
         geph_t g = gnss_utils::msgToGeph(m);
-        // Note: msgToGeph already converts TOF/TOE to UTC if we assumed so, but wait.
-        // In original ros2_rinex_writer.cpp:
-        // g.toe = gpst2utc(gpst2time((int)m.week, m.toe));
-        // g.tof = gpst2utc(gpst2time((int)m.week, m.tof));
-        //
-        // msgToGeph in gnss_utils does exactly this:
-        // g.toe = gpst2utc(gpst2time(w, m.toe));
-        // So we can use it directly.
-
         if (g.toe.time==0 || g.tof.time==0) continue;
 
         KeyR key{g.sat,g.iode};

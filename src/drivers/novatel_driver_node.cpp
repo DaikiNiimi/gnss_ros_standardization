@@ -115,9 +115,7 @@ class NovatelDriverNode : public rclcpp::Node {
   }
 
  private:
-  // ============================================================================
   // Initialization
-  // ============================================================================
 
   void initializeParameters() {
     declare_parameter<std::string>("stream_path",          config_.stream_path);
@@ -289,9 +287,7 @@ class NovatelDriverNode : public rclcpp::Node {
     timer_ = create_wall_timer(kTimerInterval, std::bind(&NovatelDriverNode::pollStream, this));
   }
 
-  // ============================================================================
   // Stream Management
-  // ============================================================================
 
   void openStream() {
     std::string path = config_.stream_path;
@@ -326,9 +322,7 @@ class NovatelDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Stream opened: %s", config_.stream_path.c_str());
   }
 
-  // ============================================================================
   // Receiver Configuration
-  // ============================================================================
 
   void sendCommand(const std::string& cmd) {
     if (cmd.empty()) return;
@@ -441,9 +435,7 @@ class NovatelDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Configuration commands sent.");
   }
 
-  // ============================================================================
   // Polling
-  // ============================================================================
 
   void pollStream() {
     uint8_t buffer[novatel::READ_BUFFER_SIZE];
@@ -478,9 +470,7 @@ class NovatelDriverNode : public rclcpp::Node {
     maybeWatchdogFlushPendingPvt();
   }
 
-  // ============================================================================
   // Message Handling
-  // ============================================================================
 
   // Solution source policy:
   //   BINARY (BESTPOS/VEL) : if config_.enable_bestpos → use BESTPOS only, drop NMEA
@@ -504,12 +494,10 @@ class NovatelDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // OEM4 Mini-Framer (parallel to RTKLIB, for CORRIMUDATA)
   //
   // OEM4 binary frame: SYNC(0xAA,0x44,0x12) HDRLEN(1) MSGID(2,LE) MSGTYPE(1)
   //                    PORT(1) MSGLEN(2,LE) ... rest of header ... BODY CRC32
-  // ============================================================================
 
   void parseOem4Byte(uint8_t byte) {
     switch (oem4_state_) {
@@ -563,9 +551,7 @@ class NovatelDriverNode : public rclcpp::Node {
     if (oem4_msg_id_ == novatel::ID_BESTXYZ)     handleBestXyz();
   }
 
-  // ============================================================================
   // PVT TOW Aggregation (mirrors SBF / NovAtel decoder pattern).
-  // ============================================================================
   // PSRDOP is tracked separately in a persistent cache (last_dop_) so it can
   // survive Pending resets and be staleness-gated against the PVT cadence.
   static constexpr uint8_t COV_BIT_VEL = 0x1;
@@ -876,9 +862,7 @@ class NovatelDriverNode : public rclcpp::Node {
     imu_pub_->publish(imu);
   }
 
-  // ============================================================================
   // Solution Publishing
-  // ============================================================================
 
   void publishSolution(msg::GnssSolution& sol) {
     // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
@@ -964,9 +948,7 @@ class NovatelDriverNode : public rclcpp::Node {
     sol_pub_->publish(sol);
   }
 
-  // ============================================================================
   // Observation Publishing
-  // ============================================================================
 
   void publishObservations() {
     if (!config_.enable_rangecmp && !config_.enable_range) return;
@@ -1002,9 +984,7 @@ class NovatelDriverNode : public rclcpp::Node {
       sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
-  // ============================================================================
   // Ephemeris Publishing
-  // ============================================================================
 
   void publishEphemerides() {
     bool changed = false;
@@ -1044,9 +1024,7 @@ class NovatelDriverNode : public rclcpp::Node {
       m.gnss_ephemeris.size(), m.glonass_ephemeris.size());
   }
 
-  // ============================================================================
   // Member Variables
-  // ============================================================================
 
   NovatelConfig config_;
 

@@ -21,16 +21,12 @@
 namespace gnss_ros_standardization {
 namespace novatel {
 
-// =============================================================================
 // Constants
-// =============================================================================
 
 constexpr size_t READ_BUFFER_SIZE = 4096;
 constexpr size_t NMEA_MAX_LINE_LEN = 256;
 
-// =============================================================================
 // NovAtel Message IDs (decimal)
-// =============================================================================
 // Reference: MALIB/src/rcv/novatel.c and OEM7 Commands and Logs Reference Manual
 
 // Measurement
@@ -69,11 +65,9 @@ constexpr uint8_t OEM4_SYNC1 = 0xAA;
 constexpr uint8_t OEM4_SYNC2 = 0x44;
 constexpr uint8_t OEM4_SYNC3 = 0x12;
 
-// =============================================================================
 // OEM4/7 binary header offsets
 // Layout: SYNC(3) HDRLEN(1) MSGID(2) MSGTYPE(1) PORT(1) MSGLEN(2) ...
 // Standard header length = 28 bytes; MSGLEN field is at bytes 8-9 of the header.
-// =============================================================================
 namespace oem4 {
   constexpr int MSGID_OFFSET  = 4;   // bytes 4-5 from SYNC1
   constexpr int MSGLEN_OFFSET = 8;   // bytes 8-9 from SYNC1
@@ -88,9 +82,7 @@ constexpr uint16_t ID_OEM3_IONB         = 16;
 constexpr uint16_t ID_OEM3_UTCB         = 17;
 constexpr uint16_t ID_OEM3_FRMB         = 54;
 
-// =============================================================================
 // NovAtel Log Names (for LOG command)
-// =============================================================================
 constexpr const char* LOG_RANGECMP      = "RANGECMPB"; // Binary
 constexpr const char* LOG_RANGE         = "RANGEB";    // Binary
 constexpr const char* LOG_BESTPOS       = "BESTPOSB";  // Binary
@@ -132,18 +124,14 @@ constexpr const char* LOG_OEM3_REPB     = "REPB"; // Raw Ephemeris
 constexpr const char* LOG_OEM3_IONB     = "IONB"; // Iono Parameters
 constexpr const char* LOG_OEM3_UTCB     = "UTCB"; // UTC Parameters
 
-// =============================================================================
 // Command Constants
-// =============================================================================
 constexpr const char* CMD_UNLOGALL = "UNLOGALL";
 constexpr const char* CMD_UNLOG    = "UNLOG";
 constexpr const char* CMD_LOG = "LOG";
 constexpr const char* CMD_ONTIME = "ONTIME";
 constexpr const char* CMD_ONCHANGED = "ONCHANGED";
 
-// =============================================================================
 // Stream Type Definition
-// =============================================================================
 struct StreamTypeDef {
   std::string_view prefix;
   int type;
@@ -157,9 +145,7 @@ constexpr StreamTypeDef kStreamTypes[] = {
     {"file://", STR_FILE},
 };
 
-// =============================================================================
 // Utility Functions
-// =============================================================================
 
 /// @brief Get the interval string for a given rate in Hz
 /// @param rate_hz Publish rate in Hz
@@ -169,9 +155,7 @@ inline std::string getIntervalString(int rate_hz) {
     return std::to_string(1.0 / static_cast<double>(rate_hz));
 }
 
-// =============================================================================
 // Binary PVT parsers (BESTPOS / BESTVEL)
-// =============================================================================
 namespace pvt {
 
 // BESTPOS body field offsets (after 28-byte OEM4 header)

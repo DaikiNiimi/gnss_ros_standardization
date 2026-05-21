@@ -123,9 +123,7 @@ class UbxDriverNode : public rclcpp::Node {
   }
 
  private:
-  // ============================================================================
   // Initialization
-  // ============================================================================
 
   void initializeParameters() {
     // Basic settings
@@ -319,9 +317,7 @@ class UbxDriverNode : public rclcpp::Node {
     timer_ = create_wall_timer(kTimerInterval, std::bind(&UbxDriverNode::pollStream, this));
   }
 
-  // ============================================================================
   // Stream Management
-  // ============================================================================
 
   void openStream() {
     strinit(&stream_);
@@ -355,9 +351,7 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Stream opened: %s", config_.stream_path.c_str());
   }
 
-  // ============================================================================
   // Receiver Configuration (Unified Entry Point)
-  // ============================================================================
 
   bool isGen10() const { return config_.generation == "G10"; }
 
@@ -431,9 +425,7 @@ class UbxDriverNode : public rclcpp::Node {
     return false;
   }
 
-  // ============================================================================
   // Step 1: GNSS Signal Configuration
-  // ============================================================================
 
   void setupGnssSignals() {
     if (isGen10()) {
@@ -638,9 +630,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Step 2: Measurement Rate
-  // ============================================================================
 
   void setupMeasurementRate() {
     int meas_rate_ms = 1000 / config_.rate_hz;
@@ -662,9 +652,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Step 3: Dynamic Model
-  // ============================================================================
 
   void setupDynamicModel() {
     ubx::DynamicModel model = ubx::parseDynamicModel(config_.dynamic_model);
@@ -689,9 +677,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Step 4: Output Messages
-  // ============================================================================
 
   void setupOutputMessages() {
     if (isGen10()) {
@@ -816,9 +802,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // UBX Communication (Gen 10: CFG-VALSET)
-  // ============================================================================
 
   bool sendCfgValset(const std::vector<ubx::ValsetItem>& items) {
     if (items.empty()) return true;
@@ -862,9 +846,7 @@ class UbxDriverNode : public rclcpp::Node {
     return false;
   }
 
-  // ============================================================================
   // UBX Communication (Low-level)
-  // ============================================================================
 
   /// Send a UBX frame and wait for ACK.
   bool sendUbxPacket(uint8_t msg_class, uint8_t msg_id, const std::vector<uint8_t>& payload) {
@@ -911,9 +893,7 @@ class UbxDriverNode : public rclcpp::Node {
     return waitForAck(expected_class, expected_id);
   }
 
-  // ============================================================================
   // ACK/NAK Detection
-  // ============================================================================
 
   bool waitForAck(uint8_t msg_class, uint8_t msg_id) {
     auto start = std::chrono::steady_clock::now();
@@ -1001,9 +981,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // UBX Mini-Framer (parallel to RTKLIB, for ESF-INS and NAV-ATT)
-  // ============================================================================
 
   void parseUbxByte(uint8_t byte) {
     switch (ubx_frm_state_) {
@@ -1147,9 +1125,7 @@ class UbxDriverNode : public rclcpp::Node {
     imu_pub_->publish(imu);
   }
 
-  // ============================================================================
   // Data Processing
-  // ============================================================================
 
   void pollStream() {
     uint8_t buffer[ubx::READ_BUFFER_SIZE];
@@ -1213,10 +1189,8 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // PVT TOW Aggregation (mirrors SBF driver pattern; see ubx_decoder_node.cpp
   // for design notes). All NAV-* payloads carry iTOW at offset 0.
-  // ============================================================================
   // NAV-DOP is tracked separately in a persistent cache (last_dop_) so it can
   // survive Pending resets and be staleness-gated against the PVT cadence.
   // Only NAV-COV/POSECEF/VELECEF contribute to completion.
@@ -1445,9 +1419,7 @@ class UbxDriverNode : public rclcpp::Node {
       "check receiver firmware/configuration.");
   }
 
-  // ============================================================================
   // Solution Publishing
-  // ============================================================================
 
   void publishSolution(msg::GnssSolution& sol) {
     // Block publishing until configuration is complete, unless configure_on_startup is false
@@ -1547,9 +1519,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Observation Publishing
-  // ============================================================================
 
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
@@ -1585,9 +1555,7 @@ class UbxDriverNode : public rclcpp::Node {
       sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
-  // ============================================================================
   // Ephemeris Publishing
-  // ============================================================================
 
   void publishEphemerides() {
     bool changed = false;
@@ -1613,9 +1581,7 @@ class UbxDriverNode : public rclcpp::Node {
   }
 
 
-  // ============================================================================
   // Member Variables
-  // ============================================================================
 
   // Configuration
   UbxConfig config_;

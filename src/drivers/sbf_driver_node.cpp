@@ -117,9 +117,7 @@ class SbfDriverNode : public rclcpp::Node {
   }
 
  private:
-  // ============================================================================
   // Initialization
-  // ============================================================================
 
   void initializeParameters() {
     declare_parameter<std::string>("stream_path",          config_.stream_path);
@@ -322,9 +320,7 @@ class SbfDriverNode : public rclcpp::Node {
     timer_ = create_wall_timer(kTimerInterval, std::bind(&SbfDriverNode::pollStream, this));
   }
 
-  // ============================================================================
   // Stream Management
-  // ============================================================================
 
   void openStream() {
     std::string path = config_.stream_path;
@@ -359,9 +355,7 @@ class SbfDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Stream opened: %s", config_.stream_path.c_str());
   }
 
-  // ============================================================================
   // Receiver Configuration
-  // ============================================================================
 
   void sendCommand(const std::string& cmd) {
     std::string full_cmd = cmd + "\r\n";
@@ -470,9 +464,7 @@ class SbfDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Polling
-  // ============================================================================
 
   void pollStream() {
     uint8_t buffer[sbf::READ_BUFFER_SIZE];
@@ -530,9 +522,7 @@ class SbfDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // SBF Mini-Framer (parallel to RTKLIB, for AttEuler)
-  // ============================================================================
 
   void parseSbfByte(uint8_t byte) {
     switch (sbf_state_) {
@@ -579,9 +569,7 @@ class SbfDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Binary PVT handlers with per-system TOW aggregation
-  // ============================================================================
 
   // Single pending aggregator: all Geo+Xyz PVT/Cov blocks for one TOW merge into
   // pending_.buf. Flush triggers when blocks_received == blocks_expected, or when
@@ -887,7 +875,6 @@ class SbfDriverNode : public rclcpp::Node {
     esm_gyro_[0]  = esm_gyro_[1]  = esm_gyro_[2]  = 0.0;
   }
 
-  // ============================================================================
   // Decoded *Nav block handlers — removed.
   //
   // SBF Decoded nav blocks (GPSNav / GLONav / GALNav / BDSNav / QZSSNav /
@@ -901,11 +888,8 @@ class SbfDriverNode : public rclcpp::Node {
   // config_.enable_{gps,glo,gal,bds,qzs,navic}_nav still gates whether the
   // receiver is *told* to emit those decoded blocks (in the startup
   // configuration command path); the runtime decoding is now done by RTKLIB.
-  // ============================================================================
 
-  // ============================================================================
   // Message Handling
-  // ============================================================================
 
   void handleNmeaSentence(const std::string& sentence) {
     if (!nmea_parser_.parseSentence(sentence, nmea_solution_)) return;
@@ -920,9 +904,7 @@ class SbfDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Solution Publishing
-  // ============================================================================
 
   void publishSolution(msg::GnssSolution& sol) {
     // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
@@ -1015,9 +997,7 @@ class SbfDriverNode : public rclcpp::Node {
     sol_pub_->publish(sol);
   }
 
-  // ============================================================================
   // Observation Publishing
-  // ============================================================================
 
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
@@ -1053,9 +1033,7 @@ class SbfDriverNode : public rclcpp::Node {
       sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
-  // ============================================================================
   // Ephemeris Publishing (snapshot-on-change + heartbeat via EphemerisStore)
-  // ============================================================================
 
   // Called by handleDecodeResult(2) — ingest RTKLIB raw_.nav arrays into the
   // store, then publish a snapshot if anything changed.
@@ -1085,9 +1063,7 @@ class SbfDriverNode : public rclcpp::Node {
   }
 
 
-  // ============================================================================
   // Member Variables
-  // ============================================================================
 
   SbfConfig config_;
 

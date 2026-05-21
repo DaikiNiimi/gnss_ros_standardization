@@ -21,9 +21,7 @@
 namespace gnss_ros_standardization {
 namespace sbf {
 
-// =============================================================================
 // Constants
-// =============================================================================
 
 constexpr size_t READ_BUFFER_SIZE = 4096;
 constexpr size_t NMEA_MAX_LINE_LEN = 256;
@@ -32,7 +30,6 @@ constexpr size_t NMEA_MAX_LINE_LEN = 256;
 constexpr uint8_t SBF_SYNC1 = 0x24;  // '$'
 constexpr uint8_t SBF_SYNC2 = 0x40;  // '@'
 
-// =============================================================================
 // ExtSensorMeas (ID 4050) layout
 // Body: TOW(u4, ms) WNc(u2) N(u1) SBLength(u1) [N × ExtSensorMeasSub of size SBLength]
 //
@@ -40,7 +37,6 @@ constexpr uint8_t SBF_SYNC2 = 0x40;  // '@'
 //   Source(u1) SensorModel(u1) Type(u1) ObsInfo(u1) X(f8) Y(f8) Z(f8)
 //
 // Each Type carries a full 3-axis vector (Type 0 = accel 3-vector, Type 1 = gyro 3-vector).
-// =============================================================================
 namespace ext_sensor_meas {
   constexpr int OFFSET_N          = 6;
   constexpr int OFFSET_SB_LENGTH  = 7;
@@ -55,9 +51,7 @@ namespace ext_sensor_meas {
   constexpr uint8_t TYPE_GYRO     = 1;   // Angular rates [rad/s]
 }
 
-// =============================================================================
 // SBF Block IDs
-// =============================================================================
 // Measurement Blocks
 constexpr uint16_t ID_MEASEPOCH   = 4027;
 constexpr uint16_t ID_MEASEXTRA   = 4000;
@@ -99,9 +93,7 @@ constexpr uint16_t ID_RECEIVERSTATUS    = 4014;
 constexpr uint16_t ID_RXSETUP           = 4012;
 constexpr uint16_t ID_CHANSTATUS        = 4013;
 
-// =============================================================================
 // SBF Block Names
-// =============================================================================
 // Used in setSBFOutput command
 constexpr const char* BLOCK_MEASEPOCH = "MeasEpoch";
 
@@ -131,15 +123,11 @@ constexpr const char* BLOCK_DOP = "DOP";
 constexpr const char* BLOCK_EXTSENSORMEAS = "ExtSensorMeas";
 constexpr const char* BLOCK_RECEIVERSTATUS = "ReceiverStatus";
 
-// =============================================================================
 // SBF Command Strings
-// =============================================================================
 constexpr const char* CMD_SET_SBF_OUTPUT  = "sso"; // setSBFOutput
 constexpr const char* CMD_SET_NMEA_OUTPUT = "sno"; // setNMEAOutput
 
-// =============================================================================
 // Stream Type Definition
-// =============================================================================
 struct StreamTypeDef {
   std::string_view prefix;
   int type;
@@ -153,9 +141,7 @@ constexpr StreamTypeDef kStreamTypes[] = {
     {"file://", STR_FILE},
 };
 
-// =============================================================================
 // Utility Functions
-// =============================================================================
 
 /// @brief Get the SBF interval string for a given rate in Hz
 /// @param rate_hz Publish rate in Hz
@@ -169,9 +155,7 @@ inline std::string getIntervalString(int rate_hz) {
     return "sec1"; // Default to 1Hz
 }
 
-// =============================================================================
 // Binary PVT parsers (PVTGeodetic / PosCovGeodetic / PVTCartesian / PosCovCartesian)
-// =============================================================================
 namespace pvt {
 
 // Common SBF block body header: TOW(u4 ms) + WNc(u2) + Mode(u1) + Error(u1)
