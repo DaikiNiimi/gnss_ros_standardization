@@ -30,7 +30,7 @@ constexpr double kEpochMatchTolSec = 0.001;
 
 class RtkPositionNode : public rclcpp::Node {
  public:
-  RtkPositionNode() : Node("rtk_position_node") {
+  RtkPositionNode() : Node("real_time_kinematic") {
     initializeParameters();
 
     rover_obs_sub_ = create_subscription<grs::GnssObservations>(

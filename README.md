@@ -16,7 +16,7 @@ The goal is to make GNSS raw observations and ephemeris uniformly accessible
 across receiver brands so that tight-coupling GNSS/IMU methods and multi-sensor
 fusion frameworks can be developed once and reused everywhere.
 
-- Use GNSS raw observations seamlessly in robotics applications
+- Consume GNSS raw observations through standardized ROS 2 topics in robotics applications
 - Support diverse GNSS receivers and formats (u-blox, Septentrio, NovAtel, RTCM3)
 - Reproduce experiments across platforms with consistent interfaces
 
@@ -48,7 +48,7 @@ Demo of real-time kinematic (RTK) positioning using this ROS 2 package:
 | u-blox (UBX) | ✓ | ✓ | ✓ | ✓ |
 | Septentrio (SBF) | ✓ | ✓ | ✓ | ✓ |
 | NovAtel (OEM4/6/7) | ✓ | ✓ | ✓ | ✓ |
-| RTCM3 (MSM4/7) | ✓ | ✓ | — | — | — |
+| RTCM3 (MSM4/7) | ✓ | ✓ | — | — |
 
 Per-receiver protocol message tables (UBX message IDs, SBF block IDs,
 NovAtel log IDs, RTCM types) are shown in the component READMEs.

@@ -12,9 +12,6 @@ novatel_driver_node:
     # Common bauds: 9600, 115200, 230400, 460800, 921600
     stream_path: "serial:///dev/ttyUSB1:230400"
 
-    # Receiver format: "oem4" (OEM4/6/7)
-    format: "oem4"
-
     # Frame ID for checking TF
     frame_id: "gnss_link"
 

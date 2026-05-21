@@ -1,57 +1,50 @@
 # Drivers
 
-Driver nodes are full receiver clients: they **connect to a receiver, configure
-its output messages on startup (optional), and decode the resulting stream**
-into ROS 2 messages. Unlike the decoder nodes in [`../decoders/`](../decoders/),
-drivers know how to talk back to the receiver (UBX-CFG, ASCII SBF commands,
-NovAtel `log ... ontime ...` etc.), so they are the recommended choice when the
-receiver is directly attached.
+Driver nodes connect to a receiver, configure
+its output messages on startup (optional), and decode the resulting stream
+into ROS 2 messages.
 
-| Node | Executable | Source | Sample config |
+| Node | Executable | Configuration method | Sample config |
 |---|---|---|---|
-| u-blox | `ubx_driver_node` | [`ubx_driver_node.cpp`](ubx_driver_node.cpp) | [`config/ubx_driver.yaml`](../../config/ubx_driver.yaml) |
-| Septentrio | `sbf_driver_node` | [`sbf_driver_node.cpp`](sbf_driver_node.cpp) | [`config/sbf_driver.yaml`](../../config/sbf_driver.yaml) |
-| NovAtel | `novatel_driver_node` | [`novatel_driver_node.cpp`](novatel_driver_node.cpp) | [`config/novatel_driver.yaml`](../../config/novatel_driver.yaml) |
+| u-blox | `ubx_driver_node` | UBX-CFG | [`config/ubx_driver.yaml`](../../config/ubx_driver.yaml) |
+| Septentrio | `sbf_driver_node` | SBF/NMEA ASCII commands | [`config/sbf_driver.yaml`](../../config/sbf_driver.yaml) |
+| NovAtel | `novatel_driver_node` | `log ... ontime` / `onnew` commands | [`config/novatel_driver.yaml`](../../config/novatel_driver.yaml) |
 
-For the underlying binary message decoders (UBX / SBF / OEM4 message IDs and
-contents), see [`../decoders/README.md`](../decoders/README.md) — drivers reuse
-the same decoder layer.
+The decoder layer is shared with [`../decoders/`](../decoders/) — refer to
+[`../decoders/README.md`](../decoders/README.md) for the contents of each wire
+message listed below. Message-level semantics (frames, NaN convention,
+covariance frame) live in [`../../msg/README.md`](../../msg/README.md).
 
 ---
 
 ## `ubx_driver_node`
 
 ```bash
-cp config/ubx_driver.yaml my_ubx.yaml
-# edit serial_port, baud_rate, enable flags
 ros2 run gnss_ros_standardization ubx_driver_node --ros-args \
-  --params-file my_ubx.yaml
+  --params-file config/ubx_driver.yaml
 ```
 
 When `configure_on_startup: true`, the driver sends UBX-CFG-VALSET to enable the
-requested message rates and the requested GNSS constellations.
+requested message rates and constellations.
 
-### Parameters
+### Configured outputs
 
-| Parameter | Default (sample) | Description |
+| YAML key | Wire message | Output topic |
 |---|---|---|
-| `stream_path` | `serial:///dev/ttyACM0:115200` | UBX stream URI |
-| `rate_hz` | 5 | Measurement rate |
-| `configure_on_startup` | `true` | Send UBX-CFG to the receiver |
-| `dynamic_model` | `automotive` | UBX-CFG-NAV5 dynamic model |
-| `generation` | `F9` | Receiver generation (`M8`/`F9`/`X20`) |
-| `frame_id` | `gnss_link` | ROS frame_id |
-| `messages.rawx` / `.sfrbx` | `true` | Enable RXM-RAWX / RXM-SFRBX |
-| `messages.nav_pvt` | `true` | Enable NAV-PVT for `/gnss/nmea_solution` |
-| `messages.nav_dop` / `.nav_cov` | mixed | NAV-DOP / NAV-COV for DOP & ENU covariance |
-| `messages.nav_posecef` / `.nav_velecef` | `false` | Optional ECEF position/velocity blocks; when enabled they become the truth source for `pos_ecef`/`vel_ecef` (otherwise derived from LLH at current solution) |
-| `messages.nmea_gga|rmc|gsa|gst` | mixed | NMEA fallback |
-| `messages.nmea_high_precision` | `false` | Enable extended NMEA precision |
-| `messages.esf_raw` / `.esf_ins` | `false` | Raw / calibrated IMU (ZED-F9R required) |
-| `gnss.gps|glonass|galileo|beidou|qzss|navic|sbas` | mixed | Enable constellations |
-| `observation_topic` / `ephemeris_topic` / `solution_topic` | defaults | Topic overrides |
-| `imu_topic` / `imu_raw_topic` | defaults | IMU topic overrides |
-| `auto_origin`, `origin.latitude/longitude/altitude` | — | Local ENU origin policy |
+| `messages.rawx` | `UBX-RXM-RAWX` | `/gnss/observation` |
+| `messages.sfrbx` | `UBX-RXM-SFRBX` | `/gnss/ephemeris` |
+| `messages.nav_pvt` | `UBX-NAV-PVT` | `/gnss/nmea_solution` |
+| `messages.nav_dop` | `UBX-NAV-DOP` | `/gnss/nmea_solution` |
+| `messages.nav_cov` | `UBX-NAV-COV` | `/gnss/nmea_solution` |
+| `messages.nav_posecef` | `UBX-NAV-POSECEF` | `/gnss/nmea_solution` (optional native ECEF) |
+| `messages.nav_velecef` | `UBX-NAV-VELECEF` | `/gnss/nmea_solution` (optional native ECEF) |
+| `messages.nmea_gga` / `.nmea_rmc` / `.nmea_gsa` / `.nmea_gst` | NMEA `GGA/RMC/GSA/GST` | `/gnss/nmea_solution` (fallback) |
+| `messages.nmea_high_precision` | NMEA high precision | extra lat/lon decimal places |
+| `messages.esf_raw` | `UBX-ESF-RAW` | `/gnss/imu/data_raw` (IMU-enabled receiver) |
+| `messages.esf_ins` | `UBX-ESF-INS` | `/gnss/imu/data` (IMU-enabled receiver) |
+
+Enable `messages.nav_posecef` / `.nav_velecef` only when the receiver-provided
+ECEF position/velocity is preferred over values derived from LLH.
 
 ---
 
@@ -63,26 +56,42 @@ ros2 run gnss_ros_standardization sbf_driver_node --ros-args \
 ```
 
 When `configure_on_startup: true`, the driver issues `setSBFOutput` /
-`setNMEAOutput` ASCII commands on the specified `receiver_port` (e.g. `USB1`)
-to enable the requested SBF blocks at the requested rate.
+`setNMEAOutput` ASCII commands on `receiver_port` to enable the requested SBF
+blocks at the requested rate.
 
-### Parameters
+### Configured outputs
 
-| Parameter | Description |
-|---|---|
-| `stream_path` | Stream URI |
-| `frame_id`, `publish_rate`, `receiver_port`, `configure_on_startup` | Driver-level settings |
-| `messages.meas_epoch` | Enable MeasEpoch (4027) → `/gnss/observation` |
-| `messages.{gps,glo,gal,bds,qzs,navic}_nav` | Enable receiver-assembled nav blocks |
-| `messages.{gps,glo,gal,bds,qzs,navic}_nav_raw` | Enable raw subframe blocks |
-| `messages.pvt_geodetic` / `pos_cov_geodetic` / `vel_cov_geodetic` | Geodetic PVT + ENU covariance (recommended primary) |
-| `messages.pvt_cartesian` / `pos_cov_cartesian` / `vel_cov_cartesian` | ECEF PVT + ECEF covariance (optional; takes priority for `pos_ecef`/`vel_ecef` when enabled) |
-| `messages.ext_sensor_meas` | Enable ExtSensorMeas (4050) → `/gnss/imu/data_raw` |
-| `messages.receiver_status`, `messages.quality_ind` | Diagnostics |
-| `messages.nmea_{gga,rmc,gsa,gst}` | NMEA fallback |
-| `observation_topic` / `ephemeris_topic` / `solution_topic` / `imu_raw_topic` | Topic overrides |
+| YAML key | SBF block | Output topic |
+|---|---|---|
+| `messages.meas_epoch` | `MeasEpoch` | `/gnss/observation` |
+| `messages.gps_nav` | `GPSNav` | `/gnss/ephemeris` |
+| `messages.glo_nav` | `GLONav` | `/gnss/ephemeris` |
+| `messages.gal_nav` | `GALNav` | `/gnss/ephemeris` |
+| `messages.bds_nav` | `BDSNav` | `/gnss/ephemeris` |
+| `messages.qzs_nav` | `QZSNav` | `/gnss/ephemeris` |
+| `messages.navic_nav` | `NavICLNav` | `/gnss/ephemeris` |
+| `messages.gps_nav_raw` | `GPSRawCA` | `/gnss/ephemeris` (raw subframe) |
+| `messages.glo_nav_raw` | `GLORawCA` | `/gnss/ephemeris` (raw subframe) |
+| `messages.gal_nav_raw` | `GALRawINAV` + `GALRawFNAV` | `/gnss/ephemeris` (raw subframe) |
+| `messages.bds_nav_raw` | `BDSRaw` | `/gnss/ephemeris` (raw subframe) |
+| `messages.qzs_nav_raw` | `QZSRawL1CA` | `/gnss/ephemeris` (raw subframe) |
+| `messages.navic_nav_raw` | `NAVICRaw` | `/gnss/ephemeris` (raw subframe) |
+| `messages.pvt_geodetic` | `PVTGeodetic` | `/gnss/nmea_solution` |
+| `messages.pos_cov_geodetic` | `PosCovGeodetic` | `/gnss/nmea_solution` |
+| `messages.vel_cov_geodetic` | `VelCovGeodetic` | `/gnss/nmea_solution` |
+| `messages.pvt_cartesian` | `PVTCartesian` | `/gnss/nmea_solution` (optional native ECEF) |
+| `messages.pos_cov_cartesian` | `PosCovCartesian` | `/gnss/nmea_solution` (optional native ECEF) |
+| `messages.vel_cov_cartesian` | `VelCovCartesian` | `/gnss/nmea_solution` (optional native ECEF) |
+| `messages.dop` | `DOP` | `/gnss/nmea_solution` |
+| `messages.nmea_gga` / `.nmea_rmc` / `.nmea_gsa` / `.nmea_gst` | NMEA `GGA/RMC/GSA/GST` | `/gnss/nmea_solution` (fallback) |
+| `messages.ext_sensor_meas` | `ExtSensorMeas` | `/gnss/imu/data_raw` (AsteRx-i / mosaic-X5) |
 
-Septentrio does not provide calibrated IMU — there is no `imu_topic`.
+**Recommended:** `PVTGeodetic` + `PosCovGeodetic` + `VelCovGeodetic` alone are
+sufficient. Enabling the `*Cartesian` covariance blocks *in addition* only
+sharpens `pos_ecef` / `pos_cov_ecef` slightly versus LLH-derived values — for
+most users it is not worth the extra receiver bandwidth. The driver emits a
+runtime warning if both `*Geodetic` and `*Cartesian` covariance blocks are
+enabled simultaneously.
 
 ---
 
@@ -94,40 +103,37 @@ ros2 run gnss_ros_standardization novatel_driver_node --ros-args \
 ```
 
 When `configure_on_startup: true`, the driver issues `log ... ontime` / `onnew`
-commands on the configured `receiver_port` (e.g. `COM1`, `USB1`).
+commands on `receiver_port` (e.g. `COM1`, `USB1`, `THISPORT`).
 
-### Parameters
+### Configured outputs
 
-| Parameter | Description |
-|---|---|
-| `stream_path` | Stream URI |
-| `frame_id`, `publish_rate`, `receiver_port`, `configure_on_startup` | Driver-level settings |
-| `format` | `oem4` (default) |
-| `messages.rangecmp` / `messages.range` | RANGECMPB (140) / RANGEB (43) → `/gnss/observation` |
-| `messages.bestpos` / `bestvel` | BESTPOS / BESTVEL → `/gnss/nmea_solution` |
-| `messages.{gps,glo,gal,bds,qzs,navic}_ephem`, `ionutc` | Ephemeris + iono |
-| `messages.nmea_{gpgga,gprmc,gpgsa,gpgst}` | NMEA fallback |
-| `messages.rawimusx` | RAWIMUSXB (1462) → `/gnss/imu/data_raw` (ONNEW) |
-| `messages.corrimudata` | CORRIMUDATAB (812) → `/gnss/imu/data` (ONNEW; SPAN required) |
-| `imu_scale_override.accel` / `.gyro` | Override per-sample IMU scale factors |
-| `observation_topic` / `ephemeris_topic` / `solution_topic` / `imu_topic` / `imu_raw_topic` | Topic overrides |
+| YAML key | NovAtel log | Output topic |
+|---|---|---|
+| `messages.rangecmp` | `RANGECMPB` | `/gnss/observation` (recommended) |
+| `messages.range` | `RANGEB` | `/gnss/observation` |
+| `messages.gps_ephem` | `RAWEPHEMB` | `/gnss/ephemeris` |
+| `messages.glo_ephem` | `GLOEPHEMERISB` | `/gnss/ephemeris` |
+| `messages.gal_ephem` | `GALEPHEMERISB` | `/gnss/ephemeris` |
+| `messages.bds_ephem` | `BDSEPHEMERISB` | `/gnss/ephemeris` |
+| `messages.qzs_ephem` | `QZSSRAWEPHEMB` | `/gnss/ephemeris` |
+| `messages.navic_ephem` | `NAVICEPHEMERISB` | `/gnss/ephemeris` |
+| `messages.ionutc` | `IONUTCB` / `GALIONOB` / `QZSSIONUTCB` | `/gnss/ephemeris` |
+| `messages.bestpos` | `BESTPOSB` | `/gnss/nmea_solution` |
+| `messages.bestvel` | `BESTVELB` | `/gnss/nmea_solution` |
+| `messages.bestxyz` | `BESTXYZB` | `/gnss/nmea_solution` (optional native ECEF) |
+| `messages.psrdop` | `PSRDOPB` | `/gnss/nmea_solution` |
+| `messages.nmea_gpgga` / `.nmea_gprmc` / `.nmea_gpgsa` / `.nmea_gpgst` | NMEA `GGA/RMC/GSA/GST` | `/gnss/nmea_solution` (fallback) |
+| `messages.rawimusx` | `RAWIMUSXB` | `/gnss/imu/data_raw` (logged via `ONNEW`, not `ONTIME`) |
+| `messages.corrimudata` | `CORRIMUDATAB` | `/gnss/imu/data` (SPAN-capable receiver) |
 
-### Note on RAWIMUSX scale factors
+### Note on RAWIMUSX / CORRIMUDATA scaling
 
-`RAWIMUSXB` carries an `IMUType` byte. The decoder looks up the per-sample
-count → SI scale factor (delta-velocity in m/s, delta-angle in rad) from a
-table in
+`RAWIMUSXB` carries an `IMUType` byte; the decoder looks up the per-sample
+count → SI scale factor from a table in
 [`include/gnss_ros_standardization/novatel_imu_scales.hpp`](../../include/gnss_ros_standardization/novatel_imu_scales.hpp)
-and divides by the inter-sample `dt` (successive `Seconds` fields) to recover
-rates and accelerations.
-
-### Note on CORRIMUDATA
-
-The log carries SI-unit *increments* over one IMU sampling period. The decoder
-divides each increment by the timestamp interval `dt` to recover instantaneous
-rates and accelerations.
-
----
+and divides by the inter-sample `dt` to recover rates and accelerations.
+`CORRIMUDATAB` carries SI-unit *increments* over one IMU sampling period; the
+decoder divides each increment by `dt` likewise.
 
 ## Supported NovAtel IMUs (RAWIMUSX scale table)
 
@@ -158,61 +164,3 @@ and converted to SI (ft/s → m/s, deg → rad) at compile time.
 For any IMU not listed above, set `imu_scale_override.{accel,gyro}` in
 `config/novatel_driver.yaml` to per-sample SI scale factors from the IMU
 datasheet.
-
-**EPSON G320N data-rate caveat**: the published scale depends on the IMU's
-sample rate. ID 41 assumes 125 Hz and ID 62 assumes 200 Hz; if you run the IMU
-at any other rate, use `imu_scale_override.*` instead.
-
----
-
-## Frame conventions for `GnssSolution`
-
-All three drivers fill the same `GnssSolution` message but use slightly different
-strategies. The published message follows a unified convention:
-
-- **Position** (`latitude`/`longitude`/`altitude`, `pos_ecef`): receiver's LLH
-  is primary. `pos_ecef` is taken from the receiver's ECEF block when available
-  (SBF PVTCartesian, u-blox NAV-POSECEF, NovAtel BESTXYZ); otherwise it is
-  derived from LLH via `pos2ecef`.
-- **Velocity** (`vel_enu`, `vel_ecef`): receiver's ENU velocity is primary.
-  `vel_ecef` is taken from the receiver's ECEF block when available (SBF
-  PVTCartesian, u-blox NAV-VELECEF, NovAtel BESTXYZ); otherwise derived from ENU.
-- **Covariance** (`pos_enu_cov`, `vel_enu_cov`, `pos_cov_ecef`, `vel_cov_ecef`):
-  whichever side the receiver provides natively is the truth source. The other
-  side is derived by rotation at the current solution's lat/lon.
-- **Frame of `pos_enu_cov` / `vel_enu_cov`**: tangent plane at the **current
-  receiver position**, matching the receiver's native convention. This differs
-  from `pos_enu` (which is anchored at `pos_enu_org_ecef`). See
-  [`msg/README.md`](../../msg/README.md#frame-conventions-important) for details.
-
-### Recommended SBF configuration
-
-`PVTGeodetic` + `PosCovGeodetic` + `VelCovGeodetic` are sufficient. Enabling
-`PVTCartesian` and friends *additionally* is supported but only fills `pos_ecef`
-and `pos_cov_ecef` slightly more precisely than the LLH-derived values — for
-most users this is not worth the extra receiver bandwidth. The driver emits a
-runtime warning if both `*Geodetic` and `*Cartesian` covariance blocks are
-enabled simultaneously.
-
-### Optional u-blox configuration
-
-Enable `messages.nav_posecef` and `messages.nav_velecef` if you need the
-receiver-provided ECEF position/velocity instead of the LLH-derived values.
-
----
-
-## Troubleshooting
-
-**Serial port permission denied**
-```bash
-sudo usermod -aG dialout $USER   # log out and back in
-```
-
-**`configure_on_startup` has no effect**
-- Confirm `receiver_port` matches the port the receiver sees you on
-  (e.g. `USB1`, `COM2`). The configuration command goes via that port name —
-  not via the OS device path.
-- For NovAtel, some logs (e.g. `RAWIMUSXB`) only respond to `ONNEW`, not `ONTIME`.
-
-**Wrong IMU rates / accelerations (NovAtel)**
-- See *Supported NovAtel IMUs* above and set `imu_scale_override.*` if needed.

@@ -1,4 +1,4 @@
-rtk_position_node:
+real_time_kinematic:
   ros__parameters:
     # ==========================================================================
     # Input / Output

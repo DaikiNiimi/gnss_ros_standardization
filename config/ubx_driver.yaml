@@ -73,6 +73,11 @@ ubx_driver_node:
       nav_dop: false       # NAV-DOP (0x01,0x04) → gdop/pdop/hdop/vdop
       nav_cov: false       # NAV-COV (0x01,0x36) → pos_enu_cov 3x3 + vel_enu_cov 3x3
 
+      # Optional native ECEF position/velocity. Enable only when receiver-provided
+      # ECEF is preferred over LLH-derived values (most users can leave both false).
+      nav_posecef: false   # NAV-POSECEF (0x01,0x01) → pos_ecef
+      nav_velecef: false   # NAV-VELECEF (0x01,0x11) → vel_ecef
+
       # NMEA messages (disable to save bandwidth)
       nmea_gga: true 
       nmea_rmc: false

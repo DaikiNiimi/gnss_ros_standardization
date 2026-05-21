@@ -1,9 +1,10 @@
 # Single Point Positioning (SPP) Node Configuration
-# 
+#
 # Usage:
-#   ros2 run gnss_ros_standardization spp_pntpos_node --ros-args --params-file config/spp_node.yaml
+#   ros2 run gnss_ros_standardization single_point_positioning --ros-args \
+#     --params-file config/single_point_positioning.yaml
 
-spp_pntpos_node:
+single_point_positioning:
   ros__parameters:
     # ==========================================================================
     # Input / Output

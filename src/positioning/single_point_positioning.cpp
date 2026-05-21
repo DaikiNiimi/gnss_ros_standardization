@@ -30,7 +30,7 @@ constexpr int kPositionLogThrottleMs = 1000;
 
 class SppPntposNode : public rclcpp::Node {
  public:
-  SppPntposNode() : Node("spp_pntpos_node") {
+  SppPntposNode() : Node("single_point_positioning") {
     initializeParameters();
 
     obs_sub_ = create_subscription<grs::GnssObservations>(

@@ -36,7 +36,6 @@ struct NovatelConfig {
   std::string frame_id{"gnss_link"};
   int publish_rate{1};
   std::string receiver_port{"USB1"};
-  std::string format{"oem4"};
   bool configure_on_startup{true};
 
   // Observation / PVT
@@ -124,7 +123,6 @@ class NovatelDriverNode : public rclcpp::Node {
     declare_parameter<std::string>("frame_id",             config_.frame_id);
     declare_parameter<int>        ("publish_rate",         config_.publish_rate);
     declare_parameter<std::string>("receiver_port",        config_.receiver_port);
-    declare_parameter<std::string>("format",               config_.format);
     declare_parameter<bool>       ("configure_on_startup", config_.configure_on_startup);
 
     declare_parameter<bool>("messages.rangecmp",    config_.enable_rangecmp);
@@ -166,13 +164,7 @@ class NovatelDriverNode : public rclcpp::Node {
     config_.publish_rate         = get_parameter("publish_rate").as_int();
     gnss_utils::validatePublishRate(config_.publish_rate, /*fallback=*/1, get_logger());
     config_.receiver_port        = get_parameter("receiver_port").as_string();
-    config_.format               = get_parameter("format").as_string();
     config_.configure_on_startup = get_parameter("configure_on_startup").as_bool();
-
-    if (config_.format != "oem4") {
-      RCLCPP_WARN(get_logger(), "Unknown format '%s', defaulting to oem4", config_.format.c_str());
-      config_.format = "oem4";
-    }
 
     config_.enable_rangecmp    = get_parameter("messages.rangecmp").as_bool();
     config_.enable_range       = get_parameter("messages.range").as_bool();
