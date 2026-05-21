@@ -26,6 +26,7 @@ namespace novatel {
 // =============================================================================
 
 constexpr size_t READ_BUFFER_SIZE = 4096;
+constexpr size_t NMEA_MAX_LINE_LEN = 256;
 
 // =============================================================================
 // NovAtel Message IDs (decimal)
@@ -67,6 +68,16 @@ constexpr uint16_t ID_CORRIMUDATA       = 812;   // Bias/gravity/earth-rate corr
 constexpr uint8_t OEM4_SYNC1 = 0xAA;
 constexpr uint8_t OEM4_SYNC2 = 0x44;
 constexpr uint8_t OEM4_SYNC3 = 0x12;
+
+// =============================================================================
+// OEM4/7 binary header offsets
+// Layout: SYNC(3) HDRLEN(1) MSGID(2) MSGTYPE(1) PORT(1) MSGLEN(2) ...
+// Standard header length = 28 bytes; MSGLEN field is at bytes 8-9 of the header.
+// =============================================================================
+namespace oem4 {
+  constexpr int MSGID_OFFSET  = 4;   // bytes 4-5 from SYNC1
+  constexpr int MSGLEN_OFFSET = 8;   // bytes 8-9 from SYNC1
+}
 constexpr int     OEM4_HEADER_LEN = 28;  // Standard OEM4/7 binary header length
 
 // OEM3 Message IDs
@@ -90,13 +101,16 @@ constexpr const char* LOG_BESTXYZB      = "BESTXYZB";  // Binary
 constexpr const char* LOG_RAWEPHEM      = "RAWEPHEMB";
 constexpr const char* LOG_IONUTC        = "IONUTCB";
 constexpr const char* LOG_RAWWAASFRAME  = "RAWWAASFRAMEB";
-constexpr const char* LOG_GPSEPHEM      = "GPSEPHEMB";
+constexpr const char* LOG_GPSEPHEM      = "RAWEPHEMB";    // RTKLIB decodes ID 41 (RAWEPHEMB), NOT ID 7 (GPSEPHEMB)
 constexpr const char* LOG_GLOEPHEMERIS  = "GLOEPHEMERISB";
 constexpr const char* LOG_GALEPHEMERIS  = "GALEPHEMERISB";
-constexpr const char* LOG_GALINAVEPHEMERIS = "GALINAVEPHEMERISB";
+// Note: GALINAVEPHEMERISB (ID 1309) is NOT supported by RTKLIB.
+// GALEPHEMERISB (ID 1122) already contains both I/NAV and F/NAV data,
+// so a separate GALINAVEPHEMERIS log is unnecessary.
+constexpr const char* LOG_GALINAVEPHEMERIS = "GALEPHEMERISB"; // alias → same as LOG_GALEPHEMERIS
 constexpr const char* LOG_GALIONO       = "GALIONOB";
 constexpr const char* LOG_GALCLOCK      = "GALCLOCKB";
-constexpr const char* LOG_QZSSEPHEMERIS = "QZSSEPHEMERISB";
+constexpr const char* LOG_QZSSEPHEMERIS = "QZSSRAWEPHEMB"; // RTKLIB decodes ID 1331 (QZSSRAWEPHEMB), NOT ID 1336 (QZSSEPHEMERISB)
 constexpr const char* LOG_QZSSIONUTC    = "QZSSIONUTCB";
 constexpr const char* LOG_BDSEPHEMERIS  = "BDSEPHEMERISB";
 constexpr const char* LOG_NAVICEPHEMERIS = "NAVICEPHEMERISB";

@@ -4,7 +4,7 @@
 
 string system     # always "R" (GLONASS)
 uint16 prn        # slot number (1–27)
-uint16 week       # GPS week number of transmission
+uint32 week       # GPS week number of transmission (uint32 to cover RTKLIB's extended week counter past the 1024-week rollover)
 string satid      # combined ID string, e.g. "R05"
 int8 frq          # frequency channel number (-7 to +13)
 uint8 iode        # issue of data (frame number 1–5)

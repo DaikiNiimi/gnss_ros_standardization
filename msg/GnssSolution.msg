@@ -6,7 +6,7 @@ std_msgs/Header header  # stamp = ROS Time; frame_id = receiver label.
                         # For canonical GNSS time, always use time_week / time_tow (GPST).
 
 # GNSS Time (GPS Time System)
-uint16 time_week        # GPS week number
+uint32 time_week        # GPS week number (uint32 to cover RTKLIB's extended week counter past the 1024-week rollover)
 float64 time_tow        # time of week [s]
 
 # Solution Origin (where this solution — including its time — came from)

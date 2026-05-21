@@ -60,6 +60,19 @@ namespace esf_raw {
   constexpr double  ACCEL_SCALE  = 0.0009765625;    // 2^-10 (m/s²)
 }
 
+// ESF-INS payload offsets (version 0, 36 bytes)
+namespace esf_ins {
+  constexpr int OFFSET_BITFIELD  = 0;
+  constexpr int OFFSET_ITOW      = 8;
+  constexpr int OFFSET_XANGRATE  = 12;
+  constexpr int OFFSET_YANGRATE  = 16;
+  constexpr int OFFSET_ZANGRATE  = 20;
+  constexpr int OFFSET_XACCEL    = 24;
+  constexpr int OFFSET_YACCEL    = 28;
+  constexpr int OFFSET_ZACCEL    = 32;
+  constexpr int MIN_LEN          = 36;
+}
+
 // MON
 constexpr uint8_t ID_MON_VER = 0x04;
 
@@ -237,6 +250,7 @@ constexpr StreamTypeDef kStreamTypes[] = {
 // Timing Constants
 // =============================================================================
 constexpr size_t READ_BUFFER_SIZE = 4096;
+constexpr size_t NMEA_MAX_LINE_LEN = 256;
 constexpr int ACK_TIMEOUT_MS   = 3000;
 constexpr int GNSS_RESET_WAIT_MS = 3000;
 constexpr int RETRY_DELAY_MS   = 500;

@@ -399,7 +399,9 @@ static inline void sanitizeTobs(rnxopt_t& o){
       char sig[3] = { s[1], s[2], 0 };
       if (obs2code(sig) == 0) continue;
       if (w!=j) {
-        std::snprintf(o.tobs[i][w], sizeof(o.tobs[i][w]), "%.3s", s);
+        char tmp[4];
+        std::memcpy(tmp, s, 4);          // break alias: s == o.tobs[i][j]
+        std::memcpy(o.tobs[i][w], tmp, sizeof(o.tobs[i][w]));
       }
       ++w;
     }

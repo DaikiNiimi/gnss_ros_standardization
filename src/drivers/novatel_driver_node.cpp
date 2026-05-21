@@ -10,6 +10,7 @@
 
 #include <sensor_msgs/msg/imu.hpp>
 
+#include "gnss_ros_standardization/decoder_common.hpp"
 #include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
@@ -25,7 +26,7 @@ namespace gnss_ros_standardization {
 namespace {
 
 constexpr auto kTimerInterval  = 10ms;
-constexpr size_t kNmeaMaxLineLen = 256;
+constexpr double kPvtWatchdogTimeoutSec = 1.5;
 
 }  // namespace
 
@@ -120,6 +121,8 @@ class NovatelDriverNode : public rclcpp::Node {
 
   void initializeParameters() {
     declare_parameter<std::string>("stream_path",          config_.stream_path);
+    // frame_id: ROS TF frame name attached to the GNSS antenna phase center.
+    // Default "gnss_link" — override in launch to integrate with vehicle TF tree.
     declare_parameter<std::string>("frame_id",             config_.frame_id);
     declare_parameter<int>        ("publish_rate",         config_.publish_rate);
     declare_parameter<std::string>("receiver_port",        config_.receiver_port);
@@ -163,6 +166,7 @@ class NovatelDriverNode : public rclcpp::Node {
     config_.stream_path          = get_parameter("stream_path").as_string();
     config_.frame_id             = get_parameter("frame_id").as_string();
     config_.publish_rate         = get_parameter("publish_rate").as_int();
+    gnss_utils::validatePublishRate(config_.publish_rate, /*fallback=*/1, get_logger());
     config_.receiver_port        = get_parameter("receiver_port").as_string();
     config_.format               = get_parameter("format").as_string();
     config_.configure_on_startup = get_parameter("configure_on_startup").as_bool();
@@ -338,6 +342,23 @@ class NovatelDriverNode : public rclcpp::Node {
   }
 
   void configureReceiverOem4(const std::string& port_pfx, const std::string& ontime, const std::string& onchanged) {
+    // NMEA sentences first — issued while the port is still quiet (caller
+    // has just sent UNLOGALL). Sending NMEA after high-rate binary `LOG`s
+    // risks the command being silently dropped under port saturation, as
+    // observed on the SBF driver. NovAtel `sendCommand` is fire-and-forget
+    // (no `<OK` ACK read), so silent drops would be invisible.
+    if (config_.enable_nmea_gpgga) sendCommand("LOG " + port_pfx + novatel::LOG_GPGGA + " ONTIME 1");
+    else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPGGA);
+
+    if (config_.enable_nmea_gprmc) sendCommand("LOG " + port_pfx + novatel::LOG_GPRMC + " ONTIME 1");
+    else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPRMC);
+
+    if (config_.enable_nmea_gpgsa) sendCommand("LOG " + port_pfx + novatel::LOG_GPGSA + " ONTIME 1");
+    else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPGSA);
+
+    if (config_.enable_nmea_gpgst) sendCommand("LOG " + port_pfx + novatel::LOG_GPGST + " ONTIME 1");
+    else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPGST);
+
     if (config_.enable_rangecmp) sendCommand("LOG " + port_pfx + novatel::LOG_RANGECMP + ontime);
     else                         sendCommand("UNLOG " + port_pfx + novatel::LOG_RANGECMP);
 
@@ -366,10 +387,10 @@ class NovatelDriverNode : public rclcpp::Node {
 
     if (config_.enable_gal_ephem) {
       sendCommand("LOG " + port_pfx + novatel::LOG_GALEPHEMERIS + onchanged);
-      sendCommand("LOG " + port_pfx + novatel::LOG_GALINAVEPHEMERIS + onchanged);
+      // Note: GALINAVEPHEMERISB (ID 1309) is not supported by RTKLIB.
+      // GALEPHEMERISB (ID 1122) already contains both I/NAV and F/NAV data.
     } else {
       sendCommand("UNLOG " + port_pfx + novatel::LOG_GALEPHEMERIS);
-      sendCommand("UNLOG " + port_pfx + novatel::LOG_GALINAVEPHEMERIS);
     }
 
     if (config_.enable_bds_ephem) {
@@ -393,19 +414,6 @@ class NovatelDriverNode : public rclcpp::Node {
       sendCommand("UNLOG " + port_pfx + novatel::LOG_GALIONO);
       sendCommand("UNLOG " + port_pfx + novatel::LOG_QZSSIONUTC);
     }
-
-    // NMEA sentences (for GnssSolution)
-    if (config_.enable_nmea_gpgga) sendCommand("LOG " + port_pfx + novatel::LOG_GPGGA + " ONTIME 1");
-    else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPGGA);
-
-    if (config_.enable_nmea_gprmc) sendCommand("LOG " + port_pfx + novatel::LOG_GPRMC + " ONTIME 1");
-    else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPRMC);
-
-    if (config_.enable_nmea_gpgsa) sendCommand("LOG " + port_pfx + novatel::LOG_GPGSA + " ONTIME 1");
-    else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPGSA);
-
-    if (config_.enable_nmea_gpgst) sendCommand("LOG " + port_pfx + novatel::LOG_GPGST + " ONTIME 1");
-    else                           sendCommand("UNLOG " + port_pfx + novatel::LOG_GPGST);
 
     // IMU outputs (require IMU-connected receiver; CORRIMUDATA additionally requires SPAN)
     if (config_.enable_rawimusx)    sendCommand(std::string("LOG ")   + port_pfx + novatel::LOG_RAWIMUSXB    + " ONNEW");
@@ -459,7 +467,7 @@ class NovatelDriverNode : public rclcpp::Node {
         if (byte == '\n') {
           handleNmeaSentence(nmea_buffer_);
           nmea_buffer_.clear();
-        } else if (nmea_buffer_.size() > kNmeaMaxLineLen) {
+        } else if (nmea_buffer_.size() > novatel::NMEA_MAX_LINE_LEN) {
           nmea_buffer_.clear();
         }
       }
@@ -526,7 +534,7 @@ class NovatelDriverNode : public rclcpp::Node {
         break;
       case 10:  // capture GPS week (header off 14-15) and ms (off 16-19) while skipping
         if (oem4_hdr_pos_ == 14)      oem4_gps_week_  = byte;
-        else if (oem4_hdr_pos_ == 15) oem4_gps_week_ |= static_cast<uint16_t>(byte << 8);
+        else if (oem4_hdr_pos_ == 15) oem4_gps_week_ |= static_cast<uint32_t>(byte) << 8;
         else if (oem4_hdr_pos_ == 16) oem4_gps_ms_    = byte;
         else if (oem4_hdr_pos_ == 17) oem4_gps_ms_   |= static_cast<uint32_t>(byte) <<  8;
         else if (oem4_hdr_pos_ == 18) oem4_gps_ms_   |= static_cast<uint32_t>(byte) << 16;
@@ -576,6 +584,13 @@ class NovatelDriverNode : public rclcpp::Node {
   uint32_t prev_pvt_tow_ms_{UINT32_MAX};
   uint32_t pvt_period_ms_{0};
 
+  // After a publish, record the (week, tow) of the just-flushed epoch. Subsequent
+  // blocks at the same (week, tow) are late arrivals from the eager flush; skip
+  // them to suppress duplicate publish at the next TOW boundary. Mirrors the
+  // decoder-side orphan guard.
+  uint32_t last_flushed_week_{0};
+  uint32_t last_flushed_tow_ms_{UINT32_MAX};
+
   void initPendingExpectedMask() {
     pending_.cov_expected =
         (config_.enable_bestvel  ? COV_BIT_VEL : uint8_t{0}) |
@@ -587,15 +602,30 @@ class NovatelDriverNode : public rclcpp::Node {
            pending_.cov_received == pending_.cov_expected;
   }
 
+  // Orphan guard: the current OEM4 frame's (week, tow) matches the most recently
+  // flushed epoch. Caller should skip aggregation so no duplicate publish occurs.
+  bool isLateOrphan() const {
+    return last_flushed_tow_ms_ != UINT32_MAX &&
+           oem4_gps_ms_   == last_flushed_tow_ms_ &&
+           oem4_gps_week_ == last_flushed_week_;
+  }
+
   void aggregateEpochBoundary() {
     if (oem4_gps_ms_ != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
     }
     pending_.tow_ms = oem4_gps_ms_;
+    // BESTPOS/BESTVEL/PSRDOP/BESTXYZ bodies don't carry GPS time — the (week, ms)
+    // pair lives in the OEM4 header which only the mini-framer sees. Stamp the
+    // pending solution here so applyDopWithStaleness() (called from flushPending)
+    // gets a non-zero pvt_week to compare against last_dop_.week.
+    pending_.buf.time_week = oem4_gps_week_;
+    pending_.buf.time_tow  = oem4_gps_ms_ / 1000.0;
   }
 
   void handleBestPos() {
     if (!config_.enable_bestpos) return;
+    if (isLateOrphan()) return;
     aggregateEpochBoundary();
     if (!novatel::pvt::parseBESTPOS(oem4_body_.data(), oem4_body_.size(), pending_.buf)) {
       return;
@@ -627,9 +657,9 @@ class NovatelDriverNode : public rclcpp::Node {
     // BESTXYZ provides native ECEF covariance diagonals. Pos/vel values are not
     // overwritten — BESTPOS/BESTVEL remain the single source of truth.
     if (!config_.enable_bestxyz) return;
+    if (isLateOrphan()) return;
     aggregateEpochBoundary();
     if (!novatel::pvt::parseBESTXYZ(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
-    saw_bestxyz_ = true;
     pending_.cov_received  |= COV_BIT_XYZ;
     pending_.last_update = now();
     if (pendingComplete()) flushPending();
@@ -643,9 +673,11 @@ class NovatelDriverNode : public rclcpp::Node {
       return;
     }
     binary_solution_ = pending_.buf;
-    finalizeBinarySolutionGeometry(binary_solution_);
-    rotatePosCovariance(binary_solution_);
-    if (pending_.cov_received & COV_BIT_XYZ) rotateVelCovariance(binary_solution_);
+    decoder_common::finalizeBinarySolutionGeometry(binary_solution_);
+    // Covariance rotation direction is decided per epoch (not session-sticky).
+    const bool has_xyz_this_epoch = (pending_.cov_received & COV_BIT_XYZ) != 0;
+    rotatePosCovariance(binary_solution_, has_xyz_this_epoch);
+    if (has_xyz_this_epoch) rotateVelCovariance(binary_solution_);
 
     // PVT cadence auto-detection (used by DOP staleness gate).
     if (prev_pvt_tow_ms_ != UINT32_MAX) {
@@ -661,21 +693,28 @@ class NovatelDriverNode : public rclcpp::Node {
                                       pending_.tow_ms, pvt_period_ms_);
 
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+
+    // Record this epoch as the last published (week, tow) for orphan-guard.
+    last_flushed_week_   = binary_solution_.time_week;
+    last_flushed_tow_ms_ = pending_.tow_ms;
+
     pending_ = {};
     pending_.cov_expected = expected;
   }
 
   void maybeWatchdogFlushPendingPvt() {
     if (!pending_.has_pvt && !pending_.cov_received) return;
-    if ((now() - pending_.last_update).seconds() > 1.5) {
+    if ((now() - pending_.last_update).seconds() > kPvtWatchdogTimeoutSec) {
       flushPending();
     }
   }
 
-  void rotatePosCovariance(msg::GnssSolution& s) {
+  // `has_bestxyz_this_epoch` decides the rotation direction per epoch (NOT a
+  // session-sticky flag) — see flushPending().
+  void rotatePosCovariance(msg::GnssSolution& s, bool has_bestxyz_this_epoch) {
     const double lat = s.latitude  * D2R;
     const double lon = s.longitude * D2R;
-    if (saw_bestxyz_) {
+    if (has_bestxyz_this_epoch) {
       double cov_ecef[9], cov_enu[9];
       std::copy(s.pos_cov_ecef.begin(), s.pos_cov_ecef.end(), cov_ecef);
       gnss_utils::rotateCovariance(cov_ecef, lat, lon, cov_enu);
@@ -708,6 +747,7 @@ class NovatelDriverNode : public rclcpp::Node {
 
   void handleBestVel() {
     if (!config_.enable_bestvel) return;
+    if (isLateOrphan()) return;
     aggregateEpochBoundary();
     if (!novatel::pvt::parseBESTVEL(oem4_body_.data(), oem4_body_.size(), pending_.buf)) {
       return;
@@ -717,16 +757,6 @@ class NovatelDriverNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
-  static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
-    double llh[3] = {s.latitude * D2R, s.longitude * D2R, s.altitude};
-    double ecef[3] = {0};
-    pos2ecef(llh, ecef);
-    s.pos_ecef.x = ecef[0]; s.pos_ecef.y = ecef[1]; s.pos_ecef.z = ecef[2];
-    double vel_e[3] = {s.vel_enu.x, s.vel_enu.y, s.vel_enu.z};
-    double vel_ec[3] = {0};
-    enu2ecef(llh, vel_e, vel_ec);
-    s.vel_ecef.x = vel_ec[0]; s.vel_ecef.y = vel_ec[1]; s.vel_ecef.z = vel_ec[2];
-  }
 
   // RAWIMUSX body (60 B):
   //   HealthBytes(u2) IMUType(u1) Reserved1(u1) Week(u2) Reserved2(u2) Seconds(f8)
@@ -859,7 +889,7 @@ class NovatelDriverNode : public rclcpp::Node {
     if (source_ == SolutionSource::BINARY) {
       const double tow = time2gpst(raw_.time, &week_for_stamp);
       if (week_for_stamp > 0) {
-        sol.time_week = static_cast<uint16_t>(week_for_stamp);
+        sol.time_week = static_cast<uint32_t>(week_for_stamp);
         sol.time_tow  = tow;
       }
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
@@ -953,30 +983,23 @@ class NovatelDriverNode : public rclcpp::Node {
     msg.header.stamp    = (config_.use_gps_timestamp && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
     msg.header.frame_id = config_.frame_id;
-    msg.week = static_cast<uint16_t>(week);
+    msg.week = static_cast<uint32_t>(week);
     msg.tow  = tow;
 
-    SatelliteCount sat_count{};
+    decoder_common::SatelliteCount sat_count{};
     for (int i = 0; i < raw_.obs.n; ++i) {
       const obsd_t& obs = raw_.obs.data[i];
-      countSatellite(obs.sat, sat_count);
-      appendObservations(obs, msg.observations);
+      decoder_common::countSatellite(obs.sat, sat_count);
+      decoder_common::appendObservations(obs, msg.observations);
     }
 
     obs_pub_->publish(msg);
 
     RCLCPP_INFO(get_logger(),
-      "Published observations: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
       sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
-  }
-
-  void appendObservations(const obsd_t& obs, std::vector<msg::GnssObservation>& observations) {
-    for (int freq = 0; freq < NFREQ + NEXOBS; ++freq) {
-      if (obs.P[freq] == 0.0 && obs.L[freq] == 0.0 && obs.D[freq] == 0.0 && obs.SNR[freq] == 0) continue;
-      observations.push_back(gnss_utils::obsToMsg(obs, freq));
-    }
   }
 
   // ============================================================================
@@ -1022,22 +1045,6 @@ class NovatelDriverNode : public rclcpp::Node {
   }
 
   // ============================================================================
-  // Helper Types
-  // ============================================================================
-
-  struct SatelliteCount { int gps=0, glo=0, gal=0, qzs=0, bds=0, irn=0, sbs=0, unknown=0; };
-
-  static void countSatellite(int sat, SatelliteCount& c) {
-    int prn = 0;
-    switch (satsys(sat, &prn)) {
-      case SYS_GPS: ++c.gps; break; case SYS_GLO: ++c.glo; break;
-      case SYS_GAL: ++c.gal; break; case SYS_QZS: ++c.qzs; break;
-      case SYS_CMP: ++c.bds; break; case SYS_IRN: ++c.irn; break;
-      case SYS_SBS: ++c.sbs; break; default: ++c.unknown; break;
-    }
-  }
-
-  // ============================================================================
   // Member Variables
   // ============================================================================
 
@@ -1062,7 +1069,6 @@ class NovatelDriverNode : public rclcpp::Node {
   SolutionSource         source_{SolutionSource::NMEA};
   rclcpp::Time           start_time_{0, 0, RCL_ROS_TIME};
   bool                   ever_received_binary_{false};
-  bool                   saw_bestxyz_{false};
 
   // ENU local origin
   bool   has_local_origin_{false};
@@ -1079,7 +1085,7 @@ class NovatelDriverNode : public rclcpp::Node {
   uint16_t oem4_msg_len_{0};
   int      oem4_hdr_rem_{0};
   int      oem4_hdr_pos_{0};
-  uint16_t oem4_gps_week_{0};
+  uint32_t oem4_gps_week_{0};
   uint32_t oem4_gps_ms_{0};
   int      oem4_body_pos_{0};
   std::vector<uint8_t> oem4_body_;

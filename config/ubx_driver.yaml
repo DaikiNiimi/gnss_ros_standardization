@@ -15,7 +15,7 @@ ubx_driver_node:
     #   serial:///dev/ttyACM0:115200
     #   serial:///dev/ttyUSB0:921600
     #   tcpcli://192.168.1.100:5000
-    stream_path: "serial:///dev/ttyACM2:115200"
+    stream_path: "serial:///dev/ttyACM0:115200"
     
     # Measurement rate in Hz (1-20)
     rate_hz: 10

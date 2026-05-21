@@ -87,7 +87,7 @@ One epoch of observations for all tracked satellites.
 | Field | Type | Notes |
 |---|---|---|
 | `header` | `std_msgs/Header` | `stamp` = ROS Time (see [header.stamp convention](#headerstamp-convention-applies-to-all-messages-here)); `frame_id` = receiver label |
-| `week` | `uint16` | GPS week of the epoch |
+| `week` | `uint32` | GPS week of the epoch (extended week — survives 1024-week rollover) |
 | `tow` | `float64` | Time of week [s] |
 | `observations` | `GnssObservation[]` | One element per (satellite, signal) |
 
@@ -164,7 +164,7 @@ covariance from GST. No mid-session switching: if the binary stream stops,
 | Field | Type | Unit | Notes |
 |---|---|---|---|
 | `header` | `std_msgs/Header` | — | `stamp` = ROS Time (see [header.stamp convention](#headerstamp-convention-applies-to-all-messages-here)) |
-| `time_week` | `uint16` | week | GPS week |
+| `time_week` | `uint32` | week | GPS week (extended week — survives 1024-week rollover) |
 | `time_tow` | `float64` | s | Time of week |
 | `status` | `uint8` | enum | See enum below |
 | `num_sats` | `uint8` | — | Satellites used |

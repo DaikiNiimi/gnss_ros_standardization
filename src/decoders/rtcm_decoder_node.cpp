@@ -17,6 +17,8 @@
 
 using namespace std::chrono_literals;
 
+namespace gnss_ros_standardization {
+
 namespace {
 constexpr uint8_t  RTCM3_PREAMBLE = 0xD3;
 constexpr uint16_t RTCM3_MAX_LEN  = 1023;
@@ -25,9 +27,33 @@ constexpr size_t   RTCM3_CRC_LEN  = 3;
 constexpr uint32_t CRC24Q_POLY    = 0x1864CFB; // CRC-24Q
 } // namespace
 
+/// @brief ROS 2 node for decoding RTCM3 messages from NTRIP/serial/file streams
+///
+/// Reads RTCM3 frames (preamble 0xD3 + length + payload + CRC-24Q) from the
+/// configured stream and publishes observation epochs (/gnss/observation) and
+/// ephemerides (/gnss/ephemeris) via RTKLIB's input_rtcm3() decoder.
 class RtcmDecoderNode : public rclcpp::Node {
 public:
   RtcmDecoderNode() : Node("rtcm_decoder_node") {
+    initializeParameters();
+    initializePublishers();
+    initializeDecoder();
+    openStream();
+    startPolling();
+    RCLCPP_INFO(get_logger(), "RTCM Decoder started");
+  }
+
+  ~RtcmDecoderNode() override {
+    try { strclose(&stream_); } catch (...) {}
+    free_rtcm(&rtcm_);
+  }
+
+private:
+  // ============================================================================
+  // Initialization
+  // ============================================================================
+
+  void initializeParameters() {
     declare_parameter<std::string>("stream_path", "");
     declare_parameter<int>("assemble_delay_ms", 200);  // reserved
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
@@ -38,32 +64,32 @@ public:
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
 
-    const auto stream_path = get_parameter("stream_path").as_string();
-    if (stream_path.empty()) {
+    if (get_parameter("stream_path").as_string().empty()) {
       RCLCPP_ERROR(get_logger(), "Parameter 'stream_path' is required but not set. "
         "Example: --ros-args -p stream_path:=\"ntrip://user:pass@host:port/mountpoint\"");
       throw std::runtime_error("stream_path parameter is required");
     }
+  }
 
-    obs_pub_ = create_publisher<gnss_ros_standardization::msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
-    nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(1).transient_local());
+  void initializePublishers() {
+    obs_pub_ = create_publisher<gnss_ros_standardization::msg::GnssObservations>(
+        get_parameter("observation_topic").as_string(), 10);
+    nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>(
+        get_parameter("ephemeris_topic").as_string(),
+        rclcpp::QoS(1).transient_local());
+  }
 
+  void initializeDecoder() {
     if (init_rtcm(&rtcm_) != 1) {
       RCLCPP_ERROR(get_logger(), "init_rtcm failed");
       throw std::runtime_error("init_rtcm failed");
     }
+  }
 
-    openStream();
+  void startPolling() {
     timer_ = create_wall_timer(10ms, std::bind(&RtcmDecoderNode::onTimer, this));
-    RCLCPP_INFO(get_logger(), "RTCM Decoder started");
   }
 
-  ~RtcmDecoderNode() override {
-    try { strclose(&stream_); } catch (...) {}
-    free_rtcm(&rtcm_);
-  }
-
-private:
   // ---- small utilities -----------------------------------------------------
 
 
@@ -125,31 +151,47 @@ private:
   }
 
   // ---- RTCM3 framing & decode ---------------------------------------------
+  //
+  // Read-offset + amortized compact strategy: rx_off_ tracks the read head into
+  // rx_. Resync (preamble miss / CRC fail) is O(1) (just ++rx_off_), and erase
+  // only fires when the unread tail exceeds half of rx_, yielding amortized O(n)
+  // even on noisy streams (vs. O(n²) of per-byte erase(begin())).
   void decodeRtcm3FromBuffer() {
     while (true) {
-      if (rx_.size() < RTCM3_HDR_LEN) return;
-      if (rx_[0] != RTCM3_PREAMBLE) { rx_.erase(rx_.begin()); continue; }
+      const size_t avail = rx_.size() - rx_off_;
+      if (avail < RTCM3_HDR_LEN) break;
+      const uint8_t* head = rx_.data() + rx_off_;
+      if (head[0] != RTCM3_PREAMBLE) { ++rx_off_; continue; }
 
-      const uint16_t plen = ((rx_[1] & 0x03) << 8) | rx_[2];
-      if (plen > RTCM3_MAX_LEN) { rx_.erase(rx_.begin()); continue; }
+      const uint16_t plen = ((head[1] & 0x03) << 8) | head[2];
+      if (plen > RTCM3_MAX_LEN) { ++rx_off_; continue; }
 
       const size_t flen = RTCM3_HDR_LEN + plen + RTCM3_CRC_LEN;
-      if (rx_.size() < flen) return;
+      if (avail < flen) break;  // wait for more data
 
-      const uint32_t crc_calc = crc24q(rx_.data(), flen - RTCM3_CRC_LEN);
+      const uint32_t crc_calc = crc24q(head, flen - RTCM3_CRC_LEN);
       const uint32_t crc_recv =
-          (uint32_t(rx_[flen - 3]) << 16) |
-          (uint32_t(rx_[flen - 2]) << 8)  |
-           uint32_t(rx_[flen - 1]);
+          (uint32_t(head[flen - 3]) << 16) |
+          (uint32_t(head[flen - 2]) << 8)  |
+           uint32_t(head[flen - 1]);
 
-      if (crc_calc != crc_recv) { rx_.erase(rx_.begin()); continue; }
+      if (crc_calc != crc_recv) { ++rx_off_; continue; }
 
-      int ret = 0;
-      for (size_t i = 0; i < flen; ++i) ret = input_rtcm3(&rtcm_, rx_[i]);
-      rx_.erase(rx_.begin(), rx_.begin() + static_cast<long>(flen));
-
-      if (ret == 1 && rtcm_.obs.n > 0) accumulateObservations();
+      // Feed the CRC-validated frame byte-by-byte; process each completion
+      // inline. Standard RTCM3 yields one ret>0 per frame, but the inline
+      // check guarantees that any middle-of-frame completion (variant MSM /
+      // future spec extensions) is not silently dropped.
+      for (size_t i = 0; i < flen; ++i) {
+        const int r = input_rtcm3(&rtcm_, head[i]);
+        if (r == 1 && rtcm_.obs.n > 0) accumulateObservations();
+      }
+      rx_off_ += flen;
       publishEphemeridesIfChanged();
+    }
+    // Amortized compact: only erase when read head has moved past half of rx_.
+    if (rx_off_ * 2 > rx_.size()) {
+      rx_.erase(rx_.begin(), rx_.begin() + static_cast<long>(rx_off_));
+      rx_off_ = 0;
     }
   }
 
@@ -223,14 +265,14 @@ private:
       gnss_ros_standardization::msg::GnssObservations msg;
       msg.header.stamp = stamp;
       msg.header.frame_id = "gnss_receiver";
-      msg.week = static_cast<uint16_t>(epoch.week);
+      msg.week = static_cast<uint32_t>(epoch.week);
       msg.tow  = epoch.tow;
       msg.observations = std::move(epoch.observations);
 
       obs_pub_->publish(msg);
 
       RCLCPP_INFO(get_logger(),
-        "obs published: week=%d tow=%.3f num=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+        "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
         epoch.week, epoch.tow, msg.observations.size(),
         epoch.cnt_G, epoch.cnt_R, epoch.cnt_E, epoch.cnt_J, epoch.cnt_C, epoch.cnt_I, epoch.cnt_S, epoch.cnt_U);
 
@@ -257,7 +299,7 @@ private:
       auto out = eph_store_.buildSnapshot(now());
       nav_pub_->publish(out);
       RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-        "nav published: GNSS=%zu GLO=%zu",
+        "Published ephemeris snapshot: GNSS=%zu GLO=%zu",
         out.gnss_ephemeris.size(), out.glonass_ephemeris.size());
     }
   }
@@ -275,6 +317,7 @@ private:
   stream_t  stream_{};
   rtcm_t    rtcm_{};
   std::vector<uint8_t> rx_;
+  size_t    rx_off_{0};   // read head into rx_ (see decodeRtcm3FromBuffer)
 
   // epoch buffer
   std::unordered_map<EpochKey, EpochBuffer, EpochKeyHash> epochs_;
@@ -283,9 +326,11 @@ private:
   gnss_utils::EphemerisStore eph_store_;
 };
 
+}  // namespace gnss_ros_standardization
+
 int main(int argc, char* argv[]) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<RtcmDecoderNode>());
+  rclcpp::spin(std::make_shared<gnss_ros_standardization::RtcmDecoderNode>());
   rclcpp::shutdown();
   return 0;
 }

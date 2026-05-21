@@ -180,7 +180,7 @@ inline ParseResult parsePosFile(const std::string& path, std::ostream& err) {
     sol.header.frame_id = "gnss_receiver";
     int week = 0;
     sol.time_tow  = time2gpst(t, &week);
-    sol.time_week = static_cast<uint16_t>(week);
+    sol.time_week = static_cast<uint32_t>(week);
     sol.solution_source = GnssSolution::SOLUTION_SOURCE_COMPUTED;
 
     try {

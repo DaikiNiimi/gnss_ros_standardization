@@ -104,18 +104,18 @@ struct EkfConfig {
   // CSV
   CsvConfig csv;
 
-  // Process noise
-  double sigma_acc      = 0.1;     // accelerometer noise [m/s^2/√Hz]
-  double sigma_gyr      = 0.01;    // gyroscope noise [rad/s/√Hz]
-  double sigma_acc_bias = 1.0e-4;  // acc bias random walk [m/s^2/√Hz]
-  double sigma_gyr_bias = 1.0e-5;  // gyro bias random walk [rad/s/√Hz]
+  // Process noise (per-axis spectral density)
+  Eigen::Vector3d sigma_acc      = {0.3, 0.3, 0.3};    // [m/s²/√Hz] vibration margin included
+  Eigen::Vector3d sigma_gyr      = {0.01, 0.01, 0.01};  // [rad/s/√Hz]
+  Eigen::Vector3d sigma_acc_bias = {1e-4, 1e-4, 1e-4};  // [m/s²/√s]
+  Eigen::Vector3d sigma_gyr_bias = {1e-5, 1e-5, 1e-5};  // [rad/s/√s]
 
-  // Initial covariance std
-  double init_pos_std      = 10.0;  // [m]
-  double init_vel_std      = 1.0;   // [m/s]
-  double init_att_std      = 0.5;   // [rad]
-  double init_acc_bias_std = 0.1;   // [m/s^2]
-  double init_gyr_bias_std = 0.01;  // [rad/s]
+  // Initial covariance (1σ std per axis)
+  Eigen::Vector3d init_pos_std      = {5.0, 5.0, 10.0};   // [m] horiz ~5 m, vert ~10 m (GNSS SPP)
+  Eigen::Vector3d init_vel_std      = {0.3, 0.3, 0.3};    // [m/s] stationary start assumed
+  Eigen::Vector3d init_att_std      = {0.1, 0.1, M_PI};   // [rad] roll/pitch ~6°, yaw unknown (π)
+  Eigen::Vector3d init_acc_bias_std = {0.1, 0.1, 0.1};    // [m/s²] ~10 mg
+  Eigen::Vector3d init_gyr_bias_std = {0.01, 0.01, 0.01}; // [rad/s] ~0.6°/s
 
   // GNSS update
   GnssUpdateMode gnss_update_mode = GnssUpdateMode::FIX_ONLY;
@@ -130,7 +130,8 @@ struct EkfConfig {
 
   // IMU initialization
   double init_imu_duration = 1.0;  // [s]
-  double init_yaw_deg = std::numeric_limits<double>::quiet_NaN();  // NaN = wait for Doppler heading
+  bool   use_init_yaw = true;      // true: init_yaw_deg used immediately; false: wait for Doppler
+  double init_yaw_deg = 0.0;       // [deg] initial yaw when use_init_yaw is true
 
   // Output configuration
   std::string output_reference_frame = "imu";  // "gnss" or "imu"
@@ -151,7 +152,7 @@ struct GnssSnapshot {
 
   // Raw GNSS data
   double tow = std::numeric_limits<double>::quiet_NaN();
-  uint16_t week = 0;
+  uint32_t week = 0;
   uint8_t status = 0;
   uint8_t num_sats = 0;
   float gdop = 0.0f, pdop = 0.0f, hdop = 0.0f, vdop = 0.0f;

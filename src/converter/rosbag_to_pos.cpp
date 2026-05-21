@@ -39,7 +39,7 @@ using gnss_converter_io::normalizeBagUri;
 
 struct Args {
   std::string bag_uri;
-  std::string topic = "/gnss/nmea_solution";
+  std::string topic = "/gnss/solution";
   std::string out_path;
   std::string program_name = "rosbag_to_pos";
   bool with_velocity = false;
@@ -170,7 +170,7 @@ static bool writeEpoch(FILE* fp, const GnssSolution& m, bool with_velocity) {
 static void printUsage(FILE* out) {
   std::fprintf(out,
     "Usage: rosbag_to_pos --bag <bag_dir_or_db3> "
-    "[--out <out.pos>] [--topic /gnss/nmea_solution] [--vel] [--pgm <name>] "
+    "[--out <out.pos>] [--topic /gnss/solution] [--vel] [--pgm <name>] "
     "[--help] [--version]\n");
 }
 

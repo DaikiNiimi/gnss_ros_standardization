@@ -177,6 +177,8 @@ private:
 
   cv::Rect btn_mode_rect_;
   cv::Rect btn_clear_rect_;
+  cv::Rect btn_zoom_out_rect_;
+  cv::Rect btn_zoom_in_rect_;
 
   // ── Style Constants ──
   static constexpr int FONT_TITLE = cv::FONT_HERSHEY_DUPLEX;
@@ -256,8 +258,8 @@ private:
     }
     // Clamp
     if (zoom_level_ > 10) zoom_level_ = 10;
-    if (zoom_level_ < -5) zoom_level_ = -5;
-    
+    if (zoom_level_ < -7) zoom_level_ = -7;
+
     RCLCPP_INFO(this->get_logger(), "Zoom Level (Wheel): %d", zoom_level_);
     this->set_parameter(rclcpp::Parameter("zoom_level", zoom_level_));
     renderLoop(false);
@@ -270,9 +272,6 @@ private:
     cv::Rect pos_roi(0, mid_y, mid_x, mid_y);
 
     if (pos_roi.contains(cv::Point(x, y))) {
-      cv::Rect btn_zoom_out(pos_roi.x + pos_roi.width - 65, pos_roi.y + 4, 20, 16);
-      cv::Rect btn_zoom_in (pos_roi.x + pos_roi.width - 35, pos_roi.y + 4, 20, 16);
-
       if (btn_clear_rect_.area() > 0 && btn_clear_rect_.contains(cv::Point(x, y))) {
         clearHistory();
         renderLoop(false);
@@ -283,13 +282,18 @@ private:
         renderLoop(false);
         return;
       }
-      if (btn_zoom_out.contains(cv::Point(x, y))) {
+      bool zoom_changed = false;
+      if (btn_zoom_out_rect_.area() > 0 && btn_zoom_out_rect_.contains(cv::Point(x, y))) {
         zoom_level_--;
-      } else if (btn_zoom_in.contains(cv::Point(x, y))) {
+        zoom_changed = true;
+      } else if (btn_zoom_in_rect_.area() > 0 && btn_zoom_in_rect_.contains(cv::Point(x, y))) {
         zoom_level_++;
+        zoom_changed = true;
       }
+      if (!zoom_changed) return;
+
       if (zoom_level_ > 10) zoom_level_ = 10;
-      if (zoom_level_ < -5) zoom_level_ = -5;
+      if (zoom_level_ < -7) zoom_level_ = -7;
 
       RCLCPP_INFO(this->get_logger(), "Zoom Level (Click): %d", zoom_level_);
       this->set_parameter(rclcpp::Parameter("zoom_level", zoom_level_));
@@ -985,8 +989,10 @@ private:
       cv::Rect btn_zoom_out(roi.x + roi.width - 100, roi.y + 4, 20, 16);
       cv::Rect btn_zoom_in (roi.x + roi.width - 75,  roi.y + 4, 20, 16);
       cv::Rect btn_clear   (roi.x + roi.width - 45,  roi.y + 4, 30, 16);
-      btn_mode_rect_  = btn_mode;
-      btn_clear_rect_ = btn_clear;
+      btn_mode_rect_     = btn_mode;
+      btn_clear_rect_    = btn_clear;
+      btn_zoom_out_rect_ = btn_zoom_out;
+      btn_zoom_in_rect_  = btn_zoom_in;
 
       cv::rectangle(img, btn_mode,     cv::Scalar(200,200,200), -1);
       cv::rectangle(img, btn_zoom_out, cv::Scalar(200,200,200), -1);

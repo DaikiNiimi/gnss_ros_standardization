@@ -10,6 +10,7 @@
 
 #include <sensor_msgs/msg/imu.hpp>
 
+#include "gnss_ros_standardization/decoder_common.hpp"
 #include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
@@ -24,22 +25,7 @@ namespace gnss_ros_standardization {
 namespace {
 
 constexpr auto kTimerInterval  = 10ms;
-constexpr size_t kNmeaMaxLineLen = 256;
-
-// SBF ExtSensorMeas (ID 4050) sub-block layout (SBLength = 28):
-//   Source(u1) SensorModel(u1) Type(u1) ObsInfo(u1) X(f8) Y(f8) Z(f8)
-// Type carries a full 3-vector (Type 0 = accel 3-axis, Type 1 = gyro 3-axis).
-constexpr int ESM_OFFSET_N          = 6;
-constexpr int ESM_OFFSET_SB_LENGTH  = 7;
-constexpr int ESM_OFFSET_SUBBLOCKS  = 8;
-constexpr int ESM_SB_OFFSET_TYPE    = 2;
-constexpr int ESM_SB_OFFSET_X       = 4;
-constexpr int ESM_SB_OFFSET_Y       = 12;
-constexpr int ESM_SB_OFFSET_Z       = 20;
-constexpr int ESM_SB_MIN_LEN        = 28;
-constexpr int ESM_MIN_BODY_LEN      = 8;
-constexpr uint8_t ESM_TYPE_ACCEL    = 0;   // Accelerations [m/s²]
-constexpr uint8_t ESM_TYPE_GYRO     = 1;   // Angular rates [rad/s]
+constexpr double kPvtWatchdogTimeoutSec = 1.5;
 
 }  // namespace
 
@@ -137,6 +123,8 @@ class SbfDriverNode : public rclcpp::Node {
 
   void initializeParameters() {
     declare_parameter<std::string>("stream_path",          config_.stream_path);
+    // frame_id: ROS TF frame name attached to the GNSS antenna phase center.
+    // Default "gnss_link" — override in launch to integrate with vehicle TF tree.
     declare_parameter<std::string>("frame_id",             config_.frame_id);
     declare_parameter<int>        ("publish_rate",         config_.publish_rate);
     declare_parameter<std::string>("receiver_port",        config_.receiver_port);
@@ -182,6 +170,7 @@ class SbfDriverNode : public rclcpp::Node {
     config_.stream_path          = get_parameter("stream_path").as_string();
     config_.frame_id             = get_parameter("frame_id").as_string();
     config_.publish_rate         = get_parameter("publish_rate").as_int();
+    gnss_utils::validatePublishRate(config_.publish_rate, /*fallback=*/1, get_logger());
     config_.receiver_port        = get_parameter("receiver_port").as_string();
     config_.configure_on_startup = get_parameter("configure_on_startup").as_bool();
 
@@ -388,6 +377,27 @@ class SbfDriverNode : public rclcpp::Node {
 
     const std::string interval_str = sbf::getIntervalString(config_.publish_rate);
 
+    // --- NMEA output (Stream2, same physical port) ---
+    // Send NMEA setup FIRST while the port is quiet. If SBF were enabled
+    // first, its binary stream would saturate the port and bury the `sno`
+    // ACK (and empirically appears to prevent NMEA from routing at all).
+    std::vector<std::string> nmea_sentences;
+    if (config_.enable_nmea_gga) nmea_sentences.push_back("GGA");
+    if (config_.enable_nmea_rmc) nmea_sentences.push_back("RMC");
+    if (config_.enable_nmea_gsa) nmea_sentences.push_back("GSA");
+    if (config_.enable_nmea_gst) nmea_sentences.push_back("GST");
+
+    if (!nmea_sentences.empty()) {
+      std::string nmea_list = nmea_sentences[0];
+      for (size_t i = 1; i < nmea_sentences.size(); ++i) nmea_list += "+" + nmea_sentences[i];
+
+      // Use Stream2 for NMEA on the same physical port (sec1 = 1 Hz)
+      std::string nmea_cmd = std::string(sbf::CMD_SET_NMEA_OUTPUT) + ", Stream2, " +
+                             config_.receiver_port + ", " + nmea_list + ", sec1";
+      RCLCPP_INFO(get_logger(), "NMEA config: %s", nmea_cmd.c_str());
+      sendCommand(nmea_cmd);
+    }
+
     // --- SBF output (Stream1) ---
     std::vector<std::string> blocks;
     if (config_.enable_meas_epoch)       blocks.push_back(sbf::BLOCK_MEASEPOCH);
@@ -426,32 +436,22 @@ class SbfDriverNode : public rclcpp::Node {
       RCLCPP_WARN(get_logger(), "No SBF blocks enabled.");
     }
 
-    // --- NMEA output (Stream2, same physical port) ---
-    std::vector<std::string> nmea_sentences;
-    if (config_.enable_nmea_gga) nmea_sentences.push_back("GGA");
-    if (config_.enable_nmea_rmc) nmea_sentences.push_back("RMC");
-    if (config_.enable_nmea_gsa) nmea_sentences.push_back("GSA");
-    if (config_.enable_nmea_gst) nmea_sentences.push_back("GST");
-
-    if (!nmea_sentences.empty()) {
-      std::string nmea_list = nmea_sentences[0];
-      for (size_t i = 1; i < nmea_sentences.size(); ++i) nmea_list += "+" + nmea_sentences[i];
-
-      // Use Stream2 for NMEA on the same physical port (sec1 = 1 Hz)
-      std::string nmea_cmd = std::string(sbf::CMD_SET_NMEA_OUTPUT) + ", Stream2, " +
-                             config_.receiver_port + ", " + nmea_list + ", sec1";
-      RCLCPP_INFO(get_logger(), "NMEA config: %s", nmea_cmd.c_str());
-      sendCommand(nmea_cmd);
-    }
-
     std::this_thread::sleep_for(200ms);
 
-    // Read and log receiver response
+    // Read and log receiver response. SBF binary may already be flowing on
+    // the same port — filter to printable ASCII (+CR/LF) so the log line
+    // isn't shredded by SBF sync bytes.
     uint8_t resp[1024];
     int n = strread(&stream_, resp, sizeof(resp) - 1);
     if (n > 0) {
-      resp[n] = '\0';
-      std::string response(reinterpret_cast<char*>(resp));
+      std::string response;
+      response.reserve(n);
+      for (int i = 0; i < n; ++i) {
+        const uint8_t b = resp[i];
+        if ((b >= 0x20 && b < 0x7F) || b == '\r' || b == '\n') {
+          response.push_back(static_cast<char>(b));
+        }
+      }
       RCLCPP_INFO(get_logger(), "Receiver response: %s", response.c_str());
 
       if (response.find("invalid") != std::string::npos ||
@@ -487,20 +487,30 @@ class SbfDriverNode : public rclcpp::Node {
       // Parallel SBF mini-framer for AttEuler
       parseSbfByte(byte);
 
-      // NMEA sentences (interleaved with SBF binary)
-      if (byte == '$') {
-        nmea_buffer_.clear();
-        nmea_buffer_.push_back(byte);
+      // NMEA sentences (interleaved with SBF binary).
+      // SBF blocks ALSO start with '$' (sync1=0x24, sync2=0x40 = "$@"), so a
+      // plain `byte=='$'` capture-start would fire on every SBF block and
+      // shred any in-progress NMEA capture. Peek one byte after '$' and only
+      // start NMEA capture when the next byte is an ASCII uppercase letter
+      // (NMEA talker IDs: $GN, $GP, $IN, $BD, $QZ, …).
+      if (nmea_pending_dollar_) {
+        nmea_pending_dollar_ = false;
+        if (byte == sbf::SBF_SYNC2) {
+          // SBF block start — leave nmea_buffer_ untouched.
+        } else if (std::isupper(static_cast<unsigned char>(byte))) {
+          nmea_buffer_.clear();
+          nmea_buffer_.push_back('$');
+          nmea_buffer_.push_back(byte);
+        }
+        // Non-printable byte after '$' → noise; ignore.
+      } else if (byte == '$') {
+        nmea_pending_dollar_ = true;
       } else if (!nmea_buffer_.empty()) {
         nmea_buffer_.push_back(byte);
         if (byte == '\n') {
-          std::string trimmed = nmea_buffer_;
-          while (!trimmed.empty() && (trimmed.back() == '\n' || trimmed.back() == '\r')) {
-            trimmed.pop_back();
-          }
           handleNmeaSentence(nmea_buffer_);
           nmea_buffer_.clear();
-        } else if (nmea_buffer_.size() > kNmeaMaxLineLen) {
+        } else if (nmea_buffer_.size() > sbf::NMEA_MAX_LINE_LEN) {
           nmea_buffer_.clear();
         }
       }
@@ -515,7 +525,7 @@ class SbfDriverNode : public rclcpp::Node {
   // (no further blocks arriving), flush whatever we have.
   void maybeWatchdogFlushPendingPvt() {
     if (pending_.blocks_received == 0) return;
-    if ((now() - pending_.last_update).seconds() > 1.5) {
+    if ((now() - pending_.last_update).seconds() > kPvtWatchdogTimeoutSec) {
       flushPending();
     }
   }
@@ -604,6 +614,10 @@ class SbfDriverNode : public rclcpp::Node {
   uint32_t prev_pvt_tow_ms_{UINT32_MAX};
   uint32_t pvt_period_ms_{0};
 
+  // Last published (week, tow) — used by the orphan guard (see mergeBlock).
+  uint32_t last_flushed_week_{0};
+  uint32_t last_flushed_tow_ms_{UINT32_MAX};
+
   enum class SolutionSource { BINARY, NMEA };
 
   void initPendingExpectedMasks() {
@@ -625,6 +639,18 @@ class SbfDriverNode : public rclcpp::Node {
     const uint8_t* p = sbf_body_.data();
     const size_t   len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
+
+    // Orphan guard: this block belongs to the most-recently-flushed epoch
+    // (eager-flush picked up an incomplete view). Skip to suppress a duplicate
+    // publish at the next TOW boundary. Week falls back to TOW-only when
+    // pending_.buf.time_week is 0 (no PVT seen yet this epoch).
+    const uint32_t week = pending_.buf.time_week;
+    if (last_flushed_tow_ms_ != UINT32_MAX &&
+        tow == last_flushed_tow_ms_ &&
+        (week == 0 || week == last_flushed_week_)) {
+      return;
+    }
+
     if (tow != pending_.tow_ms && pending_.blocks_received != 0) {
       flushPending();  // TOW boundary — flush previous epoch
     }
@@ -709,7 +735,7 @@ class SbfDriverNode : public rclcpp::Node {
     }
 
     // Derive ECEF position/velocity from LLH/ENU using current solution's LLH.
-    finalizeBinarySolutionGeometry(binary_solution_);
+    decoder_common::finalizeBinarySolutionGeometry(binary_solution_);
 
     // Covariance bidirectional derivation (NovAtel pattern):
     //   - ENU only (Geo) → derive ECEF by rotation at current lat/lon
@@ -773,6 +799,11 @@ class SbfDriverNode : public rclcpp::Node {
 
     ever_received_binary_ = true;
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+
+    // Record this epoch as the last published (week, tow) for orphan-guard.
+    last_flushed_week_   = binary_solution_.time_week;
+    last_flushed_tow_ms_ = pending_.tow_ms;
+
     pending_ = {};
     pending_.blocks_expected = expected;
   }
@@ -789,25 +820,15 @@ class SbfDriverNode : public rclcpp::Node {
       "check receiver firmware/configuration.");
   }
 
-  static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
-    double llh[3] = {s.latitude * D2R, s.longitude * D2R, s.altitude};
-    double ecef[3] = {0};
-    pos2ecef(llh, ecef);
-    s.pos_ecef.x = ecef[0]; s.pos_ecef.y = ecef[1]; s.pos_ecef.z = ecef[2];
-    double vel_e[3] = {s.vel_enu.x, s.vel_enu.y, s.vel_enu.z};
-    double vel_ec[3] = {0};
-    enu2ecef(llh, vel_e, vel_ec);
-    s.vel_ecef.x = vel_ec[0]; s.vel_ecef.y = vel_ec[1]; s.vel_ecef.z = vel_ec[2];
-  }
 
   void handleExtSensorMeas() {
     if (!config_.enable_ext_sensor_meas) return;
-    if (static_cast<int>(sbf_body_.size()) < ESM_MIN_BODY_LEN) return;
+    if (static_cast<int>(sbf_body_.size()) < sbf::ext_sensor_meas::MIN_BODY_LEN) return;
 
-    const uint8_t n         = sbf_body_[ESM_OFFSET_N];
-    const uint8_t sb_length = sbf_body_[ESM_OFFSET_SB_LENGTH];
-    if (sb_length < ESM_SB_MIN_LEN) return;
-    if (static_cast<int>(sbf_body_.size()) < ESM_MIN_BODY_LEN + n * sb_length) return;
+    const uint8_t n         = sbf_body_[sbf::ext_sensor_meas::OFFSET_N];
+    const uint8_t sb_length = sbf_body_[sbf::ext_sensor_meas::OFFSET_SB_LENGTH];
+    if (sb_length < sbf::ext_sensor_meas::SB_MIN_LEN) return;
+    if (static_cast<int>(sbf_body_.size()) < sbf::ext_sensor_meas::MIN_BODY_LEN + n * sb_length) return;
 
     uint32_t tow_ms = 0;
     std::memcpy(&tow_ms, sbf_body_.data(), 4);
@@ -819,18 +840,18 @@ class SbfDriverNode : public rclcpp::Node {
     std::memcpy(&esm_wnc_, sbf_body_.data() + 4, 2);
 
     for (uint8_t i = 0; i < n; ++i) {
-      const int base = ESM_OFFSET_SUBBLOCKS + i * sb_length;
-      const uint8_t type = sbf_body_[base + ESM_SB_OFFSET_TYPE];
+      const int base = sbf::ext_sensor_meas::OFFSET_SUBBLOCKS + i * sb_length;
+      const uint8_t type = sbf_body_[base + sbf::ext_sensor_meas::SB_OFFSET_TYPE];
 
-      if (type == ESM_TYPE_ACCEL) {
-        std::memcpy(&esm_accel_[0], sbf_body_.data() + base + ESM_SB_OFFSET_X, 8);
-        std::memcpy(&esm_accel_[1], sbf_body_.data() + base + ESM_SB_OFFSET_Y, 8);
-        std::memcpy(&esm_accel_[2], sbf_body_.data() + base + ESM_SB_OFFSET_Z, 8);
+      if (type == sbf::ext_sensor_meas::TYPE_ACCEL) {
+        std::memcpy(&esm_accel_[0], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_X, 8);
+        std::memcpy(&esm_accel_[1], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_Y, 8);
+        std::memcpy(&esm_accel_[2], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_Z, 8);
         esm_has_accel_ = true;
-      } else if (type == ESM_TYPE_GYRO) {
-        std::memcpy(&esm_gyro_[0], sbf_body_.data() + base + ESM_SB_OFFSET_X, 8);
-        std::memcpy(&esm_gyro_[1], sbf_body_.data() + base + ESM_SB_OFFSET_Y, 8);
-        std::memcpy(&esm_gyro_[2], sbf_body_.data() + base + ESM_SB_OFFSET_Z, 8);
+      } else if (type == sbf::ext_sensor_meas::TYPE_GYRO) {
+        std::memcpy(&esm_gyro_[0], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_X, 8);
+        std::memcpy(&esm_gyro_[1], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_Y, 8);
+        std::memcpy(&esm_gyro_[2], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_Z, 8);
         esm_has_gyro_ = true;
       }
     }
@@ -887,25 +908,15 @@ class SbfDriverNode : public rclcpp::Node {
   // ============================================================================
 
   void handleNmeaSentence(const std::string& sentence) {
-    if (nmea_parser_.parseSentence(sentence, nmea_solution_)) {
-      if (source_ == SolutionSource::NMEA) {
-        publishSolution(nmea_solution_);
-      }
-    } else {
-      std::string head = sentence.substr(0, std::min<size_t>(sentence.size(), 6));
-      RCLCPP_DEBUG(get_logger(), "NMEA parseSentence=false (head='%s')", head.c_str());
-    }
+    if (!nmea_parser_.parseSentence(sentence, nmea_solution_)) return;
+    if (source_ == SolutionSource::NMEA) publishSolution(nmea_solution_);
   }
 
   void handleDecodeResult(int result) {
     switch (result) {
       case 1:  publishObservations(); break;
       case 2:  publishEphemerides();  break;
-      default:
-        if (result > 0) {
-          RCLCPP_DEBUG(get_logger(), "SBF message type %d (not handled)", result);
-        }
-        break;
+      default: break;
     }
   }
 
@@ -922,7 +933,7 @@ class SbfDriverNode : public rclcpp::Node {
     if (source_ == SolutionSource::BINARY) {
       const double tow = time2gpst(raw_.time, &week_for_stamp);
       if (raw_.time.time != 0 && week_for_stamp > 0) {
-        sol.time_week = static_cast<uint16_t>(week_for_stamp);
+        sol.time_week = static_cast<uint32_t>(week_for_stamp);
         sol.time_tow  = tow;
       } else {
         week_for_stamp = 0;
@@ -984,12 +995,21 @@ class SbfDriverNode : public rclcpp::Node {
       sol.vel_enu.y = vel_enu[1];
       sol.vel_enu.z = vel_enu[2];
     } else {
-      sol.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
-      sol.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
-      sol.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
-      sol.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
-      sol.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
-      sol.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
+      const double nan_d = std::numeric_limits<double>::quiet_NaN();
+      sol.pos_enu.x = nan_d;
+      sol.pos_enu.y = nan_d;
+      sol.pos_enu.z = nan_d;
+      sol.vel_enu.x = nan_d;
+      sol.vel_enu.y = nan_d;
+      sol.vel_enu.z = nan_d;
+      // Symmetric ECEF velocity wipe — if vel_enu is going to NaN, vel_ecef
+      // must follow. Defends against a parser leaving a stale vel_ecef (e.g.,
+      // NMEA RMC with empty speed/course coerced to 0 by parseDouble).
+      // pos_ecef is intentionally NOT wiped: GGA can carry a usable position
+      // even at STATUS_NONE on some receivers.
+      sol.vel_ecef.x = nan_d;
+      sol.vel_ecef.y = nan_d;
+      sol.vel_ecef.z = nan_d;
     }
 
     sol_pub_->publish(sol);
@@ -1014,14 +1034,14 @@ class SbfDriverNode : public rclcpp::Node {
     msg.header.stamp    = (config_.use_gps_timestamp && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
     msg.header.frame_id = config_.frame_id;
-    msg.week = static_cast<uint16_t>(week);
+    msg.week = static_cast<uint32_t>(week);
     msg.tow  = tow;
 
-    SatelliteCount sat_count{};
+    decoder_common::SatelliteCount sat_count{};
     for (int i = 0; i < raw_.obs.n; ++i) {
       const obsd_t& obs = raw_.obs.data[i];
-      countSatellite(obs.sat, sat_count);
-      appendObservations(obs, msg.observations);
+      decoder_common::countSatellite(obs.sat, sat_count);
+      decoder_common::appendObservations(obs, msg.observations);
     }
 
     obs_pub_->publish(msg);
@@ -1031,13 +1051,6 @@ class SbfDriverNode : public rclcpp::Node {
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
       sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
-  }
-
-  void appendObservations(const obsd_t& obs, std::vector<msg::GnssObservation>& observations) {
-    for (int freq = 0; freq < NFREQ + NEXOBS; ++freq) {
-      if (obs.P[freq] == 0.0 && obs.L[freq] == 0.0 && obs.D[freq] == 0.0 && obs.SNR[freq] == 0) continue;
-      observations.push_back(gnss_utils::obsToMsg(obs, freq));
-    }
   }
 
   // ============================================================================
@@ -1071,21 +1084,6 @@ class SbfDriverNode : public rclcpp::Node {
       msg.gnss_ephemeris.size(), msg.glonass_ephemeris.size());
   }
 
-  // ============================================================================
-  // Helper Types
-  // ============================================================================
-
-  struct SatelliteCount { int gps=0, glo=0, gal=0, qzs=0, bds=0, irn=0, sbs=0, unknown=0; };
-
-  static void countSatellite(int sat, SatelliteCount& c) {
-    int prn = 0;
-    switch (satsys(sat, &prn)) {
-      case SYS_GPS: ++c.gps; break; case SYS_GLO: ++c.glo; break;
-      case SYS_GAL: ++c.gal; break; case SYS_QZS: ++c.qzs; break;
-      case SYS_CMP: ++c.bds; break; case SYS_IRN: ++c.irn; break;
-      case SYS_SBS: ++c.sbs; break; default: ++c.unknown; break;
-    }
-  }
 
   // ============================================================================
   // Member Variables
@@ -1122,6 +1120,7 @@ class SbfDriverNode : public rclcpp::Node {
   // NMEA parsing state
   gnss_utils::NmeaParser nmea_parser_;
   std::string            nmea_buffer_;
+  bool                   nmea_pending_dollar_{false};  // saw '$', awaiting next byte to disambiguate from SBF '$@'
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
   SolutionSource         source_{SolutionSource::NMEA};

@@ -17,6 +17,8 @@
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 using namespace std::chrono_literals;
+#include "gnss_ros_standardization/decoder_common.hpp"
+
 namespace ubx = gnss_ros_standardization::ubx;
 namespace ins = gnss_ros_standardization::ins_utils;
 
@@ -27,15 +29,8 @@ namespace {
 /// Timer interval for stream polling
 constexpr auto kTimerInterval = 10ms;
 
-// UBX-ESF-INS payload offsets (version 0, 36 bytes)
-constexpr int ESF_INS_OFFSET_BITFIELD  = 0;
-constexpr int ESF_INS_OFFSET_XANGRATE  = 12;
-constexpr int ESF_INS_OFFSET_YANGRATE  = 16;
-constexpr int ESF_INS_OFFSET_ZANGRATE  = 20;
-constexpr int ESF_INS_OFFSET_XACCEL    = 24;
-constexpr int ESF_INS_OFFSET_YACCEL    = 28;
-constexpr int ESF_INS_OFFSET_ZACCEL    = 32;
-constexpr int ESF_INS_MIN_LEN          = 36;
+/// Watchdog timeout for incomplete PVT epochs (seconds)
+constexpr double kPvtWatchdogTimeoutSec = 1.5;
 
 }  // namespace
 
@@ -139,6 +134,8 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<bool>("configure_on_startup", config_.configure_on_startup);
     declare_parameter<std::string>("dynamic_model", config_.dynamic_model);
     declare_parameter<std::string>("generation", config_.generation);
+    // frame_id: ROS TF frame name attached to the GNSS antenna phase center.
+    // Default "gnss_link" — override in launch to integrate with vehicle TF tree.
     declare_parameter<std::string>("frame_id", config_.frame_id);
     
     // Message settings
@@ -235,10 +232,7 @@ class UbxDriverNode : public rclcpp::Node {
     is_usb_connection_ = (config_.stream_path.find("ttyACM") != std::string::npos);
 
     // Validate rate
-    if (config_.rate_hz < 1 || config_.rate_hz > 20) {
-      RCLCPP_WARN(get_logger(), "rate_hz out of range [1-20], clamping to 5");
-      config_.rate_hz = 5;
-    }
+    gnss_utils::validatePublishRate(config_.rate_hz, /*fallback=*/5, get_logger());
     
     // Log configuration
     RCLCPP_INFO(get_logger(), "Configuration loaded:");
@@ -1114,20 +1108,20 @@ class UbxDriverNode : public rclcpp::Node {
   }
 
   void handleEsfIns() {
-    if (static_cast<int>(ubx_frm_payload_.size()) < ESF_INS_MIN_LEN) return;
+    if (static_cast<int>(ubx_frm_payload_.size()) < ubx::esf_ins::MIN_LEN) return;
 
     uint32_t bitfield0 = 0;
-    std::memcpy(&bitfield0, ubx_frm_payload_.data() + ESF_INS_OFFSET_BITFIELD, 4);
+    std::memcpy(&bitfield0, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_BITFIELD, 4);
     const bool ang_valid = (bitfield0 & (0x7u << 8))  == (0x7u << 8);
     const bool acc_valid = (bitfield0 & (0x7u << 11)) == (0x7u << 11);
 
     int32_t xAng = 0, yAng = 0, zAng = 0, xAcc = 0, yAcc = 0, zAcc = 0;
-    std::memcpy(&xAng, ubx_frm_payload_.data() + ESF_INS_OFFSET_XANGRATE, 4);
-    std::memcpy(&yAng, ubx_frm_payload_.data() + ESF_INS_OFFSET_YANGRATE, 4);
-    std::memcpy(&zAng, ubx_frm_payload_.data() + ESF_INS_OFFSET_ZANGRATE, 4);
-    std::memcpy(&xAcc, ubx_frm_payload_.data() + ESF_INS_OFFSET_XACCEL,   4);
-    std::memcpy(&yAcc, ubx_frm_payload_.data() + ESF_INS_OFFSET_YACCEL,   4);
-    std::memcpy(&zAcc, ubx_frm_payload_.data() + ESF_INS_OFFSET_ZACCEL,   4);
+    std::memcpy(&xAng, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_XANGRATE, 4);
+    std::memcpy(&yAng, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_YANGRATE, 4);
+    std::memcpy(&zAng, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_ZANGRATE, 4);
+    std::memcpy(&xAcc, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_XACCEL,   4);
+    std::memcpy(&yAcc, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_YACCEL,   4);
+    std::memcpy(&zAcc, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_ZACCEL,   4);
 
     const double deg2rad = M_PI / 180.0;
 
@@ -1188,7 +1182,7 @@ class UbxDriverNode : public rclcpp::Node {
           if (byte == '\n') {
             handleNmeaSentence(nmea_buffer_);
             nmea_buffer_.clear();
-          } else if (nmea_buffer_.size() > 256) { // Safeguard against missing newlines
+          } else if (nmea_buffer_.size() > ubx::NMEA_MAX_LINE_LEN) { // Safeguard against missing newlines
             nmea_buffer_.clear();
           }
         }
@@ -1243,6 +1237,11 @@ class UbxDriverNode : public rclcpp::Node {
   uint32_t prev_pvt_tow_ms_{UINT32_MAX};
   uint32_t pvt_period_ms_{0};
 
+  // Last published (week, tow) for orphan guard. NAV-* bodies carry only TOW;
+  // we compare against the week stored at the previous publishSolution call.
+  uint32_t last_flushed_week_{0};
+  uint32_t last_flushed_tow_ms_{UINT32_MAX};
+
   void initPendingExpectedMask() {
     pending_.cov_expected =
         (config_.enable_nav_cov     ? COV_BIT_COV     : uint8_t{0}) |
@@ -1262,9 +1261,20 @@ class UbxDriverNode : public rclcpp::Node {
            pending_.cov_received == pending_.cov_expected;
   }
 
+  // Orphan guard: TOW matches the most-recently-flushed epoch. NAV-* bodies
+  // don't carry a week field, so fall back to TOW-only when the current pending
+  // has no PVT yet (buf.time_week is 0). Returns true → caller should skip.
+  bool isLateOrphan(uint32_t tow) const {
+    const uint32_t week = pending_.buf.time_week;
+    return last_flushed_tow_ms_ != UINT32_MAX &&
+           tow == last_flushed_tow_ms_ &&
+           (week == 0 || week == last_flushed_week_);
+  }
+
   void handleNavPvt() {
     if (!config_.enable_nav_pvt) return;
     const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (isLateOrphan(tow)) return;
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
     }
@@ -1304,6 +1314,7 @@ class UbxDriverNode : public rclcpp::Node {
   void handleNavCov() {
     if (!config_.enable_nav_cov) return;
     const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (isLateOrphan(tow)) return;
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
     }
@@ -1320,6 +1331,7 @@ class UbxDriverNode : public rclcpp::Node {
   void handleNavPosEcef() {
     if (!config_.enable_nav_posecef) return;
     const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (isLateOrphan(tow)) return;
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
     }
@@ -1337,6 +1349,7 @@ class UbxDriverNode : public rclcpp::Node {
   void handleNavVelEcef() {
     if (!config_.enable_nav_velecef) return;
     const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (isLateOrphan(tow)) return;
     if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
     }
@@ -1364,7 +1377,7 @@ class UbxDriverNode : public rclcpp::Node {
     binary_solution_ = pending_.buf;
 
     // Derive ECEF position/velocity from LLH/ENU using current solution's LLH.
-    finalizeBinarySolutionGeometry(binary_solution_);
+    decoder_common::finalizeBinarySolutionGeometry(binary_solution_);
 
     // Derive ECEF covariance from ENU covariance via current-LLH rotation.
     const double lat = binary_solution_.latitude  * D2R;
@@ -1403,13 +1416,18 @@ class UbxDriverNode : public rclcpp::Node {
                                       pending_.tow_ms, pvt_period_ms_);
 
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+
+    // Record this epoch as the last published (week, tow) for orphan-guard.
+    last_flushed_week_   = binary_solution_.time_week;
+    last_flushed_tow_ms_ = pending_.tow_ms;
+
     pending_ = {};
     pending_.cov_expected = expected;
   }
 
   void maybeWatchdogFlushPendingPvt() {
     if (!pending_.has_pvt && !pending_.cov_received) return;
-    if ((now() - pending_.last_update).seconds() > 1.5) {
+    if ((now() - pending_.last_update).seconds() > kPvtWatchdogTimeoutSec) {
       flushPending();
     }
   }
@@ -1425,17 +1443,6 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
       "Solution source locked to BINARY (NAV-PVT) but no PVT received yet — "
       "check receiver firmware/configuration.");
-  }
-
-  static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
-    double llh[3] = {s.latitude * D2R, s.longitude * D2R, s.altitude};
-    double ecef[3] = {0};
-    pos2ecef(llh, ecef);
-    s.pos_ecef.x = ecef[0]; s.pos_ecef.y = ecef[1]; s.pos_ecef.z = ecef[2];
-    double vel_e[3] = {s.vel_enu.x, s.vel_enu.y, s.vel_enu.z};
-    double vel_ec[3] = {0};
-    enu2ecef(llh, vel_e, vel_ec);
-    s.vel_ecef.x = vel_ec[0]; s.vel_ecef.y = vel_ec[1]; s.vel_ecef.z = vel_ec[2];
   }
 
   // ============================================================================
@@ -1456,7 +1463,7 @@ class UbxDriverNode : public rclcpp::Node {
     if (source_ == SolutionSource::BINARY) {
       const double tow = time2gpst(raw_.time, &week_for_stamp);
       if (week_for_stamp > 0) {
-        sol.time_week = static_cast<uint16_t>(week_for_stamp);
+        sol.time_week = static_cast<uint32_t>(week_for_stamp);
         sol.time_tow  = tow;
       }
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
@@ -1558,33 +1565,24 @@ class UbxDriverNode : public rclcpp::Node {
     msg.header.stamp    = (config_.use_gps_timestamp && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
     msg.header.frame_id = config_.frame_id;
-    msg.week = static_cast<uint16_t>(week);
+    msg.week = static_cast<uint32_t>(week);
     msg.tow = tow;
 
-    SatelliteCount sat_count{};
+    decoder_common::SatelliteCount sat_count{};
 
     for (int i = 0; i < raw_.obs.n; ++i) {
       const obsd_t& obs = raw_.obs.data[i];
-      countSatellite(obs.sat, sat_count);
-      appendObservations(obs, msg.observations);
+      decoder_common::countSatellite(obs.sat, sat_count);
+      decoder_common::appendObservations(obs, msg.observations);
     }
 
     obs_pub_->publish(msg);
 
-    RCLCPP_INFO(
-        get_logger(),
-        "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
-        week, tow, msg.observations.size(), sat_count.gps, sat_count.glo, sat_count.gal,
-        sat_count.qzs, sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
-  }
-
-  void appendObservations(const obsd_t& obs, std::vector<msg::GnssObservation>& observations) {
-    for (int freq = 0; freq < NFREQ + NEXOBS; ++freq) {
-      if (obs.P[freq] == 0.0 && obs.L[freq] == 0.0 && obs.D[freq] == 0.0 && obs.SNR[freq] == 0) {
-        continue;
-      }
-      observations.push_back(gnss_utils::obsToMsg(obs, freq));
-    }
+    RCLCPP_INFO(get_logger(),
+      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+      week, tow, msg.observations.size(),
+      sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
+      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
   // ============================================================================
@@ -1614,27 +1612,6 @@ class UbxDriverNode : public rclcpp::Node {
       m.gnss_ephemeris.size(), m.glonass_ephemeris.size());
   }
 
-  // ============================================================================
-  // Helper Types
-  // ============================================================================
-
-  struct SatelliteCount {
-    int gps = 0, glo = 0, gal = 0, qzs = 0, bds = 0, irn = 0, sbs = 0, unknown = 0;
-  };
-
-  static void countSatellite(int sat, SatelliteCount& count) {
-    int prn = 0;
-    switch (satsys(sat, &prn)) {
-      case SYS_GPS: ++count.gps; break;
-      case SYS_GLO: ++count.glo; break;
-      case SYS_GAL: ++count.gal; break;
-      case SYS_QZS: ++count.qzs; break;
-      case SYS_CMP: ++count.bds; break;
-      case SYS_IRN: ++count.irn; break;
-      case SYS_SBS: ++count.sbs; break;
-      default: ++count.unknown; break;
-    }
-  }
 
   // ============================================================================
   // Member Variables

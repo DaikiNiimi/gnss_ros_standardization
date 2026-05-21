@@ -4,7 +4,7 @@
 string system        # constellation: "G"=GPS, "E"=Galileo, "J"=QZSS, "C"=BeiDou, "I"=NavIC, "S"=SBAS
 uint16 prn           # satellite PRN number within the constellation
 string satid         # combined ID string, e.g. "G01", "E05"
-uint16 week          # GPS week number of toe
+uint32 week          # GPS week number of toe (uint32 to cover RTKLIB's extended week counter past the 1024-week rollover)
 
 uint8  sva           # SV accuracy index (URA index)
 uint16 code          # GPS: L2 code flag; Galileo: signal source

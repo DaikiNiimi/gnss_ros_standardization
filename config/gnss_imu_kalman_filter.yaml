@@ -28,18 +28,18 @@ gnss_imu_kalman_filter:
     # EKF Parameters
     # ==========================================================================
     ekf:
-      # Process noise spectral densities
-      sigma_acc: 0.1            # Accelerometer noise [m/s^2/√Hz]
-      sigma_gyr: 0.01           # Gyroscope noise [rad/s/√Hz]
-      sigma_acc_bias: 1.0e-4    # Accelerometer bias random walk [m/s^2/√Hz]
-      sigma_gyr_bias: 1.0e-5    # Gyroscope bias random walk [rad/s/√Hz]
+      # Process noise spectral densities [x, y, z]
+      sigma_acc:      [0.3, 0.3, 0.3]               # [m/s²/√Hz] generic MEMS + vibration margin
+      sigma_gyr:      [0.01, 0.01, 0.01]            # [rad/s/√Hz] generic MEMS (~0.6 °/s/√Hz)
+      sigma_acc_bias: [1.0e-4, 1.0e-4, 1.0e-4]     # [m/s²/√s]
+      sigma_gyr_bias: [1.0e-5, 1.0e-5, 1.0e-5]     # [rad/s/√s]
 
-      # Initial state covariance (1-sigma standard deviations)
-      init_pos_std: 10.0        # Position [m]
-      init_vel_std: 1.0         # Velocity [m/s]
-      init_att_std: 0.5         # Attitude [rad]
-      init_acc_bias_std: 0.1    # Accelerometer bias [m/s^2]
-      init_gyr_bias_std: 0.01   # Gyroscope bias [rad/s]
+      # Initial state covariance (1σ standard deviations) [x, y, z]
+      init_pos_std:      [5.0, 5.0, 10.0]           # [m] horiz ~5 m, vert ~10 m (GNSS SPP)
+      init_vel_std:      [0.3, 0.3, 0.3]            # [m/s] stationary start assumed
+      init_att_std:      [0.1, 0.1, 3.14159]        # [rad] roll/pitch ~6°, yaw = π (fully unknown)
+      init_acc_bias_std: [0.1, 0.1, 0.1]            # [m/s²] ~10 mg
+      init_gyr_bias_std: [0.01, 0.01, 0.01]         # [rad/s] ~0.6°/s
 
     # ==========================================================================
     # GNSS Observation Update Mode
@@ -67,9 +67,11 @@ gnss_imu_kalman_filter:
     # ==========================================================================
     init_imu_duration: 1.0  # Duration to average initial IMU data for Roll/Pitch estimation [s]
 
-    # Initial yaw angle [deg]. If set, EKF can initialize while stationary without waiting for
-    # Doppler heading. Comment out or omit to use Doppler heading (default behavior).
-    init_yaw_deg: 0.0
+    # Initial yaw configuration
+    # use_init_yaw: true  → init_yaw_deg is used immediately (stationary start; default)
+    # use_init_yaw: false → wait for Doppler velocity heading before EKF initializes
+    use_init_yaw: true
+    init_yaw_deg: 0.0   # [deg] initial yaw estimate when use_init_yaw is true
 
     # ==========================================================================
     # State Update Thresholds

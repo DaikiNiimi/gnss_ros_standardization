@@ -129,7 +129,7 @@ ros2 run gnss_ros_standardization rosbag_to_pos \
 | Flag | Description |
 |---|---|
 | `--bag` | Bag directory or `.db3` file |
-| `--topic` | `GnssSolution` topic to read (default `/gnss/nmea_solution`) |
+| `--topic` | `GnssSolution` topic to read (default `/gnss/solution`) |
 | `--out` | Output `.pos` path (default: auto-derived as `<bag-stem>.pos`) |
 | `--vel` | Append velocity columns (vn/ve/vu and their std-devs) |
 | `--pgm` | `% program` header value (default `rosbag_to_pos`) |

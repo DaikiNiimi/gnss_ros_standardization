@@ -72,7 +72,7 @@ rclcpp::Time gpstToUtcRosTime(gtime_t t_gpst) {
 }
 
 bool nmeaUtcToGpsTime(int year, int month, int day, double hms,
-                      uint16_t& week, double& tow) {
+                      uint32_t& week, double& tow) {
   if (year <= 0 || month <= 0 || day <= 0) return false;
   const int hh = static_cast<int>(hms / 10000.0);
   const int mm = static_cast<int>((hms - hh * 10000) / 100.0);
@@ -86,7 +86,7 @@ bool nmeaUtcToGpsTime(int year, int month, int day, double hms,
   int w = 0;
   const double t = time2gpst(t_gpst, &w);
   if (w <= 0) return false;
-  week = static_cast<uint16_t>(w);
+  week = static_cast<uint32_t>(w);
   tow = t;
   return true;
 }
@@ -208,7 +208,7 @@ gnss_ros_standardization::msg::GnssEphemeris ephToMsg(const eph_t& e) {
 
   int w = 0;
   m.toe  = time2gpst(e.toe, &w);
-  m.week = static_cast<uint16_t>(w);
+  m.week = static_cast<uint32_t>(w);
   m.toc  = time2gpst(e.toc, &w);
   m.ttr  = time2gpst(e.ttr, &w);
   m.toes = e.toes;
@@ -270,7 +270,7 @@ gnss_ros_standardization::msg::GlonassEphemeris gephToMsg(const geph_t& g) {
   int w = 0;
   
   m.toe  = time2gpst(utc2gpst(g.toe), &w);
-  m.week = static_cast<uint16_t>(w);
+  m.week = static_cast<uint32_t>(w);
   m.tof  = time2gpst(utc2gpst(g.tof), &w);
 
   m.pos = { g.pos[0], g.pos[1], g.pos[2] };
@@ -425,7 +425,7 @@ Dops calculateDops(const ssat_t* ssat, int ns_max, double el_min_rad) {
 
 void applyDopWithStaleness(gnss_ros_standardization::msg::GnssSolution& sol,
                            const DopCache& cache,
-                           uint16_t pvt_week,
+                           uint32_t pvt_week,
                            uint32_t pvt_tow_ms,
                            uint32_t pvt_period_ms) {
   constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
@@ -447,6 +447,18 @@ void applyDopWithStaleness(gnss_ros_standardization::msg::GnssSolution& sol,
   sol.pdop = cache.pdop;
   sol.hdop = cache.hdop;
   sol.vdop = cache.vdop;
+}
+
+bool validatePublishRate(int& rate_hz, int fallback, const rclcpp::Logger& logger) {
+  constexpr int kMin = 1;
+  constexpr int kMax = 20;
+  if (rate_hz < kMin || rate_hz > kMax) {
+    RCLCPP_WARN(logger, "publish/measurement rate %d Hz out of range [%d, %d] — clamping to %d Hz",
+                rate_hz, kMin, kMax, fallback);
+    rate_hz = fallback;
+    return false;
+  }
+  return true;
 }
 
 // ---- Lightweight NMEA Parser ----
@@ -632,8 +644,15 @@ bool NmeaParser::applyGga(const std::vector<std::string>& fields) {
       year  = tm_utc.tm_year + 1900;
       month = tm_utc.tm_mon + 1;
       day   = tm_utc.tm_mday;
-      RCLCPP_WARN_ONCE(rclcpp::get_logger("nmea_parser"),
-        "NMEA date unavailable (no RMC seen); falling back to system UTC date for GPSTime assembly");
+      // Receivers typically emit GGA before RMC within each epoch, so the very
+      // first GGA always arrives with has_date_cache_=false even when RMC will
+      // follow microseconds later. Defer the warning until at least one full
+      // epoch boundary has been observed AND no RMC was ever in any epoch — at
+      // that point we are confident the receiver isn't configured to emit RMC.
+      if (learned_ && !(sentences_ever_seen_ & SENT_RMC)) {
+        RCLCPP_WARN_ONCE(rclcpp::get_logger("nmea_parser"),
+          "NMEA date unavailable (no RMC seen); falling back to system UTC date for GPSTime assembly");
+      }
     } else {
       // Day-rollover guard: cached date may be one day stale until the next RMC.
       const double cached_hms = cached_last_hms_;
@@ -649,7 +668,7 @@ bool NmeaParser::applyGga(const std::vector<std::string>& fields) {
       }
     }
     cached_last_hms_ = hms;
-    uint16_t week = 0;
+    uint32_t week = 0;
     double   tow  = 0.0;
     if (nmeaUtcToGpsTime(year, month, day, hms, week, tow)) {
       pgga_week_ = week;
@@ -676,7 +695,9 @@ bool NmeaParser::applyGga(const std::vector<std::string>& fields) {
   pgga_alt_      = msl_alt + geoid_sep;
   pgga_num_sats_ = static_cast<uint8_t>(parseInteger(fields[7]));
   pgga_age_diff_ = parseDouble(fields[13]);
-  pgga_hdop_     = static_cast<float>(parseDouble(fields[8]));
+  pgga_hdop_     = fields[8].empty()
+                     ? std::numeric_limits<float>::quiet_NaN()
+                     : static_cast<float>(parseDouble(fields[8]));
   pgga_present_  = true;
 
   // Learn epoch period from successive GGA sod (used by sameEpoch tolerance).
@@ -711,6 +732,16 @@ bool NmeaParser::applyRmc(const std::vector<std::string>& fields) {
   // not whether the speed/course values exist — many receivers report V even
   // when valid speed/course are present (e.g. fixed-position mode). Downstream
   // consumers can gate on solution.status (driven by GGA quality) instead.
+  //
+  // Empty fields = values genuinely absent (common with status='V'):
+  // parseDouble("") coerces to 0.0, which downstream cannot distinguish from a
+  // true zero velocity. That leaves vel_ecef=0 while publishSolution later
+  // forces vel_enu to NaN under has_fix=false — an asymmetry. Treat empty as
+  // missing here so flushPending's else-branch writes NaN to both ENU and ECEF.
+  if (fields[7].empty() || fields[8].empty()) {
+    prmc_present_ = false;
+    return false;
+  }
   const double speed_kt   = parseDouble(fields[7]);
   const double course_deg = parseDouble(fields[8]);
   if (!std::isfinite(speed_kt) || !std::isfinite(course_deg)) {

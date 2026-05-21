@@ -441,7 +441,7 @@ class RtkPositionNode : public rclcpp::Node {
 
     int week = 0;
     sol_msg->time_tow = time2gpst(rtk_.sol.time, &week);
-    sol_msg->time_week = static_cast<uint16_t>(week);
+    sol_msg->time_week = static_cast<uint32_t>(week);
     sol_msg->solution_source = grs::GnssSolution::SOLUTION_SOURCE_COMPUTED;
 
     sol_msg->status = rtk_.sol.stat;

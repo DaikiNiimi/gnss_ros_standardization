@@ -5,6 +5,8 @@
 
 ## Overview
 
+![Repository overview and scope](fig/overview.svg)
+
 **gnss_ros_standardization** is an open-source ROS 2 package that standardizes
 GNSS raw-data handling for robotics and autonomous systems.
 
@@ -16,6 +18,16 @@ fusion frameworks can be developed once and reused everywhere.
 - Perform real-time SPP / RTK with a unified message contract
 - Support diverse GNSS receivers and formats (u-blox, Septentrio, NovAtel, RTCM3)
 - Reproduce experiments across platforms with consistent interfaces
+
+## Demo
+
+Real-time RTK positioning produced by this package:
+
+![RTK positioning demo](fig/rtk_demo.gif)
+
+Hardware and ROS 2 node configuration used in the demo above:
+
+![Demo setup](fig/demo_setup.svg)
 
 ## Scope
 

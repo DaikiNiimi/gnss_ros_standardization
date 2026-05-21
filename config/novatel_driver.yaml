@@ -50,9 +50,9 @@ novatel_driver_node:
       # Position / Velocity — Binary PVT, preferred over NMEA when enabled.
       # When bestpos=true, the solution source is locked to BINARY at startup;
       # /gnss/nmea_solution carries BESTPOS-derived fix with full sigma values.
-      bestpos: false        # BESTPOSB → LLH + sigma → pos_enu_cov diagonal
-      bestvel: false        # BESTVELB → vel_enu (refresh between BESTPOS messages)
-      psrdop: false         # PSRDOPB  (ID 174) → gdop/pdop/hdop/vdop
+      bestpos: false         # BESTPOSB → LLH + sigma → pos_enu_cov diagonal
+      bestvel: false         # BESTVELB → vel_enu (refresh between BESTPOS messages)
+      psrdop: false          # PSRDOPB  (ID 174) → gdop/pdop/hdop/vdop
       # Enable only when velocity covariance (vel_cov_ecef / vel_enu_cov) is
       # needed downstream. Position/velocity values are not changed by BESTXYZ
       # (BESTPOS/BESTVEL remain the source); BESTXYZ contributes native ECEF
@@ -66,21 +66,21 @@ novatel_driver_node:
       gal_ephem: true       # GALEPHEMERISB / GALINAVEPHEMERISB
       bds_ephem: true       # BDSEPHEMERISB
       qzs_ephem: true       # QZSSEPHEMERISB
-      navic_ephem: false    # NAVICEPHEMERISB
+      navic_ephem: true     # NAVICEPHEMERISB
 
       ionutc: false          # IONUTCB/GALIONOB/QZSSIONUTCB
 
       # NMEA output (used for GnssSolution topic via NmeaParser, ONTIME 1 = 1 Hz)
-      nmea_gpgga: true       # GPGGA: position, fix quality, satellites, HDOP, altitude
-      nmea_gprmc: true       # GPRMC: velocity (speed/course)
-      nmea_gpgsa: true       # GPGSA: DOP values
-      nmea_gpgst: true       # GPGST: position standard deviations (for covariance)
+      nmea_gpgga: true      # GPGGA: position, fix quality, satellites, HDOP, altitude
+      nmea_gprmc: true      # GPRMC: velocity (speed/course)
+      nmea_gpgsa: true      # GPGSA: DOP values
+      nmea_gpgst: true      # GPGST: position standard deviations (for covariance)
 
       # IMU output (requires NovAtel receiver with IMU connection)
       # RAWIMUSX:    uncalibrated counts × IMU-type-specific scale → /gnss/imu/data_raw
       # CORRIMUDATA: SPAN-corrected delta-velocity / delta-angle    → /gnss/imu/data
       # CORRIMUDATA additionally requires SPAN (Synchronized Position Attitude Navigation).
-      rawimusx: true
+      rawimusx: false
       corrimudata: false
 
     # IMU scale override (applies when IMU type is unknown to novatel_imu_scales.hpp).

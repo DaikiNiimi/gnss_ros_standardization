@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>gnss_ros_standardization</name>
-  <version>0.1.0</version>
+  <version>1.0.0</version>
   <description>
     Standardization of GNSS raw data handling for ROS2 with MALIB core.
     Provides message definitions and tools (RTCM decoder, ROS bag -> RINEX converter).

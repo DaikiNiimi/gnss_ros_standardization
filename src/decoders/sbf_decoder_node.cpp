@@ -10,6 +10,7 @@
 
 #include <sensor_msgs/msg/imu.hpp>
 
+#include "gnss_ros_standardization/decoder_common.hpp"
 #include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
@@ -24,29 +25,7 @@ namespace gnss_ros_standardization {
 namespace {
 
 constexpr auto kTimerInterval  = 10ms;
-constexpr size_t kNmeaMaxLineLen = 256;
-
-// SBF ExtSensorMeas (ID 4050) body offsets
-// Body layout: TOW(4) WNc(2) N(1) SBLength(1) [N × ExtSensorMeasSub of size SBLength]
-//
-// ExtSensorMeasSub (SBLength = 28 bytes):
-//   Source(u1) SensorModel(u1) Type(u1) ObsInfo(u1) X(f8) Y(f8) Z(f8)
-//
-// IMPORTANT: Each Type is a 3-axis VECTOR (Type 0 = entire accel 3-vector,
-// Type 1 = entire gyro 3-vector). NOT one axis per Type as in some misreadings.
-constexpr int ESM_OFFSET_N          = 6;
-constexpr int ESM_OFFSET_SB_LENGTH  = 7;
-constexpr int ESM_OFFSET_SUBBLOCKS  = 8;
-constexpr int ESM_SB_OFFSET_TYPE    = 2;   // Type field
-constexpr int ESM_SB_OFFSET_X       = 4;   // float64 X-axis
-constexpr int ESM_SB_OFFSET_Y       = 12;  // float64 Y-axis
-constexpr int ESM_SB_OFFSET_Z       = 20;  // float64 Z-axis
-constexpr int ESM_SB_MIN_LEN        = 28;
-constexpr int ESM_MIN_BODY_LEN      = 8;
-
-// ExtSensorMeas Type values (each Type carries a full 3-vector)
-constexpr uint8_t ESM_TYPE_ACCEL    = 0;   // Accelerations [m/s²]
-constexpr uint8_t ESM_TYPE_GYRO     = 1;   // Angular rates [rad/s]
+constexpr double kPvtWatchdogTimeoutSec = 1.5;
 
 }  // namespace
 
@@ -82,6 +61,8 @@ class SbfDecoderNode : public rclcpp::Node {
 
   void initializeParameters() {
     declare_parameter<std::string>("stream_path", "serial:///dev/ttyUSB0:115200");
+    // frame_id: ROS TF frame name attached to the GNSS antenna phase center.
+    // Default "gnss_link" — override in launch to integrate with vehicle TF tree.
     declare_parameter<std::string>("frame_id", "gnss_link");
     declare_parameter<std::string>("observation_topic", "/gnss/observation");
     declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
@@ -209,16 +190,28 @@ class SbfDecoderNode : public rclcpp::Node {
       // Parallel SBF mini-framer for AttEuler
       parseSbfByte(byte);
 
-      // Feed NMEA text parser (SBF and NMEA are interleaved on the same stream)
-      if (byte == '$') {
-        nmea_buffer_.clear();
-        nmea_buffer_.push_back(byte);
+      // Feed NMEA text parser (SBF and NMEA are interleaved on the same stream).
+      // SBF blocks start with '$@' (sync1=0x24, sync2=0x40), so a plain
+      // `byte=='$'` capture-start would fire on every SBF block and shred any
+      // in-progress NMEA capture. Peek one byte after '$' and only start NMEA
+      // capture when followed by an ASCII uppercase letter (talker ID).
+      if (nmea_pending_dollar_) {
+        nmea_pending_dollar_ = false;
+        if (byte == sbf::SBF_SYNC2) {
+          // SBF block start — leave nmea_buffer_ untouched.
+        } else if (std::isupper(static_cast<unsigned char>(byte))) {
+          nmea_buffer_.clear();
+          nmea_buffer_.push_back('$');
+          nmea_buffer_.push_back(byte);
+        }
+      } else if (byte == '$') {
+        nmea_pending_dollar_ = true;
       } else if (!nmea_buffer_.empty()) {
         nmea_buffer_.push_back(byte);
         if (byte == '\n') {
           handleNmeaSentence(nmea_buffer_);
           nmea_buffer_.clear();
-        } else if (nmea_buffer_.size() > kNmeaMaxLineLen) {
+        } else if (nmea_buffer_.size() > sbf::NMEA_MAX_LINE_LEN) {
           nmea_buffer_.clear();
         }
       }
@@ -330,7 +323,7 @@ class SbfDecoderNode : public rclcpp::Node {
   // an incomplete view of this epoch, so we must not re-accumulate into pending_
   // (would cause an orphan duplicate publish at the next TOW boundary).
   // Still update blocks_ever_seen so the NEXT epoch waits for the full set.
-  uint16_t last_flushed_week_{0};
+  uint32_t last_flushed_week_{0};
   uint32_t last_flushed_tow_ms_{UINT32_MAX};
 
   // Solution source policy (grace-period detection):
@@ -388,7 +381,7 @@ class SbfDecoderNode : public rclcpp::Node {
     // parsers when they arrive in this epoch; if no PVT yet seen this epoch,
     // we fall back to TOW-only (week==0 sentinel) — safe because last_flushed_*
     // sentinel is also (0, UINT32_MAX).
-    const uint16_t week = pending_.buf.time_week;
+    const uint32_t week = pending_.buf.time_week;
     if (last_flushed_tow_ms_ != UINT32_MAX &&
         tow == last_flushed_tow_ms_ &&
         (week == 0 || week == last_flushed_week_)) {
@@ -461,7 +454,7 @@ class SbfDecoderNode : public rclcpp::Node {
       binary_solution_.longitude = llh[1] * kRad2Deg;
       binary_solution_.altitude  = llh[2];
     }
-    finalizeBinarySolutionGeometry(binary_solution_);
+    decoder_common::finalizeBinarySolutionGeometry(binary_solution_);
 
     // Covariance bidirectional derivation (NovAtel pattern):
     //   - ENU only → derive ECEF, ECEF only → derive ENU, both → no rotation.
@@ -531,31 +524,21 @@ class SbfDecoderNode : public rclcpp::Node {
     pending_.blocks_ever_seen = ever_seen;
   }
 
-  static void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
-    double llh[3] = {s.latitude * D2R, s.longitude * D2R, s.altitude};
-    double ecef[3] = {0};
-    pos2ecef(llh, ecef);
-    s.pos_ecef.x = ecef[0]; s.pos_ecef.y = ecef[1]; s.pos_ecef.z = ecef[2];
-    double vel_e[3] = {s.vel_enu.x, s.vel_enu.y, s.vel_enu.z};
-    double vel_ec[3] = {0};
-    enu2ecef(llh, vel_e, vel_ec);
-    s.vel_ecef.x = vel_ec[0]; s.vel_ecef.y = vel_ec[1]; s.vel_ecef.z = vel_ec[2];
-  }
 
   void maybeWatchdogFlushPendingPvt() {
     if (pending_.blocks_received == 0) return;
-    if ((now() - pending_.last_update).seconds() > 1.5) {
+    if ((now() - pending_.last_update).seconds() > kPvtWatchdogTimeoutSec) {
       flushPending();
     }
   }
 
   void handleExtSensorMeas() {
-    if (static_cast<int>(sbf_body_.size()) < ESM_MIN_BODY_LEN) return;
+    if (static_cast<int>(sbf_body_.size()) < sbf::ext_sensor_meas::MIN_BODY_LEN) return;
 
-    const uint8_t n         = sbf_body_[ESM_OFFSET_N];
-    const uint8_t sb_length = sbf_body_[ESM_OFFSET_SB_LENGTH];
-    if (sb_length < ESM_SB_MIN_LEN) return;
-    if (static_cast<int>(sbf_body_.size()) < ESM_MIN_BODY_LEN + n * sb_length) return;
+    const uint8_t n         = sbf_body_[sbf::ext_sensor_meas::OFFSET_N];
+    const uint8_t sb_length = sbf_body_[sbf::ext_sensor_meas::OFFSET_SB_LENGTH];
+    if (sb_length < sbf::ext_sensor_meas::SB_MIN_LEN) return;
+    if (static_cast<int>(sbf_body_.size()) < sbf::ext_sensor_meas::MIN_BODY_LEN + n * sb_length) return;
 
     // TOW [ms] to detect epoch boundaries
     uint32_t tow_ms = 0;
@@ -570,18 +553,18 @@ class SbfDecoderNode : public rclcpp::Node {
 
     // Parse sub-blocks: each Type carries a full 3-vector
     for (uint8_t i = 0; i < n; ++i) {
-      const int base = ESM_OFFSET_SUBBLOCKS + i * sb_length;
-      const uint8_t type = sbf_body_[base + ESM_SB_OFFSET_TYPE];
+      const int base = sbf::ext_sensor_meas::OFFSET_SUBBLOCKS + i * sb_length;
+      const uint8_t type = sbf_body_[base + sbf::ext_sensor_meas::SB_OFFSET_TYPE];
 
-      if (type == ESM_TYPE_ACCEL) {
-        std::memcpy(&esm_accel_[0], sbf_body_.data() + base + ESM_SB_OFFSET_X, 8);
-        std::memcpy(&esm_accel_[1], sbf_body_.data() + base + ESM_SB_OFFSET_Y, 8);
-        std::memcpy(&esm_accel_[2], sbf_body_.data() + base + ESM_SB_OFFSET_Z, 8);
+      if (type == sbf::ext_sensor_meas::TYPE_ACCEL) {
+        std::memcpy(&esm_accel_[0], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_X, 8);
+        std::memcpy(&esm_accel_[1], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_Y, 8);
+        std::memcpy(&esm_accel_[2], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_Z, 8);
         esm_has_accel_ = true;
-      } else if (type == ESM_TYPE_GYRO) {
-        std::memcpy(&esm_gyro_[0], sbf_body_.data() + base + ESM_SB_OFFSET_X, 8);
-        std::memcpy(&esm_gyro_[1], sbf_body_.data() + base + ESM_SB_OFFSET_Y, 8);
-        std::memcpy(&esm_gyro_[2], sbf_body_.data() + base + ESM_SB_OFFSET_Z, 8);
+      } else if (type == sbf::ext_sensor_meas::TYPE_GYRO) {
+        std::memcpy(&esm_gyro_[0], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_X, 8);
+        std::memcpy(&esm_gyro_[1], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_Y, 8);
+        std::memcpy(&esm_gyro_[2], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_Z, 8);
         esm_has_gyro_ = true;
       }
     }
@@ -663,7 +646,7 @@ class SbfDecoderNode : public rclcpp::Node {
     if (source_ == SolutionSource::BINARY) {
       const double tow = time2gpst(raw_.time, &week_for_stamp);
       if (raw_.time.time != 0 && week_for_stamp > 0) {
-        sol.time_week = static_cast<uint16_t>(week_for_stamp);
+        sol.time_week = static_cast<uint32_t>(week_for_stamp);
         sol.time_tow  = tow;
       } else {
         week_for_stamp = 0;
@@ -751,30 +734,23 @@ class SbfDecoderNode : public rclcpp::Node {
     msg.header.stamp    = (use_gps_timestamp_ && week > 0)
                           ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
     msg.header.frame_id = frame_id_;
-    msg.week = static_cast<uint16_t>(week);
+    msg.week = static_cast<uint32_t>(week);
     msg.tow  = tow;
 
-    SatelliteCount sat_count{};
+    decoder_common::SatelliteCount sat_count{};
     for (int i = 0; i < raw_.obs.n; ++i) {
       const obsd_t& obs = raw_.obs.data[i];
-      countSatellite(obs.sat, sat_count);
-      appendObservations(obs, msg.observations);
+      decoder_common::countSatellite(obs.sat, sat_count);
+      decoder_common::appendObservations(obs, msg.observations);
     }
 
     obs_pub_->publish(msg);
 
     RCLCPP_INFO(get_logger(),
-      "Published observations: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
       sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
-  }
-
-  void appendObservations(const obsd_t& obs, std::vector<msg::GnssObservation>& observations) {
-    for (int freq = 0; freq < NFREQ + NEXOBS; ++freq) {
-      if (obs.P[freq] == 0.0 && obs.L[freq] == 0.0 && obs.D[freq] == 0.0 && obs.SNR[freq] == 0) continue;
-      observations.push_back(gnss_utils::obsToMsg(obs, freq));
-    }
   }
 
   // ============================================================================
@@ -805,22 +781,6 @@ class SbfDecoderNode : public rclcpp::Node {
   }
 
   // ============================================================================
-  // Helper Types
-  // ============================================================================
-
-  struct SatelliteCount { int gps=0, glo=0, gal=0, qzs=0, bds=0, irn=0, sbs=0, unknown=0; };
-
-  static void countSatellite(int sat, SatelliteCount& c) {
-    int prn = 0;
-    switch (satsys(sat, &prn)) {
-      case SYS_GPS: ++c.gps; break; case SYS_GLO: ++c.glo; break;
-      case SYS_GAL: ++c.gal; break; case SYS_QZS: ++c.qzs; break;
-      case SYS_CMP: ++c.bds; break; case SYS_IRN: ++c.irn; break;
-      case SYS_SBS: ++c.sbs; break; default: ++c.unknown; break;
-    }
-  }
-
-  // ============================================================================
   // Member Variables
   // ============================================================================
 
@@ -840,6 +800,7 @@ class SbfDecoderNode : public rclcpp::Node {
   // NMEA parsing state
   gnss_utils::NmeaParser nmea_parser_;
   std::string            nmea_buffer_;
+  bool                   nmea_pending_dollar_{false};  // saw '$', awaiting next byte to disambiguate from SBF '$@'
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
   SolutionSource         source_{SolutionSource::UNDETERMINED};

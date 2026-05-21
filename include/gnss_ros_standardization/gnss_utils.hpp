@@ -6,6 +6,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <rclcpp/logger.hpp>
 #include <rclcpp/time.hpp>
 
 #include "gnss_ros_standardization/msg/gnss_ephemeris.hpp"
@@ -85,7 +86,7 @@ rclcpp::Time gpstToUtcRosTime(gtime_t t_gpst);
  * @return true on success.
  */
 bool nmeaUtcToGpsTime(int year, int month, int day, double hms,
-                      uint16_t& week, double& tow);
+                      uint32_t& week, double& tow);
 
 // ---- Math Helpers ----
 
@@ -129,7 +130,7 @@ Dops calculateDops(const ssat_t* ssat, int ns_max, double el_min_rad);
  */
 struct DopCache {
   bool     valid{false};
-  uint16_t week{0};   // 0 = receiver's DOP block has no week field (UBX NAV-DOP) → skip week check
+  uint32_t week{0};   // 0 = receiver's DOP block has no week field (UBX NAV-DOP) → skip week check
   uint32_t tow_ms{0};
   float    gdop{std::numeric_limits<float>::quiet_NaN()};
   float    pdop{std::numeric_limits<float>::quiet_NaN()};
@@ -156,9 +157,21 @@ struct DopCache {
  */
 void applyDopWithStaleness(gnss_ros_standardization::msg::GnssSolution& sol,
                            const DopCache& cache,
-                           uint16_t pvt_week,
+                           uint32_t pvt_week,
                            uint32_t pvt_tow_ms,
                            uint32_t pvt_period_ms);
+
+/**
+ * Validate a publish/measurement rate in Hz. Logs a WARN via the supplied
+ * rclcpp::Logger and clamps to `fallback` when the value is outside [1, 20].
+ * Centralized so all GNSS driver nodes use the same range and warning text.
+ *
+ * @param rate_hz   the requested rate (mutated in place)
+ * @param fallback  the clamp target on out-of-range input (default 5)
+ * @param logger    rclcpp::Logger to emit the warning on
+ * @return true if the input was in range; false if it was clamped
+ */
+bool validatePublishRate(int& rate_hz, int fallback, const rclcpp::Logger& logger);
 
 // ---- Lightweight NMEA Parser ----
 
@@ -227,7 +240,7 @@ class NmeaParser {
 
   // GGA fields (raw, applied to solution at flush time)
   bool   pgga_present_{false};
-  uint16_t pgga_week_{0};
+  uint32_t pgga_week_{0};
   double pgga_tow_{0.0};
   uint8_t pgga_status_{0};
   double pgga_lat_{0.0};

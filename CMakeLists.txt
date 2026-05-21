@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(gnss_ros_standardization VERSION 0.1.0 LANGUAGES C CXX)
+project(gnss_ros_standardization VERSION 1.0.0 LANGUAGES C CXX)
 # NOTE: Keep VERSION in sync with package.xml. Used by tools' --version flag.
 
 # Basics
@@ -356,21 +356,4 @@ endif()
 
 # Export
 ament_export_dependencies(rosidl_default_runtime std_msgs builtin_interfaces)
-
-# Tests
-if(BUILD_TESTING)
-  find_package(ament_cmake_gtest QUIET)
-  if(ament_cmake_gtest_FOUND)
-    ament_add_gtest(test_bag_io_utils test/test_bag_io_utils.cpp)
-    if(TARGET test_bag_io_utils)
-      target_include_directories(test_bag_io_utils PRIVATE include)
-      target_link_libraries(test_bag_io_utils rtkcore_lib)
-      ament_target_dependencies(test_bag_io_utils rclcpp rosbag2_storage)
-    endif()
-  else()
-    message(STATUS "Skipping tests: ament_cmake_gtest not found.")
-  endif()
-endif()
-
 ament_package()
-

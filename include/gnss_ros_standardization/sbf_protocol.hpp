@@ -26,10 +26,34 @@ namespace sbf {
 // =============================================================================
 
 constexpr size_t READ_BUFFER_SIZE = 4096;
+constexpr size_t NMEA_MAX_LINE_LEN = 256;
 
 // SBF sync bytes — every SBF block starts with these two bytes
 constexpr uint8_t SBF_SYNC1 = 0x24;  // '$'
 constexpr uint8_t SBF_SYNC2 = 0x40;  // '@'
+
+// =============================================================================
+// ExtSensorMeas (ID 4050) layout
+// Body: TOW(u4, ms) WNc(u2) N(u1) SBLength(u1) [N × ExtSensorMeasSub of size SBLength]
+//
+// ExtSensorMeasSub (SBLength = 28 bytes):
+//   Source(u1) SensorModel(u1) Type(u1) ObsInfo(u1) X(f8) Y(f8) Z(f8)
+//
+// Each Type carries a full 3-axis vector (Type 0 = accel 3-vector, Type 1 = gyro 3-vector).
+// =============================================================================
+namespace ext_sensor_meas {
+  constexpr int OFFSET_N          = 6;
+  constexpr int OFFSET_SB_LENGTH  = 7;
+  constexpr int OFFSET_SUBBLOCKS  = 8;
+  constexpr int SB_OFFSET_TYPE    = 2;   // Type field
+  constexpr int SB_OFFSET_X       = 4;   // float64 X-axis
+  constexpr int SB_OFFSET_Y       = 12;  // float64 Y-axis
+  constexpr int SB_OFFSET_Z       = 20;  // float64 Z-axis
+  constexpr int SB_MIN_LEN        = 28;
+  constexpr int MIN_BODY_LEN      = 8;
+  constexpr uint8_t TYPE_ACCEL    = 0;   // Accelerations [m/s²]
+  constexpr uint8_t TYPE_GYRO     = 1;   // Angular rates [rad/s]
+}
 
 // =============================================================================
 // SBF Block IDs

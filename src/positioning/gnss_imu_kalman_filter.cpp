@@ -238,25 +238,20 @@ void GnssImuKalmanFilter::loadParameters() {
   declare_parameter<std::string>("csv.state_log_filename", c.csv.state_log_filename);
   get_parameter("csv.state_log_filename", c.csv.state_log_filename);
 
-  declare_parameter<double>("ekf.sigma_acc", c.sigma_acc);
-  declare_parameter<double>("ekf.sigma_gyr", c.sigma_gyr);
-  declare_parameter<double>("ekf.sigma_acc_bias", c.sigma_acc_bias);
-  declare_parameter<double>("ekf.sigma_gyr_bias", c.sigma_gyr_bias);
-  get_parameter("ekf.sigma_acc", c.sigma_acc);
-  get_parameter("ekf.sigma_gyr", c.sigma_gyr);
-  get_parameter("ekf.sigma_acc_bias", c.sigma_acc_bias);
-  get_parameter("ekf.sigma_gyr_bias", c.sigma_gyr_bias);
-
-  declare_parameter<double>("ekf.init_pos_std", c.init_pos_std);
-  declare_parameter<double>("ekf.init_vel_std", c.init_vel_std);
-  declare_parameter<double>("ekf.init_att_std", c.init_att_std);
-  declare_parameter<double>("ekf.init_acc_bias_std", c.init_acc_bias_std);
-  declare_parameter<double>("ekf.init_gyr_bias_std", c.init_gyr_bias_std);
-  get_parameter("ekf.init_pos_std", c.init_pos_std);
-  get_parameter("ekf.init_vel_std", c.init_vel_std);
-  get_parameter("ekf.init_att_std", c.init_att_std);
-  get_parameter("ekf.init_acc_bias_std", c.init_acc_bias_std);
-  get_parameter("ekf.init_gyr_bias_std", c.init_gyr_bias_std);
+  auto load_vec3 = [&](const std::string& name, Eigen::Vector3d& v) {
+    declare_parameter<std::vector<double>>(name, {v(0), v(1), v(2)});
+    auto arr = get_parameter(name).as_double_array();
+    if (arr.size() >= 3) v = Eigen::Vector3d(arr[0], arr[1], arr[2]);
+  };
+  load_vec3("ekf.sigma_acc",          c.sigma_acc);
+  load_vec3("ekf.sigma_gyr",          c.sigma_gyr);
+  load_vec3("ekf.sigma_acc_bias",     c.sigma_acc_bias);
+  load_vec3("ekf.sigma_gyr_bias",     c.sigma_gyr_bias);
+  load_vec3("ekf.init_pos_std",       c.init_pos_std);
+  load_vec3("ekf.init_vel_std",       c.init_vel_std);
+  load_vec3("ekf.init_att_std",       c.init_att_std);
+  load_vec3("ekf.init_acc_bias_std",  c.init_acc_bias_std);
+  load_vec3("ekf.init_gyr_bias_std",  c.init_gyr_bias_std);
 
   declare_parameter<std::string>("gnss_update_mode", "fix_only");
   std::string mode_str;
@@ -283,7 +278,9 @@ void GnssImuKalmanFilter::loadParameters() {
   declare_parameter<double>("init_imu_duration", c.init_imu_duration);
   get_parameter("init_imu_duration", c.init_imu_duration);
 
-  declare_parameter<double>("init_yaw_deg", std::numeric_limits<double>::quiet_NaN());
+  declare_parameter<bool>("use_init_yaw", c.use_init_yaw);
+  get_parameter("use_init_yaw", c.use_init_yaw);
+  declare_parameter<double>("init_yaw_deg", c.init_yaw_deg);
   get_parameter("init_yaw_deg", c.init_yaw_deg);
   
   declare_parameter<std::string>("output_reference_frame", c.output_reference_frame);
@@ -344,14 +341,13 @@ bool GnssImuKalmanFilter::tryInitialize() {
     x_.segment<3>(IDX_POS) = p_gnss;
   }
 
-  // Initial covariance
+  // Initial covariance (per-axis)
   P_.setZero();
-  auto sq = [](double v) { return v * v; };
-  P_.diagonal().segment<3>(EIDX_POS).setConstant(sq(config_.init_pos_std));
-  P_.diagonal().segment<3>(EIDX_VEL).setConstant(sq(config_.init_vel_std));
-  P_.diagonal().segment<3>(EIDX_ATT).setConstant(sq(config_.init_att_std));
-  P_.diagonal().segment<3>(EIDX_AB).setConstant(sq(config_.init_acc_bias_std));
-  P_.diagonal().segment<3>(EIDX_GB).setConstant(sq(config_.init_gyr_bias_std));
+  P_.diagonal().segment<3>(EIDX_POS) = config_.init_pos_std.array().square();
+  P_.diagonal().segment<3>(EIDX_VEL) = config_.init_vel_std.array().square();
+  P_.diagonal().segment<3>(EIDX_ATT) = config_.init_att_std.array().square();
+  P_.diagonal().segment<3>(EIDX_AB)  = config_.init_acc_bias_std.array().square();
+  P_.diagonal().segment<3>(EIDX_GB)  = config_.init_gyr_bias_std.array().square();
 
   initialized_ = true;
   RCLCPP_INFO(get_logger(), "EKF initialized. roll=%.2f pitch=%.2f yaw=%.2f [deg]",
@@ -416,15 +412,19 @@ void GnssImuKalmanFilter::predict(const Eigen::Vector3d& acc_body, const Eigen::
   F.block<3,3>(EIDX_ATT, EIDX_ATT) = Eigen::Matrix3d::Identity() - sk_w * dt;
   F.block<3,3>(EIDX_ATT, EIDX_GB)  = -Eigen::Matrix3d::Identity() * dt;
 
-  // Process noise Q
+  // Process noise Q (per-axis)
   Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM> Q;
   Q.setZero();
   double dt2 = dt * dt;
-  Q.diagonal().segment<3>(EIDX_POS).setConstant(config_.sigma_acc * config_.sigma_acc * dt2 * dt2 * 0.25);
-  Q.diagonal().segment<3>(EIDX_VEL).setConstant(config_.sigma_acc * config_.sigma_acc * dt2);
-  Q.diagonal().segment<3>(EIDX_ATT).setConstant(config_.sigma_gyr * config_.sigma_gyr * dt2);
-  Q.diagonal().segment<3>(EIDX_AB).setConstant(config_.sigma_acc_bias * config_.sigma_acc_bias * dt);
-  Q.diagonal().segment<3>(EIDX_GB).setConstant(config_.sigma_gyr_bias * config_.sigma_gyr_bias * dt);
+  for (int i = 0; i < 3; ++i) {
+    double sa  = config_.sigma_acc(i),      sg  = config_.sigma_gyr(i);
+    double sab = config_.sigma_acc_bias(i), sgb = config_.sigma_gyr_bias(i);
+    Q(EIDX_POS+i, EIDX_POS+i) = sa*sa * dt2*dt2 * 0.25;
+    Q(EIDX_VEL+i, EIDX_VEL+i) = sa*sa * dt2;
+    Q(EIDX_ATT+i, EIDX_ATT+i) = sg*sg * dt2;
+    Q(EIDX_AB+i,  EIDX_AB+i)  = sab*sab * dt;
+    Q(EIDX_GB+i,  EIDX_GB+i)  = sgb*sgb * dt;
+  }
 
   P_ = F * P_ * F.transpose() + Q;
 }
@@ -708,9 +708,18 @@ void GnssImuKalmanFilter::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
     return;
   }
 
+  rclcpp::Time stamp = msg->header.stamp;
+
+  // Write sensors CSV and clear snapshots at IMU rate (before EKF initialized).
+  // Clearing here (not after predict) ensures each GNSS snapshot appears in exactly one row.
+  writeSensorsRow(stamp);
+  latest_gnss_.valid = false;
+  latest_gnss_.used_for_update = false;
+  latest_wheel_.valid = false;
+  latest_wheel_.used_for_update = false;
+
   if (!initialized_) return;
 
-  rclcpp::Time stamp = msg->header.stamp;
   if (has_prev_imu_stamp_) {
     double dt = (stamp - prev_imu_stamp_).seconds();
     predict(acc_body, gyr_body, dt);
@@ -718,16 +727,8 @@ void GnssImuKalmanFilter::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
   prev_imu_stamp_ = stamp;
   has_prev_imu_stamp_ = true;
 
-  // Write CSV rows and publish at IMU rate
-  writeSensorsRow(stamp);
   writeStateRow(stamp);
   publishSolution(stamp);
-
-  // After writing CSV, clear GNSS and wheel snapshots
-  latest_gnss_.valid = false;
-  latest_gnss_.used_for_update = false;
-  latest_wheel_.valid = false;
-  latest_wheel_.used_for_update = false;
 }
 
 // ============================================================
@@ -797,11 +798,11 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
     has_initial_gnss_ = true;
     RCLCPP_INFO(get_logger(), "Initial GNSS position acquired");
 
-    // Use configured initial yaw if provided, otherwise try Doppler heading
-    if (!has_initial_yaw_ && !std::isnan(config_.init_yaw_deg)) {
+    // Use configured initial yaw if use_init_yaw is true, otherwise try Doppler heading
+    if (!has_initial_yaw_ && config_.use_init_yaw) {
       init_yaw_ = config_.init_yaw_deg * M_PI / 180.0;
       has_initial_yaw_ = true;
-      RCLCPP_INFO(get_logger(), "Initial yaw from config init_yaw_deg: %.2f [deg]", config_.init_yaw_deg);
+      RCLCPP_INFO(get_logger(), "Initial yaw from config: %.2f [deg]", config_.init_yaw_deg);
     } else if (!has_initial_yaw_ && !std::isnan(snap.doppler_heading)) {
       init_yaw_ = snap.doppler_heading;
       has_initial_yaw_ = true;
@@ -1012,7 +1013,7 @@ void GnssImuKalmanFilter::writeSensorsHeader() {
 }
 
 void GnssImuKalmanFilter::writeSensorsRow(const rclcpp::Time& stamp) {
-  if (!sensors_csv_.is_open() || !initialized_) return;
+  if (!sensors_csv_.is_open()) return;
 
   sensors_csv_ << std::setprecision(15);
   sensors_csv_ << stamp.nanoseconds();
