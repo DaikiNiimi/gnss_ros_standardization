@@ -1,17 +1,21 @@
-/*
-MIT License
-
-Copyright (c) 2025 …
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the “Software”), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-(license text continues…)
-*/
+// SPDX-License-Identifier: MIT
+// Convert a ROS 2 bag containing GnssObservations/GnssEphemerides messages
+// to RINEX 3.0x observation and navigation files using RTKLIB writers.
+//
+// Design overview (two-pass):
+//   Pass 1 (Scanner): walk the bag once to collect the union of observation
+//                     types per GNSS system, the timespan, and GLONASS FCN
+//                     assignments. The RINEX OBS header must declare every
+//                     observation column up-front, so this scan determines
+//                     the header before any data lines are written.
+//   Pass 2 (Writers): walk the bag again. ObsWriter buffers epochs through a
+//                     short reorder window (3 s) to tolerate slight out-of-
+//                     order delivery from multiple publishers, then emits
+//                     RINEX OBS records. NavWriter deduplicates ephemerides
+//                     by (sat, IODE, IODC, code) before writing RINEX NAV.
+//
+// Reading the bag twice is the cost of producing a spec-conformant header;
+// rosbag2 readers don't allow rewinding without re-opening.
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -36,8 +40,15 @@ furnished to do so, subject to the following conditions:
 #include <cmath>
 #include <queue>
 #include <cstdint>
+#include <filesystem>
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
+#include "gnss_ros_standardization/bag_io_utils.hpp"
+
+using gnss_converter_io::deserializeRos;
+using gnss_converter_io::deriveOutputPath;
+using gnss_converter_io::normalizeBagUri;
+using gnss_converter_io::safeParentClimb;
 
 using gnss_ros_standardization::msg::GnssObservation;
 using gnss_ros_standardization::msg::GnssObservations;
@@ -47,22 +58,6 @@ using gnss_ros_standardization::msg::GnssEphemerides;
 
 
 /*============================== Utilities ==============================*/
-
-static inline std::string normalizeBagUri(std::string uri) {
-  while (!uri.empty() && (uri.back()=='/' || uri.back()=='\\')) uri.pop_back();
-  if (uri.size() >= 4) {
-    std::string tail = uri.substr(uri.size()-4);
-    for (auto &c: tail) c = (char)std::tolower((unsigned char)c);
-    if (tail == ".db3") {
-      auto pos = uri.find_last_of("/\\");
-      if (pos != std::string::npos) {
-        std::string dir = uri.substr(0, pos);
-        return dir.empty() ? "." : dir;
-      }
-    }
-  }
-  return uri;
-}
 
 static inline int maskFromSystemString(const std::string &s) {
   int m = 0;
@@ -166,11 +161,17 @@ struct Options {
   std::string out_obs_path = "";
   std::string out_nav_path = "";
   double rinex_version = 3.04;
-  std::string nav_systems = "GEJCSR";
+  std::string nav_systems = "GREJCIS";
   bool flush_immediately = true;
   std::string program_name = "rosbag_to_rinex";
-  std::string run_by = "user";
+  std::string run_by = "";   // empty → resolved from $USER/$LOGNAME at parseArgs
 };
+
+static inline std::string defaultRunBy() {
+  if (const char* u = std::getenv("USER");    u && *u) return u;
+  if (const char* l = std::getenv("LOGNAME"); l && *l) return l;
+  return "user";
+}
 
 struct TimeSpan { bool init=false; gtime_t first{}, last{}; };
 
@@ -190,7 +191,7 @@ public:
   explicit BagReader(const std::string &raw) {
     rosbag2_storage::StorageOptions sopt;
     sopt.uri = normalizeBagUri(raw);
-    sopt.storage_id = "sqlite3";
+    sopt.storage_id = "";  // auto-detect from metadata.yaml (sqlite3 / mcap)
     rosbag2_cpp::ConverterOptions copt;
     copt.input_serialization_format  = "";
     copt.output_serialization_format = "";
@@ -204,17 +205,6 @@ private:
   rosbag2_cpp::Reader reader_;
 };
 
-template<typename ROSMsg>
-static inline bool deserializeRos(const rosbag2_storage::SerializedBagMessage &in, ROSMsg &out) {
-  if (!in.serialized_data || in.serialized_data->buffer_length==0) return false;
-  try {
-    rclcpp::SerializedMessage smsg(*in.serialized_data);
-    rclcpp::Serialization<ROSMsg> ser;
-    ser.deserialize_message(&smsg, &out);
-    return true;
-  } catch (...) { return false; }
-}
-
 /*============================== Pass1: scan types & timespan ==============================*/
 
 static inline void addObsType(ObsTypeSet &set, char sys, const std::string &prefixed) {
@@ -225,7 +215,7 @@ static inline bool allowFreqDigit(char sys, char d){
   switch(sys){
     case 'G': return d=='1'||d=='2'||d=='5';
     case 'R': return d=='1'||d=='2';
-    case 'E': return d=='1'||d=='5'||d=='6'||d=='7'||d=='9';
+    case 'E': return d=='1'||d=='5'||d=='6'||d=='7';
     case 'J': return d=='1'||d=='2'||d=='5'||d=='6';
     case 'S': return d=='1'||d=='5'||d=='6';
     case 'C': return d=='1'||d=='2'||d=='5'||d=='6'||d=='7'||d=='8';
@@ -264,7 +254,7 @@ static inline int freqRank(char sys_ch, char digit) {
   switch (sys_ch) {
     case 'G': return digit=='1'?0: digit=='2'?1: digit=='5'?2: big;
     case 'R': return digit=='1'?0: digit=='2'?1: big;
-    case 'E': return digit=='1'?0: digit=='7'?1: digit=='5'?2: digit=='6'?3: digit=='9'?4: big;
+    case 'E': return digit=='1'?0: digit=='7'?1: digit=='5'?2: digit=='6'?3: big;
     case 'J': return digit=='1'?0: digit=='2'?1: digit=='5'?2: digit=='6'?3: big;
     case 'S': return digit=='1'?0: digit=='5'?1: digit=='6'?2: big;
     case 'C': return digit=='2'?0: digit=='7'?1: digit=='6'?2: digit=='1'?3: digit=='5'?4: digit=='8'?5: big;
@@ -321,18 +311,20 @@ class Scanner {
 public:
   explicit Scanner(const Options& opt): opt_(opt) {}
   std::tuple<ObsTypeSet, TimeSpan, GloFcnInfo> run() {
-    ObsTypeSet types; 
+    ObsTypeSet types;
     TimeSpan span;
     GloFcnInfo glo;
     BagReader reader(opt_.bag_uri);
+    rclcpp::Serialization<GnssObservations> ser_obs;
+    rclcpp::Serialization<GnssEphemerides> ser_nav;
 
     while (reader.has_next()) {
-      auto msg = reader.read_next(); 
+      auto msg = reader.read_next();
       if (!msg) break;
 
       if (msg->topic_name == opt_.topic_obs) {
         GnssObservations obs;
-        if (!deserializeRos(*msg, obs)) continue;
+        if (!deserializeRos(*msg, ser_obs, obs)) continue;
 
         gtime_t t = gpst2time((int)obs.week, obs.tow);
         if (!span.init) { span.init=true; span.first=t; span.last=t; }
@@ -352,7 +344,7 @@ public:
       }
       else if (msg->topic_name == opt_.topic_nav) {
         GnssEphemerides navs;
-        if (!deserializeRos(*msg, navs)) continue;
+        if (!deserializeRos(*msg, ser_nav, navs)) continue;
         for (const auto& ge : navs.glonass_ephemeris) {
           if (ge.prn >= 1 && ge.prn <= MAXPRNGLO) {
             int val = (int)ge.frq + 8;
@@ -404,12 +396,12 @@ static inline void sanitizeTobs(rnxopt_t& o){
     for (int j=0;j<o.nobs[i]; j++){
       const char* s = o.tobs[i][j];
       if (!s || !s[0]) continue;
-      char sig[3] = { s[1], s[2] };
+      char sig[3] = { s[1], s[2], 0 };
       if (obs2code(sig) == 0) continue;
       if (w!=j) {
-        char tmp_buf[4];
-        std::snprintf(tmp_buf, sizeof(tmp_buf), "%.3s", s);
-        std::memcpy(o.tobs[i][w], tmp_buf, 4);
+        char tmp[4];
+        std::memcpy(tmp, s, 4);          // break alias: s == o.tobs[i][j]
+        std::memcpy(o.tobs[i][w], tmp, sizeof(o.tobs[i][w]));
       }
       ++w;
     }
@@ -420,7 +412,7 @@ static inline void sanitizeTobs(rnxopt_t& o){
 
 /*============================== RINEX Option Builders ==============================*/
 
-static inline rnxopt_t makeObsRnxOpt(double ver, int navsys, const std::string& pgm, const std::string& runby) {
+static inline rnxopt_t makeRnxOpt(double ver, int navsys, const std::string& pgm, const std::string& runby) {
   rnxopt_t o; std::memset(&o, 0, sizeof(o));
   o.rnxver = static_cast<double>(std::lround(ver * 100.0));
   o.navsys = filterByBuildFlags(navsys);
@@ -428,23 +420,6 @@ static inline rnxopt_t makeObsRnxOpt(double ver, int navsys, const std::string& 
   std::snprintf(o.runby, sizeof(o.runby), "%s", runby.c_str());
   for (int i=0;i<7;i++) o.mask[i][0] = '\0';
   return o;
-}
-static inline rnxopt_t makeNavRnxOpt(double ver, int navsys, const std::string& pgm, const std::string& runby) {
-  rnxopt_t o; std::memset(&o, 0, sizeof(o));
-  o.rnxver = static_cast<double>(std::lround(ver * 100.0));
-  o.navsys = filterByBuildFlags(navsys);
-  std::snprintf(o.prog,  sizeof(o.prog),  "%s", pgm.c_str());
-  std::snprintf(o.runby, sizeof(o.runby), "%s", runby.c_str());
-  for (int i=0;i<7;i++) o.mask[i][0] = '\0';
-  return o;
-}
-
-static inline gtime_t adjweek(gtime_t ref, int week, double tow_sec) {
-  gtime_t t = gpst2time(week, tow_sec);
-  double dt = timediff(t, ref);
-  if (dt < -302400.0) t = timeadd(t, 604800.0);
-  else if (dt > 302400.0) t = timeadd(t, -604800.0);
-  return t;
 }
 
 /*============================== Writers ==============================*/
@@ -453,7 +428,7 @@ class NavWriter {
 public:
   NavWriter(const Options &opt, FILE *fp)
     : opt_(opt), fp_(fp),
-      rnx_(makeNavRnxOpt(opt.rinex_version, maskFromSystemString(opt.nav_systems),
+      rnx_(makeRnxOpt(opt.rinex_version, maskFromSystemString(opt.nav_systems),
                          opt.program_name, opt.run_by)) {
     std::memset(&nav_dummy_, 0, sizeof(nav_dummy_));
     if (outrnxnavh(fp_, &rnx_, &nav_dummy_) == 0) throw std::runtime_error("outrnxnavh failed");
@@ -463,23 +438,28 @@ public:
   void onEphemerides(const GnssEphemerides &batch) {
     auto sys_of_sat = [](int sat)->int{ int prn=0; return satsys(sat, &prn); };
 
-    for (const auto &m : batch.gnss_ephemeris) {
+    // Copy to sort so output is deterministic and matches RTKLIB
+    std::vector<gnss_ros_standardization::msg::GnssEphemeris> gnss_sorted = batch.gnss_ephemeris;
+    std::sort(gnss_sorted.begin(), gnss_sorted.end(), [](const auto& a, const auto& b) {
+      if (a.system != b.system) return a.system < b.system;
+      if (a.prn != b.prn) return a.prn < b.prn;
+      if (a.toe != b.toe) return a.toe < b.toe;
+      return a.ttr < b.ttr;
+    });
+
+    for (const auto &m : gnss_sorted) {
       eph_t e = gnss_utils::msgToEph(m);
       if (!e.sat) continue;
 
       int sys = sys_of_sat(e.sat);
       if ((sys & rnx_.navsys) == 0) continue;
       
-      // Override logic for RINEX writer specifics (flags etc)
-      e.flag = 0;
-      if (sys == SYS_QZS) {
-        if (e.code == 0) e.code = 2;
-        e.flag = 1;
-      }
-      else if (sys == SYS_GPS) {
-        if      (e.code == 1) e.flag = 0;
-        else if (e.code == 2) e.flag = 1;
-      }
+      // QZSS: RTKLIB's outrnxnavb assumes a non-zero L2 code value; preserve the
+      // decoder-provided code but coerce the legacy "0 → C/A" sentinel to 2 so
+      // outrnxnavb writes a valid RINEX code column. eph.flag and eph.fit now
+      // round-trip through the message (msg/GnssEphemeris.msg), so no override
+      // here — trust what the decoder put on the wire.
+      if (sys == SYS_QZS && e.code == 0) e.code = 2;
 
       KeyK key{e.sat, e.iode, e.iodc, e.code};
       if (seen_k_.insert(key).second) {
@@ -488,17 +468,15 @@ public:
     }
 
     if (rnx_.navsys & SYS_GLO) {
-      for (const auto &m : batch.glonass_ephemeris) {
-        geph_t g = gnss_utils::msgToGeph(m);
-        // Note: msgToGeph already converts TOF/TOE to UTC if we assumed so, but wait.
-        // In original ros2_rinex_writer.cpp:
-        // g.toe = gpst2utc(gpst2time((int)m.week, m.toe));
-        // g.tof = gpst2utc(gpst2time((int)m.week, m.tof));
-        //
-        // msgToGeph in gnss_utils does exactly this:
-        // g.toe = gpst2utc(gpst2time(w, m.toe));
-        // So we can use it directly.
+      std::vector<gnss_ros_standardization::msg::GlonassEphemeris> glo_sorted = batch.glonass_ephemeris;
+      std::sort(glo_sorted.begin(), glo_sorted.end(), [](const auto& a, const auto& b) {
+        if (a.prn != b.prn) return a.prn < b.prn;
+        if (a.toe != b.toe) return a.toe < b.toe;
+        return a.tof < b.tof;
+      });
 
+      for (const auto &m : glo_sorted) {
+        geph_t g = gnss_utils::msgToGeph(m);
         if (g.toe.time==0 || g.tof.time==0) continue;
 
         KeyR key{g.sat,g.iode};
@@ -538,7 +516,7 @@ class ObsWriter {
               const ObsTypeSet &types, const TimeSpan* span,
               const GloFcnInfo* glo_fcn_info)
       : opt_(opt), fp_(fp),
-        rnx_(makeObsRnxOpt(opt.rinex_version, maskFromSystemString(opt.nav_systems),
+        rnx_(makeRnxOpt(opt.rinex_version, maskFromSystemString(opt.nav_systems),
                            opt.program_name, opt.run_by)) {
   
       fillRnxTobs(rnx_, types);
@@ -561,7 +539,8 @@ class ObsWriter {
   
       std::memset(&nav_dummy_, 0, sizeof(nav_dummy_));
       if ((rnx_.navsys & SYS_GLO) && glo_fcn_info && glo_fcn_info->any) {
-        nav_dummy_.geph = (geph_t*)std::calloc(MAXPRNGLO, sizeof(geph_t));
+        geph_buf_.reset(new geph_t[MAXPRNGLO]());
+        nav_dummy_.geph = geph_buf_.get();
         for (int i = 0; i < MAXPRNGLO; ++i) if (glo_fcn_info->fcn_plus8[i] != 0) nav_dummy_.glo_fcn[i] = glo_fcn_info->fcn_plus8[i];
       }
   
@@ -569,9 +548,8 @@ class ObsWriter {
       std::fflush(fp_);
     }
   
-    ~ObsWriter() { 
-      std::cerr << "ObsWriter Destructor\n";
-      flushAll(); 
+    ~ObsWriter() {
+      flushAll();
     }
 
     void writeEpoch(const GnssObservations &m) {
@@ -627,8 +605,8 @@ class ObsWriter {
         if (o.p   != 0.0) it->second.P[k]   = o.p;
         if (o.l   != 0.0) it->second.L[k]   = o.l;
         if (o.d   != 0.0) it->second.D[k]   = o.d;
-        if (o.snr >  0.0) it->second.SNR[k] = o.snr * 1000.0f;
-        it->second.LLI[k] = static_cast<unsigned char>(o.lli);
+        if (o.snr >  0.0) it->second.SNR[k] = o.snr;
+        it->second.LLI[k] |= static_cast<unsigned char>(o.lli);
   
         it->second.time = t;
       }
@@ -645,7 +623,6 @@ class ObsWriter {
     }
   
     void flushAll() {
-      // std::cerr << "FlushAll: " << queue_.size() << " epochs.\n";
       while (!queue_.empty()) { auto e = queue_.top(); queue_.pop(); writeOne(e.msg, e.t); }
       std::fflush(fp_);
     }
@@ -655,7 +632,8 @@ class ObsWriter {
     FILE *fp_{nullptr};
     rnxopt_t rnx_{};
     nav_t nav_dummy_{};
-  
+    std::unique_ptr<geph_t[]> geph_buf_;
+
     const double reorder_window_sec_ = 3.0;
     bool have_last_ = false;
     gtime_t last_seen_{};
@@ -667,25 +645,41 @@ class ObsWriter {
 
 class App {
 public:
+  static void printUsage(FILE* out) {
+    std::fprintf(out,
+      "Usage: rosbag_to_rinex --bag <bag_dir_or_db3> "
+      "[--obs OBS_PATH --nav NAV_PATH "
+      "--topic-obs TOPIC --topic-nav TOPIC "
+      "--rnx-version X.YY --nav-systems GREJCIS "
+      "--no-flush --pgm NAME --runby NAME] "
+      "[--help] [--version]\n");
+  }
+
   static int run(int argc, char **argv) {
+    for (int i = 1; i < argc; ++i) {
+      std::string a = argv[i];
+      if (a == "--help" || a == "-h") { printUsage(stdout); return 0; }
+      if (a == "--version" || a == "-V") {
+#ifdef PACKAGE_VERSION
+        std::fprintf(stdout, "rosbag_to_rinex %s\n", PACKAGE_VERSION);
+#else
+        std::fprintf(stdout, "rosbag_to_rinex (unknown version)\n");
+#endif
+        return 0;
+      }
+    }
     rclcpp::init(argc, argv);
     Options opt = parseArgs(argc, argv);
     if (opt.bag_uri.empty()) {
-      std::fprintf(stderr, "Usage: rosbag_to_rinex --bag <bag_dir_or_db3> "
-                           "[--obs OBS_PATH --nav NAV_PATH "
-                           "--topic-obs TOPIC --topic-nav TOPIC "
-                           "--rnx-version X.YY --nav-systems GEJCSR "
-                           "--no-flush --pgm NAME --runby NAME]\n");
+      printUsage(stderr);
       return 2;
     }
 
     if (opt.out_obs_path.empty() && opt.out_nav_path.empty()) {
-       // If neither specified, maybe default to both? Or error?
-       // User request implies explicit control. Let's error if nothing specified, or default to both "out.obs/nav" if BOTH missing?
-       // "allow creating... only from obs or only from nav" -> implies checking what is provided.
-       // Let's assume if user provides NOTHING, we print usage.
-       std::fprintf(stderr, "Error: Please specify at least one output via --obs or --nav\n");
-       return 2;
+      opt.out_obs_path = deriveOutputPath(opt.bag_uri, ".obs");
+      opt.out_nav_path = deriveOutputPath(opt.bag_uri, ".nav");
+      std::fprintf(stderr, "Info: output paths auto-derived: %s, %s\n",
+                   opt.out_obs_path.c_str(), opt.out_nav_path.c_str());
     }
 
     Scanner scanner(opt);
@@ -711,13 +705,15 @@ public:
     }
 
     BagReader reader(opt.bag_uri);
+    rclcpp::Serialization<GnssObservations> ser_obs;
+    rclcpp::Serialization<GnssEphemerides> ser_nav;
     while (reader.has_next()) {
       auto msg = reader.read_next(); if (!msg) break;
 
       if (obs_writer && msg->topic_name == opt.topic_obs) {
-        GnssObservations o; if (deserializeRos(*msg, o)) obs_writer->writeEpoch(o);
+        GnssObservations o; if (deserializeRos(*msg, ser_obs, o)) obs_writer->writeEpoch(o);
       } else if (nav_writer && msg->topic_name == opt.topic_nav) {
-        GnssEphemerides n; if (deserializeRos(*msg, n)) nav_writer->onEphemerides(n);
+        GnssEphemerides n; if (deserializeRos(*msg, ser_nav, n)) nav_writer->onEphemerides(n);
       }
     }
 
@@ -742,13 +738,22 @@ private:
       else if (a=="--nav") o.out_nav_path = next();
       else if (a=="--topic-obs") o.topic_obs = next();
       else if (a=="--topic-nav") o.topic_nav = next();
-      else if (a=="--rnx-version") o.rinex_version = std::stod(next());
+      else if (a=="--rnx-version") {
+        o.rinex_version = std::stod(next());
+        const double v = std::lround(o.rinex_version * 100.0) / 100.0;
+        if (v < 3.00 || v > 3.05) {
+          throw std::runtime_error(
+            "--rnx-version must be in [3.00, 3.05] (supported: 3.00, 3.01, 3.02, 3.03, 3.04, 3.05)");
+        }
+        o.rinex_version = v;
+      }
       else if (a=="--nav-systems") o.nav_systems = next();
       else if (a=="--no-flush") o.flush_immediately=false;
       else if (a=="--pgm") o.program_name = next();
       else if (a=="--runby") o.run_by = next();
       else std::fprintf(stderr,"[warn] unknown arg %s\n", a.c_str());
     }
+    if (o.run_by.empty()) o.run_by = defaultRunBy();
     int filtered = filterByBuildFlags(maskFromSystemString(o.nav_systems));
     std::string s;
     auto push=[&](char c,int bit){ if(filtered & bit) s.push_back(c); };

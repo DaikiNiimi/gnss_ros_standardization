@@ -1,92 +1,107 @@
 # gnss_ros_standardization
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![ROS 2](https://img.shields.io/badge/ROS%202-Humble%20%7C%20Jazzy-brightgreen)](https://docs.ros.org/en/humble/)
+
 ## Overview
-**gnss_ros_standardization** is an open-source project to **standardize GNSS raw data handling** in the context of robotics and autonomous systems.  
-The goal is to make GNSS raw data more accessible and usable in real-time experiments, particularly for **tight coupling GNSS/IMU methods** and **multi-sensor fusion frameworks**.  
 
-By providing standardized ROS/RTKLIB-based tools, this project enables developers and researchers to:
-- Use GNSS raw observations seamlessly in robotics applications
-- Perform real-time RTK/PPP with custom GNSS messages
-- Support diverse GNSS receivers and formats (u-blox, Septentrio, NovAtel, etc.)
-- Reproduce experiments across platforms with consistent interfaces  
+<p align="center">
+  <img src="fig/overview.svg" alt="Repository overview and scope" width="850">
+</p>
 
----
+**gnss_ros_standardization** is an open-source ROS 2 package that standardizes
+GNSS raw-data handling for robotics and autonomous systems.
 
-## Goals
-- Enable **easy and broad utilization of GNSS raw data** in robotics fields  
-- Facilitate **development and testing of tight coupling GNSS positioning methods** with other sensors  
-- Provide tools to support **real-time, reproducible experiments**  
+The goal is to make GNSS raw observations and ephemeris uniformly accessible
+across receiver brands so that tight-coupling GNSS/IMU methods and multi-sensor
+fusion frameworks can be developed once and reused everywhere.
 
----
-## Now
-- Publish RTCM3 MSM7 data to ROS topics from NTRIP, TCP/IP, or serial inputs
-- Convert ROS 2 bag files to RINEX (OBS and NAV)
+- Consume GNSS raw observations through standardized ROS 2 topics in robotics applications
+- Support diverse GNSS receivers and formats (u-blox, Septentrio, NovAtel, RTCM3)
+- Reproduce experiments across platforms with consistent interfaces
 
-Convert ROS 2 bag files to RINEX (OBS and NAV)
----
+## Demo
 
-## Roadmap / To Do
-- **Survey Existing Implementations**
-  - [ublox](https://github.com/KumarRobotics/ublox)
-  - [septentrio_gnss_driver](https://github.com/septentrio-gnss/septentrio_gnss_driver)
-  - [novatel_oem7_driver](https://github.com/novatel/novatel_oem7_driver)
-  - [novatel_gps_driver](https://github.com/swri-robotics/novatel_gps_driver)
-  - [GICI-LIB](https://github.com/chichengcn/gici-open)  
-  - [ublox_driver](https://github.com/HKUST-Aerial-Robotics/ublox_driver)
-  - [gnss_comm](https://github.com/HKUST-Aerial-Robotics/gnss_comm)  
+Hardware and ROS 2 node configuration used in the demo:
 
-- **Repository & Management**  
-  - Manage with Git (submodules, similar to MatRTKLIB structure)  
+<p align="center">
+  <img src="fig/demo_setup.svg" alt="Hardware and ROS 2 node configuration" width="850">
+</p>
 
-- **Message Definitions**  
-  - Define baseband and raw observation message types  
-  - Implement `TimeStamp`-based synchronization  
-  - Implement `RINEX obs/nav` equivalent messages  
-  - Provide universal solution format (NavSatFix equivalent, absolute/relative coordinates, UTM, ENU, etc.)  
+Demo of real-time kinematic (RTK) positioning using this ROS 2 package:
 
-- **Message Support**  
-  - Support **RTCM3 MSM7** input/output  
-  - Support receiver-specific raw messages:  
-    - u-blox: RAWX, SFRBX  
-    - Septentrio: MeasEpoch, satellite NAV  
-    - NovAtel: OEM messages  
+<p align="center">
+  <img src="fig/rtk_demo.gif" alt="RTK positioning demo" width="800">
+</p>
 
-- **RTKLIB Integration**  
-  - Support standard RTKLIB I/O  
-  - Add custom drivers for raw data export in RTCM + custom message format  
+## Supported ROS 2 distributions
 
-- **Example Applications**  
-  - Real-time RTK positioning using RTKLIB with custom ROS messages  
-  - Conversion tools (e.g., `rosbag` ↔ RINEX)  
+| Distribution | Ubuntu | Status |
+|---|---|---|
+| Humble Hawksbill (LTS) | 22.04 | Supported |
+| Jazzy Jalisco (LTS) | 24.04 | Supported |
 
-- **Tools**  
-  - RINEX ⇔ ROS message converters  
-  - Replay functionality from ROS messages  
+## Supported receivers (summary)
 
----
+| Receiver | Observations | Ephemeris | NMEA Solution | IMU measurement |
+|---|---|---|---|---|
+| u-blox (UBX) | ✓ | ✓ | ✓ | ✓ |
+| Septentrio (SBF) | ✓ | ✓ | ✓ | ✓ |
+| NovAtel (OEM4/6/7) | ✓ | ✓ | ✓ | ✓ |
+| RTCM3 (MSM4/7) | ✓ | ✓ | — | — |
 
-## First Milestones
-- Target **u-blox F9P** as initial receiver  
-- Support **RTCM MSM7** input/output  
-- Verify **real-time functionality** (positioning + reproducibility)  
-- Add support for **custom messages**  
-- Extend to **Septentrio** and **NovAtel**  
+Per-receiver protocol message tables (UBX message IDs, SBF block IDs,
+NovAtel log IDs, RTCM types) are shown in the component READMEs.
 
----
+## Dependencies
+
+- **OS**: Ubuntu 22.04 (Humble) or 24.04 (Jazzy)
+- **ROS 2**: Humble or Jazzy
+- **Build tool**: `colcon`
+- **ROS packages** (installed via `rosdep`):
+  `rclcpp`, `rcutils`, `std_msgs`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`,
+  `builtin_interfaces`, `rosbag2_cpp`, `rosbag2_storage`, `cv_bridge`,
+  `image_transport`
+- **System libraries**: Eigen3 ≥ 3.3 (`sudo apt install libeigen3-dev`)
+- **Third-party** (vendored as a git submodule):
+  [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB)
+  — RTKLIB by T. Takasu, demo5 fork by T. Everett (BSD 2-Clause)
 
 ## Installation
+
 ```bash
-# Clone repository with submodules
 git clone --recursive https://github.com/DaikiNiimi/gnss_ros_standardization.git
 cd gnss_ros_standardization
-
-# Build with colcon
+rosdep install --from-paths . --ignore-src -r -y
 colcon build
 source install/setup.bash
+```
 
-# usage
-# ROS 2 Node for Publishing RTCM3 MSM7 Data from NTRIP to Topics
-ros2 run gnss_ros_standardization rtcm_decoder_node --ros-args -p stream_path:="ntrip://user:password@ip:port/mountpoint"
+If you cloned the repository without `--recursive`, make sure to run `git submodule update --init --recursive`.
 
-# ROS2 BAG to RINEX OBS NAV Converter
-ros2 run gnss_ros_standardization ros2_rinex_writer --bag bag.db3 --topic-obs /gnss/observation --topic-nav /gnss/ephemeris --obs test.obs --nav test.nav --rnx-version 3.04 --nav-systems "GREJC"
+## Components
+
+Each component has its own README with detailed information including message
+tables, parameter lists, and `ros2 run` examples.
+
+| Component | Purpose | README |
+|---|---|---|
+| Decoders | Stream-only: NTRIP / TCP / Serial → ROS topics | [src/decoders/README.md](src/decoders/README.md) |
+| Drivers | Connect to receiver, configure outputs, decode | [src/drivers/README.md](src/drivers/README.md) |
+| Converters | RINEX ↔ rosbag and RTKLIB `.pos` ↔ rosbag | [src/converter/README.md](src/converter/README.md) |
+| Positioning | SPP, RTK, loose-coupled GNSS/IMU EKF | [src/positioning/README.md](src/positioning/README.md) |
+| Messages | Public ROS message contract | [msg/README.md](msg/README.md) |
+
+## Acknowledgements
+
+This project uses [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB),
+maintained by Tim Everett, based on [RTKLIB](https://github.com/tomojitakasu/RTKLIB)
+by Tomoji Takasu, licensed under BSD 2-Clause.
+
+## License
+
+Released under the [MIT License](LICENSE).
+
+## Contact
+
+Maintainer: Daiki Niimi (daiki.niimi@ruri.waseda.jp)

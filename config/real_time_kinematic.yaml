@@ -1,4 +1,4 @@
-rtk_position_node:
+real_time_kinematic:
   ros__parameters:
     # ==========================================================================
     # Input / Output
@@ -18,13 +18,26 @@ rtk_position_node:
     excluded_satellites: [""]
 
     # ==========================================================================
+    # Frequencies (shared with SPP node)
+    # ==========================================================================
+    # Enable specific frequency bands. nf is auto-derived: highest enabled band
+    # sets nf (e.g. L5 enabled => nf=3).
+    # L1: GPS L1, GLO G1, GAL E1, BDS B1, QZS L1
+    # L2: GPS L2, GLO G2, BDS B2
+    # L5: GPS L5, GAL E5a, BDS B2a, QZS L5
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false
+
+    # ==========================================================================
     # Station Positions
     # ==========================================================================
     ant2:
       # Base station position type (ecef, llh, or rtcm)
       postype: "llh"
       # Base position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
-      pos: [35.134709472, 136.977574273, 104.7180]
+      pos: [35.70494444, 139.72169444, 74.380]
 
     # Fixed Origin for Local Position (ENU)
     # If 'pos' is set to non-zero, this position is used as the origin for 'local_position' and 'local_origin_ecef'.
@@ -33,7 +46,7 @@ rtk_position_node:
       # Position type (ecef or llh)
       postype: "llh"
       # Position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
-      pos: [35.134709472, 136.977574273, 104.7180]
+      pos: [0.0, 0.0, 0.0]
 
     # ==========================================================================
     # Setting 1 (pos1)
@@ -42,8 +55,6 @@ rtk_position_node:
       # Positioning mode (2:kinematic, 1:static, 0:single) - Kinematic is default for this node
       # posmode: 2 
       
-      # Frequencies (1:l1, 2:l1+l2, 3:l1+l2+l5)
-      frequency: 2
       # Elevation mask in degrees
       elmask: 15.0
       # Dynamics model (0:off, 1:on)
@@ -107,8 +118,6 @@ rtk_position_node:
       slipthres: 0.05
       # Reject threshold of innovation (m)
       rejionno: 30.0
-      # Reject threshold of GDOP
-      rejgdop: 30.0
       # Number of filter iteration
       niter: 1
 

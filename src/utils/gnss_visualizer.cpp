@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /*
  * gnss_visualizer.cpp
  * A ROS 2 node to visualize GNSS solution and satellite status using OpenCV.
@@ -8,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <deque>
 #include <cmath>
 #include <map>
 #include <mutex>
@@ -15,9 +17,14 @@
 #include <sstream>
 #include <set>
 #include <algorithm>
+#include <limits>
 
 #include "rclcpp/rclcpp.hpp"
+#if __has_include(<cv_bridge/cv_bridge.hpp>)
 #include <cv_bridge/cv_bridge.hpp>
+#else
+#include <cv_bridge/cv_bridge.h>
+#endif
 #include "sensor_msgs/msg/image.hpp"
 #include "opencv2/opencv.hpp"
 
@@ -36,14 +43,27 @@ public:
   GnssVisualizer() : Node("gnss_visualizer") {
     this->declare_parameter("image_width", 1280);
     this->declare_parameter("image_height", 720);
+    this->declare_parameter("font_scale", 1.0);
     this->declare_parameter("fixed_latitude", 0.0);
     this->declare_parameter("fixed_longitude", 0.0);
     this->declare_parameter("fixed_altitude", 0.0);
     this->declare_parameter("zoom_level", 0);
     this->declare_parameter("use_gui", true);
 
+    this->declare_parameter<std::string>("obs_topic",   "/gnss/observation");
+    this->declare_parameter<std::string>("nav_topic",   "/gnss/ephemeris");
+    this->declare_parameter<std::string>("sol_topic",   "/gnss/nmea_solution");
+    this->declare_parameter<std::string>("image_topic", "gnss_visualization/dashboard");
+
+    this->declare_parameter<std::string>("view_mode", "fixed");
+    this->declare_parameter("recent_window_sec",   60.0);
+    this->declare_parameter("decimate_old_dt_sec", 1.0);
+    this->declare_parameter("max_history",         50000);
+    this->declare_parameter("publish_image",       false);
+
     width_ = this->get_parameter("image_width").as_int();
     height_ = this->get_parameter("image_height").as_int();
+    font_scale_ = this->get_parameter("font_scale").as_double();
 
     fixed_pos_lla_[0] = this->get_parameter("fixed_latitude").as_double();
     fixed_pos_lla_[1] = this->get_parameter("fixed_longitude").as_double();
@@ -51,26 +71,45 @@ public:
     zoom_level_ = this->get_parameter("zoom_level").as_int();
     use_gui_ = this->get_parameter("use_gui").as_bool();
 
+    view_mode_ = parseViewMode(this->get_parameter("view_mode").as_string());
+    recent_window_sec_   = this->get_parameter("recent_window_sec").as_double();
+    decimate_old_dt_sec_ = this->get_parameter("decimate_old_dt_sec").as_double();
+    max_history_         = this->get_parameter("max_history").as_int();
+    publish_image_       = this->get_parameter("publish_image").as_bool();
+
+    const std::string obs_topic   = this->get_parameter("obs_topic").as_string();
+    const std::string nav_topic   = this->get_parameter("nav_topic").as_string();
+    const std::string sol_topic   = this->get_parameter("sol_topic").as_string();
+    const std::string image_topic = this->get_parameter("image_topic").as_string();
+
     obs_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssObservations>(
-      "/gnss/observation", 10, std::bind(&GnssVisualizer::obsCallback, this, std::placeholders::_1));
+      obs_topic, 10, std::bind(&GnssVisualizer::obsCallback, this, std::placeholders::_1));
     eph_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssEphemerides>(
-      "/gnss/ephemeris", rclcpp::QoS(10).transient_local(), std::bind(&GnssVisualizer::ephCallback, this, std::placeholders::_1));
+      nav_topic, rclcpp::QoS(1).transient_local(), std::bind(&GnssVisualizer::ephCallback, this, std::placeholders::_1));
     sol_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssSolution>(
-      "/gnss/solution", 10, std::bind(&GnssVisualizer::solCallback, this, std::placeholders::_1));
+      sol_topic, 10, std::bind(&GnssVisualizer::solCallback, this, std::placeholders::_1));
 
-    image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("gnss_visualization/dashboard", 1);
+    image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(image_topic, 1);
 
-    // Parameter callback for dynamic zoom
     param_cb_ = this->add_on_set_parameters_callback(
       [this](const std::vector<rclcpp::Parameter>& params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
         for (const auto& p : params) {
           if (p.get_name() == "zoom_level") {
             zoom_level_ = p.as_int();
-            // Trigger update if desired, or wait for next obs
+          } else if (p.get_name() == "view_mode") {
+            view_mode_ = parseViewMode(p.as_string());
+          } else if (p.get_name() == "recent_window_sec") {
+            recent_window_sec_ = p.as_double();
+          } else if (p.get_name() == "decimate_old_dt_sec") {
+            decimate_old_dt_sec_ = p.as_double();
+          } else if (p.get_name() == "max_history") {
+            max_history_ = p.as_int();
+          } else if (p.get_name() == "publish_image") {
+            publish_image_ = p.as_bool();
           }
         }
-        rcl_interfaces::msg::SetParametersResult result;
-        result.successful = true;
         return result;
       });
 
@@ -91,24 +130,59 @@ public:
   }
 
 private:
+  enum class ViewMode { FIXED, FIT, FOLLOW };
+
+  static ViewMode parseViewMode(const std::string& s) {
+    if (s == "fit") return ViewMode::FIT;
+    if (s == "follow") return ViewMode::FOLLOW;
+    return ViewMode::FIXED;
+  }
+  static const char* viewModeStr(ViewMode m) {
+    switch (m) {
+      case ViewMode::FIT:    return "FIT";
+      case ViewMode::FOLLOW: return "FOL";
+      default:               return "FIX";
+    }
+  }
+  static const char* viewModeParam(ViewMode m) {
+    switch (m) {
+      case ViewMode::FIT:    return "fit";
+      case ViewMode::FOLLOW: return "follow";
+      default:               return "fixed";
+    }
+  }
+
   std::mutex data_mutex_;
   gnss_ros_standardization::msg::GnssObservations::SharedPtr last_obs_;
   std::map<int, eph_t> eph_map_;
   std::map<int, geph_t> geph_map_;
   gnss_ros_standardization::msg::GnssSolution::SharedPtr last_sol_;
 
-  // Position history with status for color coding
-  struct PosEntry { double x, y; uint8_t status; };
-  std::vector<PosEntry> pos_history_;
+  // Position history with status & timestamp (sec) for time-based decimation
+  struct PosEntry { double x, y; double t_sec; uint8_t status; };
+  std::deque<PosEntry> pos_history_;
 
   int width_, height_;
+  double font_scale_ = 1.0;
   double fixed_pos_lla_[3];
   int zoom_level_ = 0;
   bool use_gui_ = true;
 
+  ViewMode view_mode_ = ViewMode::FIXED;
+  double recent_window_sec_ = 60.0;
+  double decimate_old_dt_sec_ = 1.0;
+  int max_history_ = 50000;
+  bool publish_image_ = false;
+  double last_decimate_t_sec_ = -1.0;  // sample time of last decimation pass
+
+  cv::Rect btn_mode_rect_;
+  cv::Rect btn_clear_rect_;
+  cv::Rect btn_zoom_out_rect_;
+  cv::Rect btn_zoom_in_rect_;
+
   // ── Style Constants ──
   static constexpr int FONT_TITLE = cv::FONT_HERSHEY_DUPLEX;
-  static constexpr int FONT_LABEL = cv::FONT_HERSHEY_SIMPLEX;
+  static constexpr int FONT_LABEL = cv::FONT_HERSHEY_DUPLEX;
 
   const cv::Scalar COL_BG       = cv::Scalar(245, 245, 245);
   const cv::Scalar COL_PANEL_BG = cv::Scalar(55, 55, 55);
@@ -184,8 +258,8 @@ private:
     }
     // Clamp
     if (zoom_level_ > 10) zoom_level_ = 10;
-    if (zoom_level_ < -5) zoom_level_ = -5;
-    
+    if (zoom_level_ < -7) zoom_level_ = -7;
+
     RCLCPP_INFO(this->get_logger(), "Zoom Level (Wheel): %d", zoom_level_);
     this->set_parameter(rclcpp::Parameter("zoom_level", zoom_level_));
     renderLoop(false);
@@ -197,22 +271,51 @@ private:
     int mid_y = height_ / 2;
     cv::Rect pos_roi(0, mid_y, mid_x, mid_y);
 
-    if (pos_roi.contains(cv::Point(x, y))) {      
-      cv::Rect btn_zoom_out(pos_roi.x + pos_roi.width - 65, pos_roi.y + 4, 20, 16);
-      cv::Rect btn_zoom_in (pos_roi.x + pos_roi.width - 35, pos_roi.y + 4, 20, 16);
-
-      if (btn_zoom_out.contains(cv::Point(x, y))) {
+    if (pos_roi.contains(cv::Point(x, y))) {
+      if (btn_clear_rect_.area() > 0 && btn_clear_rect_.contains(cv::Point(x, y))) {
+        clearHistory();
+        renderLoop(false);
+        return;
+      }
+      if (btn_mode_rect_.area() > 0 && btn_mode_rect_.contains(cv::Point(x, y))) {
+        cycleViewMode();
+        renderLoop(false);
+        return;
+      }
+      bool zoom_changed = false;
+      if (btn_zoom_out_rect_.area() > 0 && btn_zoom_out_rect_.contains(cv::Point(x, y))) {
         zoom_level_--;
-      } else if (btn_zoom_in.contains(cv::Point(x, y))) {
+        zoom_changed = true;
+      } else if (btn_zoom_in_rect_.area() > 0 && btn_zoom_in_rect_.contains(cv::Point(x, y))) {
         zoom_level_++;
-      }      
+        zoom_changed = true;
+      }
+      if (!zoom_changed) return;
+
       if (zoom_level_ > 10) zoom_level_ = 10;
-      if (zoom_level_ < -5) zoom_level_ = -5;
+      if (zoom_level_ < -7) zoom_level_ = -7;
 
       RCLCPP_INFO(this->get_logger(), "Zoom Level (Click): %d", zoom_level_);
       this->set_parameter(rclcpp::Parameter("zoom_level", zoom_level_));
       renderLoop(false);
     }
+  }
+
+  void clearHistory() {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    pos_history_.clear();
+    last_decimate_t_sec_ = -1.0;
+    RCLCPP_INFO(this->get_logger(), "Position history cleared");
+  }
+
+  void cycleViewMode() {
+    switch (view_mode_) {
+      case ViewMode::FIXED:  view_mode_ = ViewMode::FIT;    break;
+      case ViewMode::FIT:    view_mode_ = ViewMode::FOLLOW; break;
+      case ViewMode::FOLLOW: view_mode_ = ViewMode::FIXED;  break;
+    }
+    RCLCPP_INFO(this->get_logger(), "View mode: %s", viewModeStr(view_mode_));
+    this->set_parameter(rclcpp::Parameter("view_mode", std::string(viewModeParam(view_mode_))));
   }
 
   void renderTimerCallback() {
@@ -233,10 +336,46 @@ private:
   void solCallback(const gnss_ros_standardization::msg::GnssSolution::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(data_mutex_);
     last_sol_ = msg;
-    if (msg->status != gnss_ros_standardization::msg::GnssSolution::STATUS_NONE) {
-      pos_history_.push_back({msg->pos_enu.x, msg->pos_enu.y, msg->status});
-      if (pos_history_.size() > 5000) pos_history_.erase(pos_history_.begin());
+    if (msg->status == gnss_ros_standardization::msg::GnssSolution::STATUS_NONE) return;
+
+    // Continuous monotonic timestamp from GPS week/tow if available, else node clock.
+    double t_sec;
+    if (msg->time_week > 0) {
+      t_sec = static_cast<double>(msg->time_week) * 604800.0 + msg->time_tow;
+    } else {
+      t_sec = this->now().seconds();
     }
+    pos_history_.push_back({msg->pos_enu.x, msg->pos_enu.y, t_sec, msg->status});
+
+    // Safety cap (cheap, O(1) per call).
+    while (max_history_ > 0 && static_cast<int>(pos_history_.size()) > max_history_) {
+      pos_history_.pop_front();
+    }
+
+    // Decimation is O(n); throttle so we don't burn cycles under data_mutex_ on
+    // every 10 Hz callback. Triggers:
+    //   - first call after this->now() advances by >= 2 s of sample-time
+    //   - or whenever oldest point is older than recent_window_sec_ (compaction needed)
+    // Skip if the whole history is still within the recent window (nothing to drop).
+    if (recent_window_sec_ <= 0.0 || decimate_old_dt_sec_ <= 0.0) return;
+    if (pos_history_.size() < 3) return;
+
+    const double cutoff = t_sec - recent_window_sec_;
+    if (pos_history_.front().t_sec >= cutoff) return;  // nothing to decimate yet
+
+    if (last_decimate_t_sec_ > 0.0 && (t_sec - last_decimate_t_sec_) < 2.0) return;
+    last_decimate_t_sec_ = t_sec;
+
+    std::deque<PosEntry> compacted;
+    compacted.push_back(pos_history_.front());
+    for (size_t i = 1; i < pos_history_.size(); ++i) {
+      const auto& cur  = pos_history_[i];
+      const auto& prev = compacted.back();
+      const bool old_enough = cur.t_sec < cutoff;
+      if (old_enough && (cur.t_sec - prev.t_sec) < decimate_old_dt_sec_) continue;
+      compacted.push_back(cur);
+    }
+    pos_history_.swap(compacted);
   }
 
   struct SatAzEl { double az, el; int sys; std::string satid; int sat; };
@@ -310,20 +449,29 @@ private:
     cv::line(canvas, cv::Point(mid_x, 0), cv::Point(mid_x, height_), COL_DIVIDER, 2);
     cv::line(canvas, cv::Point(0, mid_y), cv::Point(width_, mid_y), COL_DIVIDER, 2);
 
-    sensor_msgs::msg::Image::SharedPtr msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", canvas).toImageMsg();
-    msg->header.stamp = this->now();
-    image_pub_->publish(*msg);
+    if (publish_image_) {
+      sensor_msgs::msg::Image::SharedPtr msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", canvas).toImageMsg();
+      msg->header.stamp = this->now();
+      image_pub_->publish(*msg);
+    }
 
     if (use_gui_) {
       cv::imshow("GNSS Visualizer", canvas);
-      if (process_gui) cv::waitKey(1);
+      if (process_gui) {
+        int key = cv::waitKey(1) & 0xff;
+        if (key == 'v' || key == 'V') {
+          cycleViewMode();
+        } else if (key == 'c' || key == 'C') {
+          clearHistory();
+        }
+      }
     }
   }
 
   void drawPanelHeader(cv::Mat& img, cv::Rect roi, const std::string& title) {
     int hh = 24;
     cv::rectangle(img, cv::Rect(roi.x, roi.y, roi.width, hh), COL_PANEL_BG, -1);
-    cv::putText(img, title, cv::Point(roi.x + 8, roi.y + 17), FONT_LABEL, 0.55, cv::Scalar(240,240,240), 1);
+    cv::putText(img, title, cv::Point(roi.x + 8, roi.y + 17), FONT_LABEL, font_scale_ * 0.55, cv::Scalar(240,240,240), 1);
   }
 
   void renderStatus(cv::Mat& img, cv::Rect roi) {
@@ -336,7 +484,7 @@ private:
     int dy = 24;
 
     auto text = [&](const std::string& s, cv::Scalar col = cv::Scalar(30,30,30), double sc = 0.50, int th = 1) {
-      cv::putText(img, s, cv::Point(x, y), FONT_LABEL, sc, col, th);
+      cv::putText(img, s, cv::Point(x, y), FONT_LABEL, font_scale_ * sc, col, th);
       y += dy;
     };
 
@@ -369,7 +517,7 @@ private:
     int badge_w = 10 + (int)status_str.size() * 14;
     cv::rectangle(img, cv::Rect(x, y-18, badge_w, 24), status_col, -1);
     cv::rectangle(img, cv::Rect(x, y-18, badge_w, 24), status_col * 0.7, 1);
-    cv::putText(img, status_str, cv::Point(x+5, y), FONT_LABEL, 0.6, cv::Scalar(255,255,255), 2);
+    cv::putText(img, status_str, cv::Point(x+5, y), FONT_LABEL, font_scale_ * 0.6, cv::Scalar(255,255,255), 2);
     y += dy + 4;
 
     double lat=0, lon=0, alt=0;
@@ -418,7 +566,7 @@ private:
         if (sats_by_sys[sys] == 0 && sys == SYS_IRN) continue;
         cv::circle(img, cv::Point(sx+4, y-5), 4, sysColor(sys), -1);
         std::string lbl = sysName(sys) + ":" + std::to_string(sats_by_sys[sys]);
-        cv::putText(img, lbl, cv::Point(sx+11, y), FONT_LABEL, 0.38, COL_TEXT);
+        cv::putText(img, lbl, cv::Point(sx+11, y), FONT_LABEL, font_scale_ * 0.38, COL_TEXT);
         sx += 12 + (int)lbl.size() * 7;
       }
       y += dy;
@@ -469,17 +617,17 @@ private:
     cv::line(img, cv::Point(cx-d, cy-d), cv::Point(cx+d, cy+d), cv::Scalar(225,225,225), 1);
     cv::line(img, cv::Point(cx+d, cy-d), cv::Point(cx-d, cy+d), cv::Scalar(225,225,225), 1);
 
-    cv::putText(img, "N", cv::Point(cx-6, cy-r-6),  FONT_LABEL, 0.55, COL_TEXT, 1);
-    cv::putText(img, "S", cv::Point(cx-5, cy+r+16), FONT_LABEL, 0.55, COL_TEXT, 1);
-    cv::putText(img, "E", cv::Point(cx+r+6, cy+5),  FONT_LABEL, 0.55, COL_TEXT, 1);
-    cv::putText(img, "W", cv::Point(cx-r-22, cy+5), FONT_LABEL, 0.55, COL_TEXT, 1);
+    cv::putText(img, "N", cv::Point(cx-6, cy-r-6),  FONT_LABEL, font_scale_ * 0.55, COL_TEXT, 1);
+    cv::putText(img, "S", cv::Point(cx-5, cy+r+16), FONT_LABEL, font_scale_ * 0.55, COL_TEXT, 1);
+    cv::putText(img, "E", cv::Point(cx+r+6, cy+5),  FONT_LABEL, font_scale_ * 0.55, COL_TEXT, 1);
+    cv::putText(img, "W", cv::Point(cx-r-22, cy+5), FONT_LABEL, font_scale_ * 0.55, COL_TEXT, 1);
 
     for (int el : {30, 60}) {
       int ri = (int)(r * (1.0 - el / 90.0));
       std::string lbl = std::to_string(el);
-      cv::putText(img, lbl, cv::Point(cx+3, cy-ri+13), FONT_LABEL, 0.35, COL_TEXT_DIM);
+      cv::putText(img, lbl, cv::Point(cx+3, cy-ri+13), FONT_LABEL, font_scale_ * 0.35, COL_TEXT_DIM);
     }
-    cv::putText(img, "90", cv::Point(cx+3, cy+12), FONT_LABEL, 0.3, COL_TEXT_DIM);
+    cv::putText(img, "90", cv::Point(cx+3, cy+12), FONT_LABEL, font_scale_ * 0.3, COL_TEXT_DIM);
 
     std::lock_guard<std::mutex> lock(data_mutex_);
     auto sat_azel = computeSatAzEl();
@@ -547,8 +695,8 @@ private:
       occupied.push_back(cv::Rect(lx - 2, ly - th - 2, tw + 4, th + 4));
       
       // Draw text with outline (halo) for readability
-      cv::putText(img, sp.id, cv::Point(lx, ly), FONT_LABEL, 0.38, COL_BG, 3);
-      cv::putText(img, sp.id, cv::Point(lx, ly), FONT_LABEL, 0.38, COL_TEXT, 1);
+      cv::putText(img, sp.id, cv::Point(lx, ly), FONT_LABEL, font_scale_ * 0.38, COL_BG, 3);
+      cv::putText(img, sp.id, cv::Point(lx, ly), FONT_LABEL, font_scale_ * 0.38, COL_TEXT, 1);
     }
 
     int lx = roi.x + roi.width - 55;
@@ -556,7 +704,7 @@ private:
     const int systems[] = {SYS_GPS, SYS_GLO, SYS_GAL, SYS_CMP, SYS_QZS, SYS_IRN, SYS_SBS};
     for (int sys : systems) {
       cv::circle(img, cv::Point(lx, ly), 5, sysColor(sys), -1);
-      cv::putText(img, sysName(sys), cv::Point(lx+10, ly+4), FONT_LABEL, 0.38, COL_TEXT);
+      cv::putText(img, sysName(sys), cv::Point(lx+10, ly+4), FONT_LABEL, font_scale_ * 0.38, COL_TEXT);
       ly += 14;
     }
   }
@@ -625,7 +773,7 @@ private:
 
       cv::rectangle(img, cv::Rect(start_x, top_y, plot_w, sub_h), cv::Scalar(252,252,252), -1);
 
-      cv::putText(img, configs[pi].title, cv::Point(roi.x + 4, top_y + sub_h / 2 + 4), FONT_LABEL, 0.32, COL_TEXT_DIM, 1);
+      cv::putText(img, configs[pi].title, cv::Point(roi.x + 4, top_y + sub_h / 2 + 4), FONT_LABEL, font_scale_ * 0.32, COL_TEXT_DIM, 1);
 
       double max_val = configs[pi].max_val;
       int step = (pi == 0) ? 15 : 10; // Elev: 15 deg steps, SNR: 10 dBHz steps
@@ -634,7 +782,7 @@ private:
         cv::Scalar gc = (v % (step*2) == 0) ? COL_GRID : cv::Scalar(232,232,232);
         cv::line(img, cv::Point(start_x, gy), cv::Point(start_x + plot_w, gy), gc, 1);
         if (v > 0 && v < (int)max_val) {
-          cv::putText(img, std::to_string(v), cv::Point(start_x - 22, gy + 4), FONT_LABEL, 0.28, COL_TEXT_DIM);
+          cv::putText(img, std::to_string(v), cv::Point(start_x - 22, gy + 4), FONT_LABEL, font_scale_ * 0.28, COL_TEXT_DIM);
         }
       }
 
@@ -702,7 +850,7 @@ private:
       cv::Mat txt_img(txt_h + 8, txt_w + 4, CV_8UC3, COL_BG);
       // Fill with BG to avoid artifacts
       txt_img = COL_BG;
-      cv::putText(txt_img, label, cv::Point(2, txt_h + 4), FONT_LABEL, 0.32, sysColor(sys), 1);
+      cv::putText(txt_img, label, cv::Point(2, txt_h + 4), FONT_LABEL, font_scale_ * 0.32, sysColor(sys), 1);
       
       cv::Mat rot;
       cv::rotate(txt_img, rot, cv::ROTATE_90_CLOCKWISE);
@@ -738,21 +886,58 @@ private:
     }
   }
 
+  // Pick a sensible grid spacing (m/div) so a division spans roughly 40-100 px.
+  static double pickGridMeters(double scale_px_per_m) {
+    if (scale_px_per_m <= 0.0) return 10.0;
+    const double target_px = 60.0;
+    const double raw = target_px / scale_px_per_m;
+    static const double steps[] = {0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
+                                   1.0, 2.0, 5.0, 10.0, 20.0, 50.0,
+                                   100.0, 200.0, 500.0, 1000.0, 2000.0,
+                                   5000.0, 10000.0, 20000.0, 50000.0};
+    for (double s : steps) if (s >= raw) return s;
+    return steps[sizeof(steps)/sizeof(steps[0]) - 1];
+  }
+
   void renderPositionPlot(cv::Mat& img, cv::Rect roi) {
     drawPanelHeader(img, roi, "Position (ENU)");
 
     int hdr_h = 24;
     int cx = roi.x + roi.width / 2;
     int cy = roi.y + hdr_h + (roi.height - hdr_h) / 2;
-    double scale = 5.0 * std::pow(2.0, zoom_level_);
-    double grid_m = 10.0;
 
-    if (zoom_level_ >= 9) grid_m = 0.01;
-    else if (zoom_level_ >= 6) grid_m = 0.1;
-    else if (zoom_level_ >= 3) grid_m = 1.0;
-    else if (zoom_level_ >= 1) grid_m = 5.0;
-    else if (zoom_level_ <= -2) grid_m = 50.0;
-    else if (zoom_level_ <= -1) grid_m = 20.0;
+    // Determine viewport (world center + scale) based on view mode.
+    double view_cx_w = 0.0, view_cy_w = 0.0;
+    double scale = 5.0 * std::pow(2.0, zoom_level_);
+
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      if (view_mode_ == ViewMode::FOLLOW && !pos_history_.empty()) {
+        view_cx_w = pos_history_.back().x;
+        view_cy_w = pos_history_.back().y;
+      } else if (view_mode_ == ViewMode::FIT && !pos_history_.empty()) {
+        double mn_x = std::numeric_limits<double>::infinity();
+        double mx_x = -std::numeric_limits<double>::infinity();
+        double mn_y = std::numeric_limits<double>::infinity();
+        double mx_y = -std::numeric_limits<double>::infinity();
+        for (const auto& e : pos_history_) {
+          if (e.x < mn_x) mn_x = e.x;
+          if (e.x > mx_x) mx_x = e.x;
+          if (e.y < mn_y) mn_y = e.y;
+          if (e.y > mx_y) mx_y = e.y;
+        }
+        view_cx_w = 0.5 * (mn_x + mx_x);
+        view_cy_w = 0.5 * (mn_y + mx_y);
+        double span_x = std::max(1.0, mx_x - mn_x);
+        double span_y = std::max(1.0, mx_y - mn_y);
+        double avail_w = roi.width  * 0.9;
+        double avail_h = (roi.height - hdr_h) * 0.9;
+        scale = std::min(avail_w / span_x, avail_h / span_y);
+        if (!std::isfinite(scale) || scale <= 0.0) scale = 5.0;
+      }
+    }
+
+    double grid_m = pickGridMeters(scale);
 
     cv::Scalar gridCol(225,225,225);
     for (int gi = -100; gi <= 100; ++gi) {
@@ -768,8 +953,8 @@ private:
     cv::line(img, cv::Point(roi.x, cy), cv::Point(roi.x+roi.width, cy), cv::Scalar(190,190,190), 1);
     cv::line(img, cv::Point(cx, roi.y+hdr_h), cv::Point(cx, roi.y+roi.height), cv::Scalar(190,190,190), 1);
 
-    cv::putText(img, "E", cv::Point(roi.x + roi.width - 18, cy - 4), FONT_LABEL, 0.45, COL_TEXT_DIM);
-    cv::putText(img, "N", cv::Point(cx + 4, roi.y + hdr_h + 14), FONT_LABEL, 0.45, COL_TEXT_DIM);
+    cv::putText(img, "E", cv::Point(roi.x + roi.width - 18, cy - 4), FONT_LABEL, font_scale_ * 0.45, COL_TEXT_DIM);
+    cv::putText(img, "N", cv::Point(cx + 4, roi.y + hdr_h + 14), FONT_LABEL, font_scale_ * 0.45, COL_TEXT_DIM);
 
     {
       int sx = roi.x + 10;
@@ -782,27 +967,46 @@ private:
         std::stringstream ss;
         if (grid_m < 1.0) ss << std::fixed << std::setprecision(2) << grid_m << "m";
         else ss << (int)grid_m << "m";
-        cv::putText(img, ss.str(), cv::Point(sx + bar_px/2 - 12, sy - 5), FONT_LABEL, 0.38, COL_TEXT);
+        cv::putText(img, ss.str(), cv::Point(sx + bar_px/2 - 12, sy - 5), FONT_LABEL, font_scale_ * 0.38, COL_TEXT);
       }
     }
 
     {
-      std::string zlbl;
-      if (zoom_level_ >= 0) zlbl = "x" + std::to_string(1 << zoom_level_);
-      else zlbl = "x1/" + std::to_string(1 << (-zoom_level_));
-      cv::putText(img, zlbl, cv::Point(roi.x + roi.width - 85, roi.y + hdr_h + 16), FONT_LABEL, 0.42, COL_TEXT_DIM, 1);
-      
-      // Draw Zoom Buttons
-      cv::Rect btn_zoom_out(roi.x + roi.width - 65, roi.y + 4, 20, 16);
-      cv::Rect btn_zoom_in (roi.x + roi.width - 35, roi.y + 4, 20, 16);
-      
+      // Mode badge + zoom label
+      std::stringstream zss;
+      zss << "[" << viewModeStr(view_mode_) << "]";
+      if (view_mode_ == ViewMode::FIT) {
+        // In FIT mode the effective scale is computed; show approximate px/m.
+        // No discrete zoom level applies.
+      } else {
+        if (zoom_level_ >= 0) zss << " x" << (1 << zoom_level_);
+        else zss << " x1/" << (1 << (-zoom_level_));
+      }
+      cv::putText(img, zss.str(), cv::Point(roi.x + roi.width - 220, roi.y + hdr_h + 16), FONT_LABEL, font_scale_ * 0.42, COL_TEXT_DIM, 1);
+
+      // Buttons (right to left): CLR | + | - | MODE
+      cv::Rect btn_mode    (roi.x + roi.width - 130, roi.y + 4, 26, 16);
+      cv::Rect btn_zoom_out(roi.x + roi.width - 100, roi.y + 4, 20, 16);
+      cv::Rect btn_zoom_in (roi.x + roi.width - 75,  roi.y + 4, 20, 16);
+      cv::Rect btn_clear   (roi.x + roi.width - 45,  roi.y + 4, 30, 16);
+      btn_mode_rect_     = btn_mode;
+      btn_clear_rect_    = btn_clear;
+      btn_zoom_out_rect_ = btn_zoom_out;
+      btn_zoom_in_rect_  = btn_zoom_in;
+
+      cv::rectangle(img, btn_mode,     cv::Scalar(200,200,200), -1);
       cv::rectangle(img, btn_zoom_out, cv::Scalar(200,200,200), -1);
       cv::rectangle(img, btn_zoom_in,  cv::Scalar(200,200,200), -1);
+      cv::rectangle(img, btn_clear,    cv::Scalar(200,200,200), -1);
+      cv::rectangle(img, btn_mode,     cv::Scalar(100,100,100), 1);
       cv::rectangle(img, btn_zoom_out, cv::Scalar(100,100,100), 1);
       cv::rectangle(img, btn_zoom_in,  cv::Scalar(100,100,100), 1);
-      
-      cv::putText(img, "-", cv::Point(btn_zoom_out.x + 5, btn_zoom_out.y + 12), FONT_LABEL, 0.5, cv::Scalar(0,0,0), 1);
-      cv::putText(img, "+", cv::Point(btn_zoom_in.x + 4, btn_zoom_in.y + 12), FONT_LABEL, 0.5, cv::Scalar(0,0,0), 1);
+      cv::rectangle(img, btn_clear,    cv::Scalar(100,100,100), 1);
+
+      cv::putText(img, viewModeStr(view_mode_), cv::Point(btn_mode.x + 3, btn_mode.y + 12), FONT_LABEL, font_scale_ * 0.38, cv::Scalar(0,0,0), 1);
+      cv::putText(img, "-",   cv::Point(btn_zoom_out.x + 5, btn_zoom_out.y + 12), FONT_LABEL, font_scale_ * 0.5,  cv::Scalar(0,0,0), 1);
+      cv::putText(img, "+",   cv::Point(btn_zoom_in.x + 4,  btn_zoom_in.y + 12),  FONT_LABEL, font_scale_ * 0.5,  cv::Scalar(0,0,0), 1);
+      cv::putText(img, "CLR", cv::Point(btn_clear.x + 3,    btn_clear.y + 12),    FONT_LABEL, font_scale_ * 0.38, cv::Scalar(0,0,0), 1);
     }
 
     std::lock_guard<std::mutex> lock(data_mutex_);
@@ -816,33 +1020,35 @@ private:
     uint8_t prev_status = 0;
 
     for (size_t i = 0; i < n; ++i) {
-      long px_long = cx + (long)(pos_history_[i].x * scale);
-      long py_long = cy - (long)(pos_history_[i].y * scale);
-      
+      long px_long = cx + (long)((pos_history_[i].x - view_cx_w) * scale);
+      long py_long = cy - (long)((pos_history_[i].y - view_cy_w) * scale);
+
       const long MAX_COORD = 30000;
       if (px_long < -MAX_COORD || px_long > MAX_COORD || py_long < -MAX_COORD || py_long > MAX_COORD) {
         prev_p = cv::Point(-1,-1);
         continue;
       }
       cv::Point p((int)px_long, (int)py_long);
-      
+
       cv::Scalar col = statusColor(pos_history_[i].status);
-      
+
       if (prev_p.x != -1 && pos_history_[i].status == prev_status) {
          if (roi.contains(p) || roi.contains(prev_p)) {
            cv::line(img, prev_p, p, col, 1, cv::LINE_AA);
          }
       }
       if (roi.contains(p)) {
-        cv::circle(img, p, (zoom_level_ >= 6) ? 2 : 1, col, -1, cv::LINE_AA);
+        int dot_r = (scale > 200.0) ? 2 : 1;
+        cv::circle(img, p, dot_r, col, -1, cv::LINE_AA);
       }
-      
+
       prev_p = p;
       prev_status = pos_history_[i].status;
     }
 
     auto& last = pos_history_.back();
-    cv::Point pCur(cx + (int)(last.x * scale), cy - (int)(last.y * scale));
+    cv::Point pCur(cx + (int)((last.x - view_cx_w) * scale),
+                   cy - (int)((last.y - view_cy_w) * scale));
     if (roi.contains(pCur)) {
       cv::Scalar cur_col = statusColor(last.status);
       cv::circle(img, pCur, 5, cur_col, -1);
@@ -886,7 +1092,7 @@ private:
       };
       for (const auto& [st, name] : status_list) {
         cv::circle(img, cv::Point(lx, ly), 4, statusColor(st), -1);
-        cv::putText(img, name, cv::Point(lx+8, ly+4), FONT_LABEL, 0.32, COL_TEXT);
+        cv::putText(img, name, cv::Point(lx+8, ly+4), FONT_LABEL, font_scale_ * 0.32, COL_TEXT);
         ly += 12;
       }
     }

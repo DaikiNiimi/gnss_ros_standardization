@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  build:
+    name: Build (${{ matrix.ros_distro }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ros_distro: humble
+            ros_image: osrf/ros:humble-desktop
+          - ros_distro: jazzy
+            ros_image: osrf/ros:jazzy-desktop
+
+    container:
+      image: ${{ matrix.ros_image }}
+
+    steps:
+      - name: Checkout repository (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y libeigen3-dev
+
+      - name: Install ROS dependencies
+        run: |
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
+          rosdep update
+          rosdep install --from-paths . --ignore-src -r -y
+
+      - name: Build
+        run: |
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
+          colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+      - name: Test (lint)
+        run: |
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
+          . install/setup.sh
+          colcon test --packages-select gnss_ros_standardization
+          colcon test-result --verbose

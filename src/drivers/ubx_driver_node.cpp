@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
@@ -5,16 +6,21 @@
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
+#include <sensor_msgs/msg/imu.hpp>
+
+#include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
+#include "gnss_ros_standardization/ins_utils.hpp"
 #include "gnss_ros_standardization/ubx_protocol.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 using namespace std::chrono_literals;
+#include "gnss_ros_standardization/decoder_common.hpp"
+
 namespace ubx = gnss_ros_standardization::ubx;
+namespace ins = gnss_ros_standardization::ins_utils;
 
 namespace gnss_ros_standardization {
 
@@ -22,6 +28,9 @@ namespace {
 
 /// Timer interval for stream polling
 constexpr auto kTimerInterval = 10ms;
+
+/// Watchdog timeout for incomplete PVT epochs (seconds)
+constexpr double kPvtWatchdogTimeoutSec = 1.5;
 
 }  // namespace
 
@@ -39,12 +48,23 @@ struct UbxConfig {
   bool enable_rawx{true};
   bool enable_sfrbx{true};
   bool enable_nav_pvt{false};
+  bool enable_nav_dop{false};
+  bool enable_nav_cov{false};
+  bool enable_nav_posecef{false};
+  bool enable_nav_velecef{false};
   bool enable_nmea_gga{false};
   bool enable_nmea_rmc{false};
   bool enable_nmea_gsa{false};
   bool enable_nmea_gst{false};
   bool nmea_high_precision{false};
-  
+
+  // IMU settings (ZED-F9R / IMU-enabled receivers)
+  bool enable_esf_raw{true};    // ESF-RAW: uncalibrated raw IMU       → /gnss/imu/data_raw
+  bool enable_esf_ins{false};   // ESF-INS: calibrated angular rate + acceleration → /gnss/imu/data
+  std::string imu_topic{"/gnss/imu/data"};
+  std::string imu_raw_topic{"/gnss/imu/data_raw"};
+
+
   // GNSS constellation settings
   bool enable_gps{true};
   bool enable_glonass{true};
@@ -57,13 +77,19 @@ struct UbxConfig {
   // Topics
   std::string observation_topic{"/gnss/observation"};
   std::string ephemeris_topic{"/gnss/ephemeris"};
-  std::string solution_topic{"/gnss/solution"};
+  std::string solution_topic{"/gnss/nmea_solution"};
 
   // ENU local origin settings
   bool auto_origin{true};
-  double origin_latitude{0.0};
-  double origin_longitude{0.0};
-  double origin_altitude{0.0};
+  double origin_latitude{0.0};   // populated from origin[0]
+  double origin_longitude{0.0};  // populated from origin[1]
+  double origin_altitude{0.0};   // populated from origin[2]
+
+  // Ephemeris snapshot behavior
+  double ephemeris_snapshot_period_s{30.0};
+  double ephemeris_max_age_s{0.0};  // 0 = keep all
+
+  bool use_gps_timestamp{false};
 };
 
 /// @brief ROS 2 driver node for u-blox GNSS receivers
@@ -97,9 +123,7 @@ class UbxDriverNode : public rclcpp::Node {
   }
 
  private:
-  // ============================================================================
   // Initialization
-  // ============================================================================
 
   void initializeParameters() {
     // Basic settings
@@ -108,17 +132,27 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<bool>("configure_on_startup", config_.configure_on_startup);
     declare_parameter<std::string>("dynamic_model", config_.dynamic_model);
     declare_parameter<std::string>("generation", config_.generation);
+    // frame_id: ROS TF frame name attached to the GNSS antenna phase center.
+    // Default "gnss_link" — override in launch to integrate with vehicle TF tree.
     declare_parameter<std::string>("frame_id", config_.frame_id);
     
     // Message settings
     declare_parameter<bool>("messages.rawx", config_.enable_rawx);
     declare_parameter<bool>("messages.sfrbx", config_.enable_sfrbx);
-    declare_parameter<bool>("messages.nav_pvt", config_.enable_nav_pvt);
+    declare_parameter<bool>("messages.nav_pvt",     config_.enable_nav_pvt);
+    declare_parameter<bool>("messages.nav_dop",     config_.enable_nav_dop);
+    declare_parameter<bool>("messages.nav_cov",     config_.enable_nav_cov);
+    declare_parameter<bool>("messages.nav_posecef", config_.enable_nav_posecef);
+    declare_parameter<bool>("messages.nav_velecef", config_.enable_nav_velecef);
     declare_parameter<bool>("messages.nmea_gga", config_.enable_nmea_gga);
     declare_parameter<bool>("messages.nmea_rmc", config_.enable_nmea_rmc);
     declare_parameter<bool>("messages.nmea_gsa", config_.enable_nmea_gsa);
     declare_parameter<bool>("messages.nmea_gst", config_.enable_nmea_gst);
     declare_parameter<bool>("messages.nmea_high_precision", config_.nmea_high_precision);
+    declare_parameter<bool>("messages.esf_raw", config_.enable_esf_raw);
+    declare_parameter<bool>("messages.esf_ins", config_.enable_esf_ins);
+    declare_parameter<std::string>("imu_topic",     config_.imu_topic);
+    declare_parameter<std::string>("imu_raw_topic", config_.imu_raw_topic);
     
     // GNSS constellation settings
     declare_parameter<bool>("gnss.gps", config_.enable_gps);
@@ -133,9 +167,11 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<std::string>("ephemeris_topic", config_.ephemeris_topic);
     declare_parameter<std::string>("solution_topic", config_.solution_topic);
     declare_parameter<bool>("auto_origin", config_.auto_origin);
-    declare_parameter<double>("origin.latitude", config_.origin_latitude);
-    declare_parameter<double>("origin.longitude", config_.origin_longitude);
-    declare_parameter<double>("origin.altitude", config_.origin_altitude);
+    declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
+
+    declare_parameter<double>("ephemeris.snapshot_period_s", config_.ephemeris_snapshot_period_s);
+    declare_parameter<double>("ephemeris.max_age_s",         config_.ephemeris_max_age_s);
+    declare_parameter<bool>("use_gps_timestamp",             config_.use_gps_timestamp);
 
     // Read parameters
     config_.stream_path = get_parameter("stream_path").as_string();
@@ -147,12 +183,20 @@ class UbxDriverNode : public rclcpp::Node {
     
     config_.enable_rawx = get_parameter("messages.rawx").as_bool();
     config_.enable_sfrbx = get_parameter("messages.sfrbx").as_bool();
-    config_.enable_nav_pvt = get_parameter("messages.nav_pvt").as_bool();
+    config_.enable_nav_pvt     = get_parameter("messages.nav_pvt").as_bool();
+    config_.enable_nav_dop     = get_parameter("messages.nav_dop").as_bool();
+    config_.enable_nav_cov     = get_parameter("messages.nav_cov").as_bool();
+    config_.enable_nav_posecef = get_parameter("messages.nav_posecef").as_bool();
+    config_.enable_nav_velecef = get_parameter("messages.nav_velecef").as_bool();
     config_.enable_nmea_gga = get_parameter("messages.nmea_gga").as_bool();
     config_.enable_nmea_rmc = get_parameter("messages.nmea_rmc").as_bool();
     config_.enable_nmea_gsa = get_parameter("messages.nmea_gsa").as_bool();
     config_.enable_nmea_gst = get_parameter("messages.nmea_gst").as_bool();
     config_.nmea_high_precision = get_parameter("messages.nmea_high_precision").as_bool();
+    config_.enable_esf_raw      = get_parameter("messages.esf_raw").as_bool();
+    config_.enable_esf_ins      = get_parameter("messages.esf_ins").as_bool();
+    config_.imu_topic           = get_parameter("imu_topic").as_string();
+    config_.imu_raw_topic       = get_parameter("imu_raw_topic").as_string();
     
     config_.enable_gps = get_parameter("gnss.gps").as_bool();
     config_.enable_glonass = get_parameter("gnss.glonass").as_bool();
@@ -166,18 +210,27 @@ class UbxDriverNode : public rclcpp::Node {
     config_.ephemeris_topic = get_parameter("ephemeris_topic").as_string();
     config_.solution_topic = get_parameter("solution_topic").as_string();
     config_.auto_origin = get_parameter("auto_origin").as_bool();
-    config_.origin_latitude = get_parameter("origin.latitude").as_double();
-    config_.origin_longitude = get_parameter("origin.longitude").as_double();
-    config_.origin_altitude = get_parameter("origin.altitude").as_double();
+    {
+      const auto v = get_parameter("origin").as_double_array();
+      if (v.size() == 3) {
+        config_.origin_latitude  = v[0];
+        config_.origin_longitude = v[1];
+        config_.origin_altitude  = v[2];
+      }
+    }
+
+    config_.ephemeris_snapshot_period_s = get_parameter("ephemeris.snapshot_period_s").as_double();
+    config_.ephemeris_max_age_s         = get_parameter("ephemeris.max_age_s").as_double();
+    config_.use_gps_timestamp           = get_parameter("use_gps_timestamp").as_bool();
+
+    eph_store_.setSnapshotPeriod(config_.ephemeris_snapshot_period_s);
+    eph_store_.setMaxAge(config_.ephemeris_max_age_s);
 
     // Detect USB connection from path
     is_usb_connection_ = (config_.stream_path.find("ttyACM") != std::string::npos);
 
     // Validate rate
-    if (config_.rate_hz < 1 || config_.rate_hz > 20) {
-      RCLCPP_WARN(get_logger(), "rate_hz out of range [1-20], clamping to 5");
-      config_.rate_hz = 5;
-    }
+    gnss_utils::validatePublishRate(config_.rate_hz, /*fallback=*/5, get_logger());
     
     // Log configuration
     RCLCPP_INFO(get_logger(), "Configuration loaded:");
@@ -188,22 +241,64 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "  GNSS: GPS=%d GLO=%d GAL=%d BDS=%d QZS=%d IRN=%d SBAS=%d",
                 config_.enable_gps, config_.enable_glonass, config_.enable_galileo,
                 config_.enable_beidou, config_.enable_qzss, config_.enable_navic, config_.enable_sbas);
+
+    // Lock solution source at startup. BINARY if NAV-PVT is enabled, else NMEA.
+    // No mid-session switching: if binary stops, output pauses rather than falling back.
+    source_ = config_.enable_nav_pvt ? SolutionSource::BINARY : SolutionSource::NMEA;
+    initPendingExpectedMask();
+    start_time_ = now();
+    RCLCPP_INFO(get_logger(), "Solution source locked: %s",
+                source_ == SolutionSource::BINARY ? "BINARY (UBX-NAV-PVT)" : "NMEA");
   }
 
   void initializePublishers() {
-    obs_pub_ = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(100).transient_local());
-    sol_pub_ = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
+    obs_pub_     = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
+    eph_pub_     = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(1).transient_local());
+    sol_pub_     = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
+    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(config_.imu_topic, 10);
+    imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
 
-    // Pre-configure ENU origin if not auto
     if (!config_.auto_origin) {
-      local_origin_pos_[0] = config_.origin_latitude * (M_PI / 180.0);
-      local_origin_pos_[1] = config_.origin_longitude * (M_PI / 180.0);
-      local_origin_pos_[2] = config_.origin_altitude;
-      pos2ecef(local_origin_pos_, local_origin_ecef_);
-      has_local_origin_ = true;
-      RCLCPP_INFO(get_logger(), "Configured local ENU origin: lat=%.6f, lon=%.6f, alt=%.2f",
-                  config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
+      if (config_.origin_latitude == 0.0 && config_.origin_longitude == 0.0) {
+        RCLCPP_WARN(get_logger(),
+          "auto_origin=false but origin is [0,0,0] — falling back to auto (first fix)");
+      } else {
+        local_origin_pos_[0] = config_.origin_latitude * (M_PI / 180.0);
+        local_origin_pos_[1] = config_.origin_longitude * (M_PI / 180.0);
+        local_origin_pos_[2] = config_.origin_altitude;
+        pos2ecef(local_origin_pos_, local_origin_ecef_);
+        has_local_origin_ = true;
+        RCLCPP_INFO(get_logger(), "ENU origin set from config: lat=%.6f lon=%.6f alt=%.2f",
+          config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
+      }
+    }
+    logEnabledMessages();
+  }
+
+  void logEnabledMessages() {
+    auto on = [](bool v) { return v ? "ON" : "OFF"; };
+    RCLCPP_INFO(get_logger(), "Enabled messages:");
+    RCLCPP_INFO(get_logger(), "  Observation  : RAWX=%s SFRBX=%s",
+      on(config_.enable_rawx), on(config_.enable_sfrbx));
+    RCLCPP_INFO(get_logger(), "  PVT (binary) : NAV-PVT=%s NAV-DOP=%s NAV-COV=%s NAV-POSECEF=%s NAV-VELECEF=%s",
+      on(config_.enable_nav_pvt), on(config_.enable_nav_dop), on(config_.enable_nav_cov),
+      on(config_.enable_nav_posecef), on(config_.enable_nav_velecef));
+    RCLCPP_INFO(get_logger(), "  NMEA         : GGA=%s RMC=%s GSA=%s GST=%s HiPrec=%s",
+      on(config_.enable_nmea_gga), on(config_.enable_nmea_rmc),
+      on(config_.enable_nmea_gsa), on(config_.enable_nmea_gst),
+      on(config_.nmea_high_precision));
+    RCLCPP_INFO(get_logger(), "  IMU          : ESF-RAW=%s ESF-INS=%s",
+      on(config_.enable_esf_raw), on(config_.enable_esf_ins));
+    RCLCPP_INFO(get_logger(), "  Constellation: GPS=%s GLO=%s GAL=%s BDS=%s QZS=%s NavIC=%s SBAS=%s",
+      on(config_.enable_gps), on(config_.enable_glonass), on(config_.enable_galileo),
+      on(config_.enable_beidou), on(config_.enable_qzss), on(config_.enable_navic),
+      on(config_.enable_sbas));
+    RCLCPP_INFO(get_logger(), "  GPS timestamp : %s", on(config_.use_gps_timestamp));
+    if (!config_.auto_origin && (config_.origin_latitude != 0.0 || config_.origin_longitude != 0.0)) {
+      RCLCPP_INFO(get_logger(), "  ENU origin    : fixed (lat=%.6f lon=%.6f alt=%.2f)",
+        config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
+    } else {
+      RCLCPP_INFO(get_logger(), "  ENU origin    : auto (first valid solution)");
     }
   }
 
@@ -222,9 +317,7 @@ class UbxDriverNode : public rclcpp::Node {
     timer_ = create_wall_timer(kTimerInterval, std::bind(&UbxDriverNode::pollStream, this));
   }
 
-  // ============================================================================
   // Stream Management
-  // ============================================================================
 
   void openStream() {
     strinit(&stream_);
@@ -258,9 +351,7 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Stream opened: %s", config_.stream_path.c_str());
   }
 
-  // ============================================================================
   // Receiver Configuration (Unified Entry Point)
-  // ============================================================================
 
   bool isGen10() const { return config_.generation == "G10"; }
 
@@ -315,7 +406,7 @@ class UbxDriverNode : public rclcpp::Node {
              uint8_t b = buffer[i];
              
              // Keep the main decoder updated to avoid buffer overflow/loss
-             if (input_ubx(&raw_, &rtcm_, b)) {
+             if (input_ubx(&raw_, b)) {
                  // decoded something (maybe not what we want, but keep engine running)
              }
              
@@ -334,9 +425,7 @@ class UbxDriverNode : public rclcpp::Node {
     return false;
   }
 
-  // ============================================================================
   // Step 1: GNSS Signal Configuration
-  // ============================================================================
 
   void setupGnssSignals() {
     if (isGen10()) {
@@ -367,7 +456,7 @@ class UbxDriverNode : public rclcpp::Node {
         int n = strread(&stream_, buffer, sizeof(buffer));
         for (int i = 0; i < n; ++i) {
              uint8_t b = buffer[i];
-             input_ubx(&raw_, &rtcm_, b);
+             input_ubx(&raw_, b);
              checkAckNak(b); // Feed ACK/NAK state machine just in case
              
              switch (state) {
@@ -541,9 +630,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Step 2: Measurement Rate
-  // ============================================================================
 
   void setupMeasurementRate() {
     int meas_rate_ms = 1000 / config_.rate_hz;
@@ -565,9 +652,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Step 3: Dynamic Model
-  // ============================================================================
 
   void setupDynamicModel() {
     ubx::DynamicModel model = ubx::parseDynamicModel(config_.dynamic_model);
@@ -592,9 +677,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Step 4: Output Messages
-  // ============================================================================
 
   void setupOutputMessages() {
     if (isGen10()) {
@@ -616,9 +699,15 @@ class UbxDriverNode : public rclcpp::Node {
     for (int port : target_ports) {
       // 1. Configure standard UBX output messages
       std::vector<ubx::ValsetItem> items_ubx = {
-          {ubx::CFG_MSGOUT_UBX_RXM_RAWX_I2C + port, config_.enable_rawx ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_RXM_SFRBX_I2C + port, config_.enable_sfrbx ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_PVT_I2C + port, config_.enable_nav_pvt ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_RXM_RAWX_I2C  + port, config_.enable_rawx    ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_RXM_SFRBX_I2C + port, config_.enable_sfrbx   ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_PVT_I2C     + port, config_.enable_nav_pvt     ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_DOP_I2C     + port, config_.enable_nav_dop     ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_COV_I2C     + port, config_.enable_nav_cov     ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_POSECEF_I2C + port, config_.enable_nav_posecef ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_VELECEF_I2C + port, config_.enable_nav_velecef ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_ESF_RAW_I2C   + port, config_.enable_esf_raw ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_ESF_INS_I2C   + port, config_.enable_esf_ins ? 1u : 0u, 1},
       };
 
       if (!sendCfgValset(items_ubx)) {
@@ -680,9 +769,15 @@ class UbxDriverNode : public rclcpp::Node {
       }
     };
 
-    sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_RAWX, config_.enable_rawx, "RXM-RAWX");
-    sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_SFRBX, config_.enable_sfrbx, "RXM-SFRBX");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_PVT, config_.enable_nav_pvt, "NAV-PVT");
+    sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_RAWX,  config_.enable_rawx,    "RXM-RAWX");
+    sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_SFRBX, config_.enable_sfrbx,   "RXM-SFRBX");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_PVT,     config_.enable_nav_pvt,     "NAV-PVT");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_DOP,     config_.enable_nav_dop,     "NAV-DOP");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_COV,     config_.enable_nav_cov,     "NAV-COV");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_POSECEF, config_.enable_nav_posecef, "NAV-POSECEF");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_VELECEF, config_.enable_nav_velecef, "NAV-VELECEF");
+    sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_RAW,   config_.enable_esf_raw, "ESF-RAW");
+    sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_INS,   config_.enable_esf_ins, "ESF-INS");
 
     sendNmea(ubx::NMEA_GGA, config_.enable_nmea_gga, "GGA");
     sendNmea(ubx::NMEA_RMC, config_.enable_nmea_rmc, "RMC");
@@ -707,9 +802,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // UBX Communication (Gen 10: CFG-VALSET)
-  // ============================================================================
 
   bool sendCfgValset(const std::vector<ubx::ValsetItem>& items) {
     if (items.empty()) return true;
@@ -753,9 +846,7 @@ class UbxDriverNode : public rclcpp::Node {
     return false;
   }
 
-  // ============================================================================
   // UBX Communication (Low-level)
-  // ============================================================================
 
   /// Send a UBX frame and wait for ACK.
   bool sendUbxPacket(uint8_t msg_class, uint8_t msg_id, const std::vector<uint8_t>& payload) {
@@ -802,9 +893,7 @@ class UbxDriverNode : public rclcpp::Node {
     return waitForAck(expected_class, expected_id);
   }
 
-  // ============================================================================
   // ACK/NAK Detection
-  // ============================================================================
 
   bool waitForAck(uint8_t msg_class, uint8_t msg_id) {
     auto start = std::chrono::steady_clock::now();
@@ -820,7 +909,7 @@ class UbxDriverNode : public rclcpp::Node {
     while (std::chrono::steady_clock::now() - start < timeout) {
       int n = strread(&stream_, buffer, sizeof(buffer));
       for (int i = 0; i < n; ++i) {
-        int result = input_ubx(&raw_, &rtcm_, buffer[i]);
+        int result = input_ubx(&raw_, buffer[i]);
 
         checkAckNak(buffer[i]);
 
@@ -892,9 +981,151 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
+  // UBX Mini-Framer (parallel to RTKLIB, for ESF-INS and NAV-ATT)
+
+  void parseUbxByte(uint8_t byte) {
+    switch (ubx_frm_state_) {
+      case 0: if (byte == ubx::SYNC1) ubx_frm_state_ = 1; break;
+      case 1: ubx_frm_state_ = (byte == ubx::SYNC2) ? 2 : (byte == ubx::SYNC1 ? 1 : 0); break;
+      case 2: ubx_frm_cls_   = byte; ubx_frm_state_ = 3; break;
+      case 3: ubx_frm_id_    = byte; ubx_frm_state_ = 4; break;
+      case 4: ubx_frm_len_   = byte; ubx_frm_state_ = 5; break;
+      case 5:
+        ubx_frm_len_ |= static_cast<uint16_t>(byte << 8);
+        ubx_frm_payload_.clear();
+        ubx_frm_pos_   = 0;
+        ubx_frm_state_ = (ubx_frm_len_ == 0) ? 7 : 6;
+        break;
+      case 6:
+        ubx_frm_payload_.push_back(byte);
+        if (++ubx_frm_pos_ >= ubx_frm_len_) ubx_frm_state_ = 7;
+        break;
+      case 7: ubx_frm_state_ = 8; break;  // CK_A skip
+      case 8: handleUbxFrame(); ubx_frm_state_ = 0; break;  // CK_B, frame done
+      default: ubx_frm_state_ = 0;
+    }
+  }
+
+  void handleUbxFrame() {
+    if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_RAW) handleEsfRaw();
+    if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_INS) handleEsfIns();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_PVT)     handleNavPvt();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_DOP)     handleNavDop();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_COV)     handleNavCov();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_POSECEF) handleNavPosEcef();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_VELECEF) handleNavVelEcef();
+  }
+
+  // Sign-extend the lower 24 bits of a uint32 into an int32.
+  static int32_t signExtend24(uint32_t v) {
+    return (v & 0x00800000u) ? static_cast<int32_t>(v | 0xFF000000u)
+                             : static_cast<int32_t>(v & 0x00FFFFFFu);
+  }
+
+  // UBX-ESF-RAW: 4-byte reserved header + N × { data(u4) + sTtag(u4) }.
+  // data low 24 bits = signed measurement, high 8 bits = data type.
+  // Accumulate accel x/y/z + gyro x/y/z found in this message; publish if any axis was set.
+  void handleEsfRaw() {
+    constexpr int kHeaderLen = 4;
+    constexpr int kBlockLen  = 8;
+    const int n = (static_cast<int>(ubx_frm_payload_.size()) - kHeaderLen) / kBlockLen;
+    if (n <= 0) return;
+
+    double accel[3] = {0, 0, 0};
+    double gyro[3]  = {0, 0, 0};
+    bool   has_accel[3] = {false, false, false};
+    bool   has_gyro[3]  = {false, false, false};
+    const double deg2rad = M_PI / 180.0;
+
+    for (int i = 0; i < n; ++i) {
+      const uint8_t* p = ubx_frm_payload_.data() + kHeaderLen + i * kBlockLen;
+      uint32_t data = 0;
+      std::memcpy(&data, p, 4);
+      const uint8_t type = static_cast<uint8_t>((data >> 24) & 0xFFu);
+      const int32_t val  = signExtend24(data);
+
+      switch (type) {
+        case ubx::esf_raw::TYPE_GYRO_X:
+          gyro[0] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[0] = true; break;
+        case ubx::esf_raw::TYPE_GYRO_Y:
+          gyro[1] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[1] = true; break;
+        case ubx::esf_raw::TYPE_GYRO_Z:
+          gyro[2] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[2] = true; break;
+        case ubx::esf_raw::TYPE_ACCEL_X:
+          accel[0] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[0] = true; break;
+        case ubx::esf_raw::TYPE_ACCEL_Y:
+          accel[1] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[1] = true; break;
+        case ubx::esf_raw::TYPE_ACCEL_Z:
+          accel[2] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[2] = true; break;
+        default: break;  // ignore other sensor types (temp, wheel speed, etc.)
+      }
+    }
+
+    if (!(has_accel[0] || has_accel[1] || has_accel[2] ||
+          has_gyro[0]  || has_gyro[1]  || has_gyro[2])) return;
+
+    sensor_msgs::msg::Imu imu;
+    imu.header.stamp    = now();
+    imu.header.frame_id = config_.frame_id;
+
+    // orientation: not provided by ESF-RAW — leave identity, mark unknown
+    imu.orientation_covariance[0] = -1.0;
+
+    imu.angular_velocity.x = gyro[0];
+    imu.angular_velocity.y = gyro[1];
+    imu.angular_velocity.z = gyro[2];
+    imu.linear_acceleration.x = accel[0];
+    imu.linear_acceleration.y = accel[1];
+    imu.linear_acceleration.z = accel[2];
+
+    auto unk = ins::makeUnknownCovariance();
+    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
+
+    imu_raw_pub_->publish(imu);
+  }
+
+  void handleEsfIns() {
+    if (static_cast<int>(ubx_frm_payload_.size()) < ubx::esf_ins::MIN_LEN) return;
+
+    uint32_t bitfield0 = 0;
+    std::memcpy(&bitfield0, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_BITFIELD, 4);
+    const bool ang_valid = (bitfield0 & (0x7u << 8))  == (0x7u << 8);
+    const bool acc_valid = (bitfield0 & (0x7u << 11)) == (0x7u << 11);
+
+    int32_t xAng = 0, yAng = 0, zAng = 0, xAcc = 0, yAcc = 0, zAcc = 0;
+    std::memcpy(&xAng, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_XANGRATE, 4);
+    std::memcpy(&yAng, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_YANGRATE, 4);
+    std::memcpy(&zAng, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_ZANGRATE, 4);
+    std::memcpy(&xAcc, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_XACCEL,   4);
+    std::memcpy(&yAcc, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_YACCEL,   4);
+    std::memcpy(&zAcc, ubx_frm_payload_.data() + ubx::esf_ins::OFFSET_ZACCEL,   4);
+
+    const double deg2rad = M_PI / 180.0;
+
+    sensor_msgs::msg::Imu imu;
+    imu.header.stamp    = now();
+    imu.header.frame_id = config_.frame_id;
+
+    // orientation: not provided by ESF-INS — leave identity, mark unknown
+    imu.orientation_covariance[0] = -1.0;
+
+    imu.angular_velocity.x = xAng * 1e-3 * deg2rad;
+    imu.angular_velocity.y = yAng * 1e-3 * deg2rad;
+    imu.angular_velocity.z = zAng * 1e-3 * deg2rad;
+    auto ang_cov = ang_valid ? ins::makeDiagCovariance(1e-4, 1e-4, 1e-4) : ins::makeUnknownCovariance();
+    std::copy(ang_cov.begin(), ang_cov.end(), imu.angular_velocity_covariance.begin());
+
+    imu.linear_acceleration.x = xAcc * 1e-2;
+    imu.linear_acceleration.y = yAcc * 1e-2;
+    imu.linear_acceleration.z = zAcc * 1e-2;
+    auto acc_cov = acc_valid ? ins::makeDiagCovariance(1e-3, 1e-3, 1e-3) : ins::makeUnknownCovariance();
+    std::copy(acc_cov.begin(), acc_cov.end(), imu.linear_acceleration_covariance.begin());
+
+    imu_pub_->publish(imu);
+  }
+
   // Data Processing
-  // ============================================================================
 
   void pollStream() {
     uint8_t buffer[ubx::READ_BUFFER_SIZE];
@@ -910,10 +1141,13 @@ class UbxDriverNode : public rclcpp::Node {
       for (int i = 0; i < bytes_read; ++i) {
         uint8_t byte = buffer[i];
 
-        const int result = input_ubx(&raw_, &rtcm_, byte);
+        const int result = input_ubx(&raw_, byte);
         if (result > 0) {
           handleDecodeResult(result);
         }
+
+        // Parallel UBX mini-framer for ESF-INS and NAV-ATT
+        parseUbxByte(byte);
 
         // Feed NMEA text parser
         if (byte == '$') {
@@ -924,7 +1158,7 @@ class UbxDriverNode : public rclcpp::Node {
           if (byte == '\n') {
             handleNmeaSentence(nmea_buffer_);
             nmea_buffer_.clear();
-          } else if (nmea_buffer_.size() > 256) { // Safeguard against missing newlines
+          } else if (nmea_buffer_.size() > ubx::NMEA_MAX_LINE_LEN) { // Safeguard against missing newlines
             nmea_buffer_.clear();
           }
         }
@@ -935,88 +1169,341 @@ class UbxDriverNode : public rclcpp::Node {
         break;
       }
     }
+
+    maybePublishHeartbeat();
+    warnIfBinaryStarvation();
+    maybeWatchdogFlushPendingPvt();
   }
 
+  // Solution source policy:
+  //   BINARY (NAV-PVT)  : if config_.enable_nav_pvt → use NAV-PVT only, drop NMEA
+  //   NMEA             : otherwise → use NMEA-parsed solution
+  // Source is locked at startup; no mid-session switching.
+  enum class SolutionSource { BINARY, NMEA };
+
   void handleNmeaSentence(const std::string& sentence) {
-    if (nmea_parser_.parseSentence(sentence, current_solution_)) {
-      publishSolution();
+    if (nmea_parser_.parseSentence(sentence, nmea_solution_)) {
+      if (source_ == SolutionSource::NMEA) {
+        publishSolution(nmea_solution_);
+      }
     }
   }
 
-  // ============================================================================
-  // Solution Publishing
-  // ============================================================================
+  // PVT TOW Aggregation (mirrors SBF driver pattern; see ubx_decoder_node.cpp
+  // for design notes). All NAV-* payloads carry iTOW at offset 0.
+  // NAV-DOP is tracked separately in a persistent cache (last_dop_) so it can
+  // survive Pending resets and be staleness-gated against the PVT cadence.
+  // Only NAV-COV/POSECEF/VELECEF contribute to completion.
+  static constexpr uint8_t COV_BIT_COV     = 0x1;
+  static constexpr uint8_t COV_BIT_POSECEF = 0x2;
+  static constexpr uint8_t COV_BIT_VELECEF = 0x4;
 
-  void publishSolution() {
+  struct PendingPvt {
+    uint32_t tow_ms{UINT32_MAX};
+    bool has_pvt{false};
+    uint8_t cov_received{0};
+    uint8_t cov_expected{0};   // derived from YAML config (fixed at startup)
+    msg::GnssSolution buf{};
+    rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
+  };
+
+  gnss_utils::DopCache last_dop_;
+  uint32_t prev_pvt_tow_ms_{UINT32_MAX};
+  uint32_t pvt_period_ms_{0};
+
+  // Last published (week, tow) for orphan guard. NAV-* bodies carry only TOW;
+  // we compare against the week stored at the previous publishSolution call.
+  uint32_t last_flushed_week_{0};
+  uint32_t last_flushed_tow_ms_{UINT32_MAX};
+
+  void initPendingExpectedMask() {
+    pending_.cov_expected =
+        (config_.enable_nav_cov     ? COV_BIT_COV     : uint8_t{0}) |
+        (config_.enable_nav_posecef ? COV_BIT_POSECEF : uint8_t{0}) |
+        (config_.enable_nav_velecef ? COV_BIT_VELECEF : uint8_t{0});
+  }
+
+  static uint32_t readItowMs(const uint8_t* p, size_t len) {
+    if (len < 4) return UINT32_MAX;
+    uint32_t v = 0;
+    std::memcpy(&v, p, 4);
+    return v;
+  }
+
+  bool pendingComplete() const {
+    return pending_.has_pvt &&
+           pending_.cov_received == pending_.cov_expected;
+  }
+
+  // Orphan guard: TOW matches the most-recently-flushed epoch. NAV-* bodies
+  // don't carry a week field, so fall back to TOW-only when the current pending
+  // has no PVT yet (buf.time_week is 0). Returns true → caller should skip.
+  bool isLateOrphan(uint32_t tow) const {
+    const uint32_t week = pending_.buf.time_week;
+    return last_flushed_tow_ms_ != UINT32_MAX &&
+           tow == last_flushed_tow_ms_ &&
+           (week == 0 || week == last_flushed_week_);
+  }
+
+  void handleNavPvt() {
+    if (!config_.enable_nav_pvt) return;
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (isLateOrphan(tow)) return;
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::pvt::parseNavPvt(ubx_frm_payload_.data(), ubx_frm_payload_.size(),
+                               pending_.buf)) {
+      return;
+    }
+    pending_.has_pvt = true;
+    pending_.last_update = now();
+    ever_received_binary_ = true;
+    if (pendingComplete()) flushPending();
+  }
+
+  // NAV-DOP: parsed into the persistent last_dop_ cache, NOT into pending_.
+  // Does NOT participate in completion and does NOT trigger flush. At flush
+  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
+  // enough (within 0..PVT_period after PVT) to populate the published solution.
+  // NAV-DOP carries no GPS week → last_dop_.week = 0 (helper skips week check).
+  void handleNavDop() {
+    if (!config_.enable_nav_dop) return;
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    msg::GnssSolution scratch{};
+    if (!ubx::nav_dop::parseNavDop(ubx_frm_payload_.data(), ubx_frm_payload_.size(),
+                                   scratch)) {
+      return;
+    }
+    last_dop_.valid  = true;
+    last_dop_.week   = 0;
+    last_dop_.tow_ms = tow;
+    last_dop_.gdop   = scratch.gdop;
+    last_dop_.pdop   = scratch.pdop;
+    last_dop_.hdop   = scratch.hdop;
+    last_dop_.vdop   = scratch.vdop;
+  }
+
+  void handleNavCov() {
+    if (!config_.enable_nav_cov) return;
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (isLateOrphan(tow)) return;
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_cov::parseNavCov(ubx_frm_payload_.data(), ubx_frm_payload_.size(),
+                                   pending_.buf)) {
+      return;
+    }
+    pending_.cov_received |= COV_BIT_COV;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
+  }
+
+  void handleNavPosEcef() {
+    if (!config_.enable_nav_posecef) return;
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (isLateOrphan(tow)) return;
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_posecef::parseNavPosEcef(ubx_frm_payload_.data(),
+                                           ubx_frm_payload_.size(),
+                                           pending_.buf)) {
+      return;
+    }
+    pending_.cov_received  |= COV_BIT_POSECEF;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
+  }
+
+  void handleNavVelEcef() {
+    if (!config_.enable_nav_velecef) return;
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size());
+    if (isLateOrphan(tow)) return;
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_velecef::parseNavVelEcef(ubx_frm_payload_.data(),
+                                           ubx_frm_payload_.size(),
+                                           pending_.buf)) {
+      return;
+    }
+    pending_.cov_received  |= COV_BIT_VELECEF;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
+  }
+
+  void flushPending() {
+    const uint8_t expected = pending_.cov_expected;
+    const uint8_t recv     = pending_.cov_received;
+    if (!pending_.has_pvt) {
+      pending_ = {};
+      pending_.cov_expected = expected;
+      return;
+    }
+    // Snapshot ECEF-direct fields before LLH-driven derivation overwrites them.
+    msg::GnssSolution ecef_direct = pending_.buf;
+    binary_solution_ = pending_.buf;
+
+    // Derive ECEF position/velocity from LLH/ENU using current solution's LLH.
+    decoder_common::finalizeBinarySolutionGeometry(binary_solution_);
+
+    // Derive ECEF covariance from ENU covariance via current-LLH rotation.
+    const double lat = binary_solution_.latitude  * D2R;
+    const double lon = binary_solution_.longitude * D2R;
+    double n[9], e[9];
+    std::copy(binary_solution_.pos_enu_cov.begin(),
+              binary_solution_.pos_enu_cov.end(), n);
+    gnss_utils::rotateCovarianceEnuToEcef(n, lat, lon, e);
+    std::copy(std::begin(e), std::end(e),
+              binary_solution_.pos_cov_ecef.begin());
+    std::copy(binary_solution_.vel_enu_cov.begin(),
+              binary_solution_.vel_enu_cov.end(), n);
+    gnss_utils::rotateCovarianceEnuToEcef(n, lat, lon, e);
+    std::copy(std::begin(e), std::end(e),
+              binary_solution_.vel_cov_ecef.begin());
+
+    // ECEF-direct overrides: NAV-POSECEF / NAV-VELECEF take priority if seen.
+    if (recv & COV_BIT_POSECEF) {
+      binary_solution_.pos_ecef = ecef_direct.pos_ecef;
+    }
+    if (recv & COV_BIT_VELECEF) {
+      binary_solution_.vel_ecef = ecef_direct.vel_ecef;
+    }
+
+    // PVT cadence auto-detection (used by DOP staleness gate).
+    if (prev_pvt_tow_ms_ != UINT32_MAX) {
+      const uint32_t dt = pending_.tow_ms - prev_pvt_tow_ms_;
+      if (dt > 0 && dt < 10000) pvt_period_ms_ = dt;
+    }
+    prev_pvt_tow_ms_ = pending_.tow_ms;
+
+    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
+    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
+                                      binary_solution_.time_week,
+                                      pending_.tow_ms, pvt_period_ms_);
+
+    if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
+
+    // Record this epoch as the last published (week, tow) for orphan-guard.
+    last_flushed_week_   = binary_solution_.time_week;
+    last_flushed_tow_ms_ = pending_.tow_ms;
+
+    pending_ = {};
+    pending_.cov_expected = expected;
+  }
+
+  void maybeWatchdogFlushPendingPvt() {
+    if (!pending_.has_pvt && !pending_.cov_received) return;
+    if ((now() - pending_.last_update).seconds() > kPvtWatchdogTimeoutSec) {
+      flushPending();
+    }
+  }
+
+  // Warn if BINARY source was selected via YAML but no PVT has arrived after
+  // a generous startup window — typically indicates a receiver-side config
+  // or capability issue. Prevents silent failure under no-fallback policy.
+
+  void warnIfBinaryStarvation() {
+    if (source_ != SolutionSource::BINARY) return;
+    if (ever_received_binary_) return;
+    if ((now() - start_time_).seconds() < 15.0) return;
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+      "Solution source locked to BINARY (NAV-PVT) but no PVT received yet — "
+      "check receiver firmware/configuration.");
+  }
+
+  // Solution Publishing
+
+  void publishSolution(msg::GnssSolution& sol) {
     // Block publishing until configuration is complete, unless configure_on_startup is false
     if (!is_configured_ && config_.configure_on_startup) {
         return;
     }
 
-    // Determine header timestamp
-    int week = 0;
-    const double tow = time2gpst(raw_.time, &week);
-    if (week != 0) {
-      current_solution_.time_week = static_cast<uint16_t>(week);
-      current_solution_.time_tow = tow;
+    // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
+    // trusts time_week/time_tow already filled by NmeaParser from the sentence
+    // itself.
+    gtime_t t_gpst{};
+    int week_for_stamp = 0;
+    if (source_ == SolutionSource::BINARY) {
+      const double tow = time2gpst(raw_.time, &week_for_stamp);
+      if (week_for_stamp > 0) {
+        sol.time_week = static_cast<uint32_t>(week_for_stamp);
+        sol.time_tow  = tow;
+      }
+      sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
+      t_gpst = raw_.time;
+    } else {
+      sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_NMEA;
+      if (sol.time_week > 0) {
+        week_for_stamp = sol.time_week;
+        t_gpst = gpst2time(sol.time_week, sol.time_tow);
+      }
     }
 
-    current_solution_.header.stamp = now();
-    current_solution_.header.frame_id = config_.frame_id;
+    sol.header.stamp    = (config_.use_gps_timestamp && week_for_stamp > 0)
+                          ? gnss_utils::gpstToUtcRosTime(t_gpst) : now();
+    sol.header.frame_id = config_.frame_id;
 
     // Handle ENU conversion if a reference origin exists or setup if it doesn't
-    if (current_solution_.status == msg::GnssSolution::STATUS_FIX ||
-        current_solution_.status == msg::GnssSolution::STATUS_FLOAT ||
-        current_solution_.status == msg::GnssSolution::STATUS_SINGLE ||
-        current_solution_.status == msg::GnssSolution::STATUS_DGPS ||
-        current_solution_.status == msg::GnssSolution::STATUS_SBAS) {
-      
+    if (sol.status == msg::GnssSolution::STATUS_FIX ||
+        sol.status == msg::GnssSolution::STATUS_FLOAT ||
+        sol.status == msg::GnssSolution::STATUS_SINGLE ||
+        sol.status == msg::GnssSolution::STATUS_DGPS ||
+        sol.status == msg::GnssSolution::STATUS_SBAS) {
+
       if (!has_local_origin_) {
-        // Set first valid position as ENU origin
-        local_origin_ecef_[0] = current_solution_.pos_ecef.x;
-        local_origin_ecef_[1] = current_solution_.pos_ecef.y;
-        local_origin_ecef_[2] = current_solution_.pos_ecef.z;
+        local_origin_ecef_[0] = sol.pos_ecef.x;
+        local_origin_ecef_[1] = sol.pos_ecef.y;
+        local_origin_ecef_[2] = sol.pos_ecef.z;
         ecef2pos(local_origin_ecef_, local_origin_pos_);
         has_local_origin_ = true;
         RCLCPP_INFO(get_logger(), "Auto-set local ENU origin: lat=%.6f, lon=%.6f, alt=%.2f",
                     local_origin_pos_[0] * (180.0/M_PI), local_origin_pos_[1] * (180.0/M_PI), local_origin_pos_[2]);
       }
-      
-      // Transform position and origin to message
-      current_solution_.org_ecef.x = local_origin_ecef_[0];
-      current_solution_.org_ecef.y = local_origin_ecef_[1];
-      current_solution_.org_ecef.z = local_origin_ecef_[2];
+
+      sol.pos_enu_org_ecef.x = local_origin_ecef_[0];
+      sol.pos_enu_org_ecef.y = local_origin_ecef_[1];
+      sol.pos_enu_org_ecef.z = local_origin_ecef_[2];
 
       double ecef[3] = {
-        current_solution_.pos_ecef.x - local_origin_ecef_[0],
-        current_solution_.pos_ecef.y - local_origin_ecef_[1],
-        current_solution_.pos_ecef.z - local_origin_ecef_[2]
+        sol.pos_ecef.x - local_origin_ecef_[0],
+        sol.pos_ecef.y - local_origin_ecef_[1],
+        sol.pos_ecef.z - local_origin_ecef_[2]
       };
       double enu[3] = {0};
       ecef2enu(local_origin_pos_, ecef, enu);
 
-      current_solution_.pos_enu.x = enu[0];
-      current_solution_.pos_enu.y = enu[1];
-      current_solution_.pos_enu.z = enu[2];
-      
-      // Transform velocity
-      double vel_ecef[3] = {current_solution_.vel_ecef.x, current_solution_.vel_ecef.y, current_solution_.vel_ecef.z};
-      double vel_enu[3] = {0};
-      ecef2enu(local_origin_pos_, vel_ecef, vel_enu);
+      sol.pos_enu.x = enu[0];
+      sol.pos_enu.y = enu[1];
+      sol.pos_enu.z = enu[2];
 
-      current_solution_.vel_enu.x = vel_enu[0];
-      current_solution_.vel_enu.y = vel_enu[1];
-      current_solution_.vel_enu.z = vel_enu[2];
+      // vel_enu uses CURRENT-position frame (matches msg comment & receiver convention).
+      double vel_ecef[3] = {sol.vel_ecef.x, sol.vel_ecef.y, sol.vel_ecef.z};
+      double vel_enu[3] = {0};
+      const double cur_llh[3] = {sol.latitude * D2R, sol.longitude * D2R, sol.altitude};
+      ecef2enu(cur_llh, vel_ecef, vel_enu);
+
+      sol.vel_enu.x = vel_enu[0];
+      sol.vel_enu.y = vel_enu[1];
+      sol.vel_enu.z = vel_enu[2];
     } else {
-      current_solution_.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
-      current_solution_.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
+      sol.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
+      sol.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
+      sol.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
+      sol.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
+      sol.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
+      sol.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
     }
 
-    sol_pub_->publish(current_solution_);
+    sol_pub_->publish(sol);
   }
 
   void handleDecodeResult(int result) {
@@ -1032,145 +1519,80 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // ============================================================================
   // Observation Publishing
-  // ============================================================================
 
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
 
+    // Use per-observation time, NOT raw_.time: RTKLIB advances raw_.time to
+    // the next epoch when input_*()==1 fires (the trigger is the next epoch's
+    // first byte); raw_.obs.data[*] still holds the just-completed epoch.
     int week = 0;
-    const double tow = time2gpst(raw_.time, &week);
+    const gtime_t obs_time = raw_.obs.data[0].time;
+    const double tow = time2gpst(obs_time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp = now();
+    msg.header.stamp    = (config_.use_gps_timestamp && week > 0)
+                          ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
     msg.header.frame_id = config_.frame_id;
-    msg.week = static_cast<uint16_t>(week);
+    msg.week = static_cast<uint32_t>(week);
     msg.tow = tow;
 
-    SatelliteCount sat_count{};
+    decoder_common::SatelliteCount sat_count{};
 
     for (int i = 0; i < raw_.obs.n; ++i) {
       const obsd_t& obs = raw_.obs.data[i];
-      countSatellite(obs.sat, sat_count);
-      appendObservations(obs, msg.observations);
+      decoder_common::countSatellite(obs.sat, sat_count);
+      decoder_common::appendObservations(obs, msg.observations);
     }
 
     obs_pub_->publish(msg);
 
-    RCLCPP_INFO(
-        get_logger(),
-        "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
-        week, tow, msg.observations.size(), sat_count.gps, sat_count.glo, sat_count.gal,
-        sat_count.qzs, sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
+    RCLCPP_INFO(get_logger(),
+      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+      week, tow, msg.observations.size(),
+      sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
+      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
   }
 
-  void appendObservations(const obsd_t& obs, std::vector<msg::GnssObservation>& observations) {
-    for (int freq = 0; freq < NFREQ + NEXOBS; ++freq) {
-      if (obs.P[freq] == 0.0 && obs.L[freq] == 0.0 && obs.D[freq] == 0.0 && obs.SNR[freq] == 0) {
-        continue;
-      }
-      observations.push_back(gnss_utils::obsToMsg(obs, freq));
-    }
-  }
-
-  // ============================================================================
   // Ephemeris Publishing
-  // ============================================================================
 
   void publishEphemerides() {
-    bool has_new = false;
-
-    std::vector<msg::GnssEphemeris> gnss_eph;
-    std::vector<msg::GlonassEphemeris> glo_eph;
-
+    bool changed = false;
     for (int i = 0; i < raw_.nav.n; ++i) {
-      const eph_t& eph = raw_.nav.eph[i];
-      if (eph.sat == 0) continue;
-
-      int prn = 0;
-      if (satsys(eph.sat, &prn) == SYS_GLO) continue;
-
-      EphemerisKey key{eph.sat, eph.iode, eph.iodc, eph.code};
-      if (seen_ephemeris_.insert(key).second) {
-        gnss_eph.push_back(gnss_utils::ephToMsg(eph));
-        has_new = true;
-      }
+      changed = eph_store_.ingestEph(raw_.nav.eph[i]) || changed;
     }
-
     for (int i = 0; i < raw_.nav.ng; ++i) {
-      const geph_t& geph = raw_.nav.geph[i];
-      if (geph.sat == 0) continue;
-
-      auto it = last_glo_iode_.find(geph.sat);
-      if (it == last_glo_iode_.end() || it->second != geph.iode) {
-        last_glo_iode_[geph.sat] = geph.iode;
-        has_new = true;
-        glo_eph.push_back(gnss_utils::gephToMsg(geph));
-      }
+      changed = eph_store_.ingestGeph(raw_.nav.geph[i]) || changed;
     }
-
-    if (!has_new && !first_ephemeris_) return;
-    first_ephemeris_ = false;
-
-    msg::GnssEphemerides msg;
-    msg.header.stamp = now();
-    msg.gnss_ephemeris = std::move(gnss_eph);
-    msg.glonass_ephemeris = std::move(glo_eph);
-    eph_pub_->publish(msg);
-
-    RCLCPP_INFO(get_logger(), "Published eph: GNSS=%zu GLO=%zu (new=%s)",
-                msg.gnss_ephemeris.size(), msg.glonass_ephemeris.size(), has_new ? "yes" : "no");
+    if (changed) publishSnapshot();
   }
 
-  // ============================================================================
-  // Helper Types
-  // ============================================================================
-
-  struct SatelliteCount {
-    int gps = 0, glo = 0, gal = 0, qzs = 0, bds = 0, irn = 0, sbs = 0, unknown = 0;
-  };
-
-  static void countSatellite(int sat, SatelliteCount& count) {
-    int prn = 0;
-    switch (satsys(sat, &prn)) {
-      case SYS_GPS: ++count.gps; break;
-      case SYS_GLO: ++count.glo; break;
-      case SYS_GAL: ++count.gal; break;
-      case SYS_QZS: ++count.qzs; break;
-      case SYS_CMP: ++count.bds; break;
-      case SYS_IRN: ++count.irn; break;
-      case SYS_SBS: ++count.sbs; break;
-      default: ++count.unknown; break;
-    }
+  void maybePublishHeartbeat() {
+    if (eph_store_.heartbeatDue(now())) publishSnapshot();
   }
 
-  struct EphemerisKey {
-    int sat, iode, iodc, code;
-    bool operator==(const EphemerisKey& o) const {
-      return sat == o.sat && iode == o.iode && iodc == o.iodc && code == o.code;
-    }
-  };
+  void publishSnapshot() {
+    auto m = eph_store_.buildSnapshot(now());
+    eph_pub_->publish(m);
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+      "Published ephemeris snapshot: GNSS=%zu GLO=%zu",
+      m.gnss_ephemeris.size(), m.glonass_ephemeris.size());
+  }
 
-  struct EphemerisKeyHash {
-    size_t operator()(const EphemerisKey& k) const {
-      return static_cast<size_t>(k.sat) ^ (static_cast<size_t>(k.iode) << 16) ^
-             (static_cast<size_t>(k.iodc) << 1) ^ (static_cast<size_t>(k.code) << 24);
-    }
-  };
 
-  // ============================================================================
   // Member Variables
-  // ============================================================================
 
   // Configuration
   UbxConfig config_;
   bool is_usb_connection_{false};
 
   // Publishers
-  rclcpp::Publisher<msg::GnssObservations>::SharedPtr obs_pub_;
-  rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr eph_pub_;
-  rclcpp::Publisher<msg::GnssSolution>::SharedPtr sol_pub_;
+  rclcpp::Publisher<msg::GnssObservations>::SharedPtr  obs_pub_;
+  rclcpp::Publisher<msg::GnssEphemerides>::SharedPtr   eph_pub_;
+  rclcpp::Publisher<msg::GnssSolution>::SharedPtr      sol_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_pub_;       // ESF-INS (calibrated)
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;   // ESF-RAW (uncalibrated)
   rclcpp::TimerBase::SharedPtr timer_;
 
   // MALIB structures
@@ -1181,12 +1603,25 @@ class UbxDriverNode : public rclcpp::Node {
   // NMEA Parsing state
   gnss_utils::NmeaParser nmea_parser_;
   std::string nmea_buffer_;
-  msg::GnssSolution current_solution_;
+  msg::GnssSolution nmea_solution_;
+  msg::GnssSolution binary_solution_;
+  PendingPvt        pending_;
+  SolutionSource    source_{SolutionSource::NMEA};
+  rclcpp::Time      start_time_{0, 0, RCL_ROS_TIME};
+  bool              ever_received_binary_{false};
 
   // ENU Origin state
   bool has_local_origin_{false};
   double local_origin_ecef_[3]{0.0};
   double local_origin_pos_[3]{0.0}; // lat/lon/hgt (rad, rad, m)
+
+  // UBX mini-framer state (for ESF-INS / ESF-RAW)
+  int                  ubx_frm_state_{0};
+  uint8_t              ubx_frm_cls_{0};
+  uint8_t              ubx_frm_id_{0};
+  uint16_t             ubx_frm_len_{0};
+  uint16_t             ubx_frm_pos_{0};
+  std::vector<uint8_t> ubx_frm_payload_;
 
   // ACK/NAK detection (instance variables instead of function-static)
   uint8_t pending_ack_class_{0};
@@ -1197,11 +1632,9 @@ class UbxDriverNode : public rclcpp::Node {
   uint8_t ack_buf_[10]{};
   int ack_pos_{0};
 
-  // Ephemeris tracking
-  std::unordered_set<EphemerisKey, EphemerisKeyHash> seen_ephemeris_;
-  std::unordered_map<int, int> last_glo_iode_;
-  bool first_ephemeris_{true};
-  
+  // Unified ephemeris store
+  gnss_utils::EphemerisStore eph_store_;
+
   // State
   bool is_configured_{false};
 };

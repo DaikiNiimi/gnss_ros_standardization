@@ -1,9 +1,10 @@
 # Single Point Positioning (SPP) Node Configuration
-# 
+#
 # Usage:
-#   ros2 run gnss_ros_standardization spp_pntpos_node --ros-args --params-file config/spp_node.yaml
+#   ros2 run gnss_ros_standardization single_point_positioning --ros-args \
+#     --params-file config/single_point_positioning.yaml
 
-spp_pntpos_node:
+single_point_positioning:
   ros__parameters:
     # ==========================================================================
     # Input / Output
@@ -25,7 +26,8 @@ spp_pntpos_node:
       # Position type (ecef or llh)
       postype: "llh"
       # Position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
-      pos: [35.134709472, 136.977574273, 104.7180]
+      # pos: [35.134709472, 136.977574273, 104.7180]
+      pos: [0.0, 0.0, 0.0]
 
     # ==========================================================================
     # Processing Options

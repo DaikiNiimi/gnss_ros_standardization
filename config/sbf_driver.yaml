@@ -26,9 +26,14 @@ sbf_driver_node:
     # Set to false to use the receiver's current configuration as-is
     configure_on_startup: true
 
+    # Use GPS week/tow for message header stamps instead of system clock
+    use_gps_timestamp: false
+
     # Topic Names
     observation_topic: "/gnss/observation"
     ephemeris_topic: "/gnss/ephemeris"
+    solution_topic: "/gnss/nmea_solution"
+    imu_raw_topic: "/gnss/imu/data_raw"       # ExtSensorMeas (uncalibrated)
 
     # ==========================================================================
     # Receiver Configuration
@@ -45,23 +50,68 @@ sbf_driver_node:
     # ==========================================================================
     messages:
       meas_epoch: true       # Raw observations (MeasEpoch)
-      gps_nav: true          # GPS Navigation data
-      glo_nav: true          # GLONASS Navigation data
-      gal_nav: true          # Galileo Navigation data
-      bds_nav: true          # BeiDou Navigation data
-      qzs_nav: true          # QZSS Navigation data
-      navic_nav: true        # NavIC Navigation data
+
+      # Decoded navigation blocks (receiver-assembled; GPSNav/GLONav/GALNav/BDSNav/QZSNav/NavICNav)
+      # These arrive as a single complete ephemeris per block — faster than raw subframe accumulation.
+      gps_nav: true          # GPSNav    (ID 5891) — GPS decoded ephemeris
+      glo_nav: true          # GLONav    (ID 4004) — GLONASS decoded state vector
+      gal_nav: true          # GALNav    (ID 4002) — Galileo decoded ephemeris
+      bds_nav: true          # BDSNav    (ID 4081) — BeiDou decoded ephemeris
+      qzs_nav: true          # QZSNav    (ID 4095) — QZSS decoded ephemeris
+      navic_nav: true        # NavICLNav (ID 4254) — NavIC decoded ephemeris
+
+      # Raw navigation subframe blocks (decoded by RTKLIB input_sbf()).
+      # Enabling these makes the receiver emit subframes at ~6 s cadence per
+      # satellite. RTKLIB accumulates them in raw->subfrm[sat-1] and produces
+      # a fresh ephemeris within 15-30 s of decoder start — so a bag started
+      # mid-pass still captures the full visible-sat ephemeris set instead of
+      # waiting up to ~2 h for the next IODE rollover (which is when Decoded
+      # NAV blocks re-fire). Recommended ON for record/replay workflows.
+      # Both decoded and raw can be enabled simultaneously; duplicates are filtered by IODE/IODC.
+      gps_nav_raw: true       # GPSRawCA    (ID 4017) — GPS L1 C/A subframe
+      glo_nav_raw: true       # GLORawCA    (ID 4026) — GLONASS L1 C/A string
+      gal_nav_raw: true       # GALRawINAV+GALRawFNAV (ID 4023+4022) — Galileo I/F-NAV
+      bds_nav_raw: true       # BDSRaw      (ID 4047) — BeiDou navigation frame
+      qzs_nav_raw: true       # QZSRawL1CA  (ID 4066) — QZSS L1 C/A subframe
+      navic_nav_raw: true     # NAVICRaw    (ID 4093) — NavIC subframe
       
-      # Position / Velocity / Time
-      pvt_geodetic: false    # PVT solution (geodetic)
-      pos_cov_geodetic: false # PVT covariance (geodetic)
-      pvt_cartesian: false   # PVT solution (cartesian)
-      pos_cov_cartesian: false # PVT covariance (cartesian)
-      
-      # Attitude
-      att_euler: false       # Attitude (Euler angles)
-      att_cov_euler: false   # Attitude covariance
-      
-      # Status
-      receiver_status: false # Receiver status
-      quality_ind: false     # Quality indicators
+      # Binary PVT (preferred over NMEA when enabled — produces full-precision
+      # GnssSolution with 3x3 covariance). See "Solution source policy" below.
+      # When pvt_geodetic=true, pos_cov_geodetic=true is strongly recommended
+      # (otherwise pos_enu_cov will be zero). Same applies to pvt_cartesian /
+      # pos_cov_cartesian for ECEF.
+      pvt_geodetic: false       # PVTGeodetic    (ID 4007) → LLH + vel_NED
+      pos_cov_geodetic: false   # PosCovGeodetic (ID 5906) → pos_enu_cov 3x3
+      vel_cov_geodetic: false   # VelCovGeodetic (ID 5908) → vel_enu_cov 3x3
+      pvt_cartesian: false      # PVTCartesian    (ID 4006) → ECEF pos + vel
+      pos_cov_cartesian: false  # PosCovCartesian (ID 5905) → pos_cov_ecef 3x3
+      vel_cov_cartesian: false  # VelCovCartesian (ID 5907) → vel_cov_ecef 3x3
+      dop: false                # DOP            (ID 4001) → pdop/hdop/vdop (+ gdop = sqrt(pdop²+tdop²))
+
+      # IMU output (requires AsteRx-i / mosaic-X5 or other receiver with integrated IMU)
+      ext_sensor_meas: false   # Uncalibrated raw IMU accel + gyro → /gnss/imu/data_raw
+
+      # NMEA output (used for GnssSolution topic via NmeaParser)
+      # Sentences are output on the same physical port as SBF (Stream2, sec1 = 1 Hz)
+      nmea_gga: true         # GGA: position, fix quality, satellites, HDOP, altitude
+      nmea_rmc: true         # RMC: velocity (speed/course)
+      nmea_gsa: true         # GSA: DOP values
+      nmea_gst: true         # GST: position standard deviations (for covariance)
+
+    # Solution source policy (locked at startup):
+    #   If messages.pvt_geodetic OR messages.pvt_cartesian is true → BINARY
+    #     source (NMEA is parsed for state but not published)
+    #   Otherwise → NMEA source
+    # No mid-session switching. If BINARY is selected and the binary stream
+    # stops, /gnss/nmea_solution publication pauses rather than falling back.
+
+    # Ephemeris publishing — snapshot-on-change + heartbeat
+    # Topic always carries the full current state; logging this one topic is
+    # sufficient for both RINEX conversion and downstream positioning.
+    # ENU local origin settings
+    auto_origin: true              # false: use origin below; true: first valid fix
+    origin: [0.0, 0.0, 0.0]       # [lat_deg, lon_deg, alt_m (ellipsoidal)]
+
+    ephemeris:
+      snapshot_period_s: 30.0    # heartbeat interval when no new ephemeris arrives
+      max_age_s:         7200.0  # drop entries older than this from snapshots (2 h)
