@@ -33,7 +33,7 @@ Real-time RTK positioning produced by this package:
 Hardware and ROS 2 node configuration used in the demo above:
 
 <p align="center">
-  <img src="fig/demo_system_overview.png" alt="Hardware and ROS 2 node configuration" width="850">
+  <img src="fig/demo_setup.svg" alt="Hardware and ROS 2 node configuration" width="850">
 </p>
 
 ## Scope
