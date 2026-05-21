@@ -258,6 +258,11 @@ void GnssImuKalmanFilter::loadParameters() {
   declare_parameter<double>("gnss_pos_gate_chi2", c.gnss_pos_gate_chi2);
   get_parameter("gnss_pos_gate_chi2", c.gnss_pos_gate_chi2);
 
+  declare_parameter<bool>("ekf.time_align_to_gnss", c.time_align_to_gnss);
+  get_parameter("ekf.time_align_to_gnss", c.time_align_to_gnss);
+  declare_parameter<double>("ekf.imu_buffer_duration", c.imu_buffer_duration);
+  get_parameter("ekf.imu_buffer_duration", c.imu_buffer_duration);
+
   declare_parameter<bool>("use_wheel_speed", c.use_wheel_speed);
   declare_parameter<std::string>("wheel_speed_topic_type", c.wheel_speed_topic_type);
   declare_parameter<std::string>("wheel_speed_mode", c.wheel_speed_mode);
@@ -347,7 +352,16 @@ bool GnssImuKalmanFilter::tryInitialize() {
 
 // EKF Prediction (IMU-driven)
 void GnssImuKalmanFilter::predict(const Eigen::Vector3d& acc_body, const Eigen::Vector3d& gyr_body, double dt) {
-  if (dt <= 0.0 || dt > 1.0) return;
+  // Pure-math step. dt validity is the caller's responsibility; we silently
+  // no-op on non-positive dt (expected after time-aligned ZOH extrapolation
+  // or out-of-order IMU samples) and on a sub-millisecond dt (negligible
+  // state change). Only a clock jump (dt > 1 s) is logged.
+  if (dt <= 0.0) return;
+  if (dt > 1.0) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+      "predict() skipped: dt=%.3f s out of bound (clock jump)", dt);
+    return;
+  }
 
   Eigen::Matrix3d C_bn = getRotationMatrix();
   Eigen::Vector3d g = gravityVector();
@@ -415,6 +429,48 @@ void GnssImuKalmanFilter::predict(const Eigen::Vector3d& acc_body, const Eigen::
   }
 
   P_ = F * P_ * F.transpose() + Q;
+}
+
+// Forward-only time alignment: advance the state from prev_imu_stamp_ to t_obs
+// using buffered IMU samples (and ZOH on the latest sample for any tail interval).
+void GnssImuKalmanFilter::predictToTime(const rclcpp::Time& t_obs) {
+  if (!initialized_ || !has_prev_imu_stamp_) return;
+
+  double total = (t_obs - prev_imu_stamp_).seconds();
+
+  if (total <= 0.0) {
+    // Out-of-sequence measurement: t_obs is older than the current state time.
+    // Rewinding requires snapshots — not implemented. Caller falls back to
+    // applying the observation at the current state (legacy immediate-update).
+    if (total < -1e-3) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+        "OOSM: observation is %.0f ms older than state; applying without time alignment",
+        -total * 1000.0);
+    }
+    return;
+  }
+  if (total > 1.0) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+      "predictToTime: gap %.2f s too large, skipping forward integration", total);
+    return;
+  }
+
+  // Walk forward through buffered IMU samples in (prev_imu_stamp_, t_obs).
+  for (const auto& s : imu_buffer_) {
+    if (s.stamp <= prev_imu_stamp_) continue;
+    if (s.stamp >= t_obs) break;
+    double dt = (s.stamp - prev_imu_stamp_).seconds();
+    if (dt > 1e-6) predict(s.acc_body, s.gyr_body, dt);
+    prev_imu_stamp_ = s.stamp;
+  }
+
+  // Tail: use the most recent IMU sample as ZOH up to t_obs.
+  double dt_tail = (t_obs - prev_imu_stamp_).seconds();
+  if (dt_tail > 1e-6 && !imu_buffer_.empty()) {
+    const auto& last = imu_buffer_.back();
+    predict(last.acc_body, last.gyr_body, dt_tail);
+    prev_imu_stamp_ = t_obs;
+  }
 }
 
 // GNSS Position Update
@@ -537,35 +593,38 @@ void GnssImuKalmanFilter::onWheelSpeedWithCov(const geometry_msgs::msg::TwistWit
     R_vel += Eigen::Matrix3d::Identity() * 1e-6;
   }
   
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-    latest_wheel_.valid = true;
-    latest_wheel_.stamp = msg->header.stamp;
-    latest_wheel_.linear = linear;
-    for (int i = 0; i < 36; ++i) latest_wheel_.covariance[i] = msg->twist.covariance[i];
-  }
+  std::lock_guard<std::mutex> lock(mtx_);
+  latest_wheel_.valid = true;
+  latest_wheel_.stamp = msg->header.stamp;
+  latest_wheel_.linear = linear;
+  for (int i = 0; i < 36; ++i) latest_wheel_.covariance[i] = msg->twist.covariance[i];
 
-  processWheelSpeed(linear, R_vel);
+  processWheelSpeed(linear, R_vel, msg->header.stamp);
 }
 
 void GnssImuKalmanFilter::onWheelSpeedPoint(const geometry_msgs::msg::TwistStamped::SharedPtr msg) {
   Eigen::Vector3d linear(msg->twist.linear.x, msg->twist.linear.y, msg->twist.linear.z);
   Eigen::Matrix3d R_vel = Eigen::Matrix3d::Identity() * config_.wheel_speed_sigma * config_.wheel_speed_sigma;
-  
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-    latest_wheel_.valid = true;
-    latest_wheel_.stamp = msg->header.stamp;
-    latest_wheel_.linear = linear;
-    latest_wheel_.covariance.fill(0);
-  }
 
-  processWheelSpeed(linear, R_vel);
+  std::lock_guard<std::mutex> lock(mtx_);
+  latest_wheel_.valid = true;
+  latest_wheel_.stamp = msg->header.stamp;
+  latest_wheel_.linear = linear;
+  latest_wheel_.covariance.fill(0);
+
+  processWheelSpeed(linear, R_vel, msg->header.stamp);
 }
 
-void GnssImuKalmanFilter::processWheelSpeed(const Eigen::Vector3d& linear_velocity, const Eigen::Matrix3d& covariance) {
-  std::lock_guard<std::mutex> lock(mtx_);
+// Caller must hold mtx_.
+void GnssImuKalmanFilter::processWheelSpeed(const Eigen::Vector3d& linear_velocity,
+                                            const Eigen::Matrix3d& covariance,
+                                            const rclcpp::Time& t_obs) {
   if (!initialized_) return;
+
+  // Time alignment: advance state to the wheel-speed measurement timestamp.
+  if (config_.time_align_to_gnss) {
+    predictToTime(t_obs);
+  }
 
   Eigen::Matrix3d C_bn = getRotationMatrix();
   Eigen::Vector3d v_nav_pred = x_.segment<3>(IDX_VEL);
@@ -690,6 +749,14 @@ void GnssImuKalmanFilter::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
 
   rclcpp::Time stamp = msg->header.stamp;
 
+  // Push this sample to the ring buffer used by predictToTime() for time-aligned
+  // observation updates. Body-frame values (post mounting rotation) are stored.
+  imu_buffer_.push_back(ImuSample{stamp, acc_body, gyr_body});
+  while (imu_buffer_.size() > 1 &&
+         (stamp - imu_buffer_.front().stamp).seconds() > config_.imu_buffer_duration) {
+    imu_buffer_.pop_front();
+  }
+
   // Write sensors CSV and clear snapshots at IMU rate (before EKF initialized).
   // Clearing here (not after predict) ensures each GNSS snapshot appears in exactly one row.
   writeSensorsRow(stamp);
@@ -702,10 +769,18 @@ void GnssImuKalmanFilter::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
 
   if (has_prev_imu_stamp_) {
     double dt = (stamp - prev_imu_stamp_).seconds();
-    predict(acc_body, gyr_body, dt);
+    if (dt > 0.0) {
+      predict(acc_body, gyr_body, dt);
+      prev_imu_stamp_ = stamp;
+    }
+    // dt <= 0: state already passed this IMU's epoch (after a GNSS-driven ZOH
+    // extrapolation, or because of upstream IMU out-of-order publishing).
+    // Leave prev_imu_stamp_ untouched so the next IMU computes dt against the
+    // current state time.
+  } else {
+    prev_imu_stamp_ = stamp;
+    has_prev_imu_stamp_ = true;
   }
-  prev_imu_stamp_ = stamp;
-  has_prev_imu_stamp_ = true;
 
   writeStateRow(stamp);
   publishSolution(stamp);
@@ -821,6 +896,13 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
   }
 
   if (usable) {
+    // Time alignment: advance state to the GNSS measurement timestamp so the
+    // update is applied at the correct epoch. Forward-only — OOSM falls back
+    // to the legacy immediate-update with a warning logged inside predictToTime.
+    if (config_.time_align_to_gnss) {
+      predictToTime(msg->header.stamp);
+    }
+
     // Position observation update
     Eigen::Vector3d z_pos;
     Eigen::Matrix3d R_pos;
@@ -900,10 +982,18 @@ void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
     sol.pos_enu_org_ecef.y = origin_ecef_(1);
     sol.pos_enu_org_ecef.z = origin_ecef_(2);
 
-    Eigen::Vector3d enu = ecefToWorkFrame(ecef_pos);
-    sol.pos_enu.x = enu(0);
-    sol.pos_enu.y = enu(1);
-    sol.pos_enu.z = enu(2);
+    // pos_enu must always carry true ENU values relative to the origin.
+    // ecefToWorkFrame() returns ECEF unchanged when coordinate_frame=="ecef",
+    // so do the ECEF→ENU rotation explicitly here.
+    double pos_ref[3] = {origin_llh_(0), origin_llh_(1), origin_llh_(2)};
+    double dr[3] = {ecef_pos(0) - origin_ecef_(0),
+                    ecef_pos(1) - origin_ecef_(1),
+                    ecef_pos(2) - origin_ecef_(2)};
+    double enu[3];
+    ecef2enu(pos_ref, dr, enu);
+    sol.pos_enu.x = enu[0];
+    sol.pos_enu.y = enu[1];
+    sol.pos_enu.z = enu[2];
   }
 
   // Velocity
@@ -976,6 +1066,7 @@ void GnssImuKalmanFilter::writeSensorsHeader() {
     << "time_ns"
     << ",gnss_week,gnss_tow,gnss_stamp_ns"
     << ",gnss_lat_deg,gnss_lon_deg,gnss_alt_m"
+    << ",gnss_vel_E,gnss_vel_N,gnss_vel_U"
     << ",gnss_status,gnss_num_sats"
     << ",gnss_used"
     << ",imu_acc_x,imu_acc_y,imu_acc_z"
@@ -1001,11 +1092,14 @@ void GnssImuKalmanFilter::writeSensorsRow(const rclcpp::Time& stamp) {
                  << "," << g.lat
                  << "," << g.lon
                  << "," << g.alt
+                 << "," << g.vel_enu(0)
+                 << "," << g.vel_enu(1)
+                 << "," << g.vel_enu(2)
                  << "," << static_cast<int>(g.status)
                  << "," << static_cast<int>(g.num_sats)
                  << "," << (g.used_for_update ? 1 : 0);
   } else {
-    sensors_csv_ << ",,,,,,,,,0";
+    sensors_csv_ << ",,,,,,,,,,,,0";
   }
 
   // IMU (always present after initialization)

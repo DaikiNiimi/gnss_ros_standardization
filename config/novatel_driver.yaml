@@ -61,11 +61,11 @@ novatel_driver_node:
       bestxyz: false        # BESTXYZB (ID 241) → pos_cov_ecef / vel_cov_ecef diag (+ ENU rotation)
 
       # Navigation Data (Ephemeris)
-      gps_ephem: true       # GPSEPHEMB
+      gps_ephem: true       # RAWEPHEMB (RTKLIB does not decode GPSEPHEMB)
       glo_ephem: true       # GLOEPHEMERISB
-      gal_ephem: true       # GALEPHEMERISB / GALINAVEPHEMERISB
+      gal_ephem: true       # GALEPHEMERISB (carries both I/NAV and F/NAV)
       bds_ephem: true       # BDSEPHEMERISB
-      qzs_ephem: true       # QZSSEPHEMERISB
+      qzs_ephem: true       # QZSSRAWEPHEMB (RTKLIB does not decode QZSSEPHEMERISB)
       navic_ephem: true     # NAVICEPHEMERISB
 
       ionutc: false          # IONUTCB/GALIONOB/QZSSIONUTCB

@@ -42,15 +42,12 @@ constexpr uint16_t ID_RAWEPHEM          = 41;
 constexpr uint16_t ID_IONUTC            = 8;
 constexpr uint16_t ID_RAWWAASFRAME      = 287;
 constexpr uint16_t ID_RAWSBASFRAME      = 973; // OEM7/6
-constexpr uint16_t ID_GPSEPHEM          = 7;
 constexpr uint16_t ID_GLOEPHEMERIS      = 723;
 constexpr uint16_t ID_GALEPHEMERIS      = 1122;
-constexpr uint16_t ID_GALINAVEPHEMERIS  = 1309;
 constexpr uint16_t ID_GALIONO           = 1127;
 constexpr uint16_t ID_GALCLOCK          = 1121;
 constexpr uint16_t ID_QZSSRAWEPHEM      = 1331;
 constexpr uint16_t ID_QZSSRAWSUBFRAME   = 1330;
-constexpr uint16_t ID_QZSSEPHEMERIS     = 1336;
 constexpr uint16_t ID_QZSSIONUTC        = 1347;
 constexpr uint16_t ID_BDSEPHEMERIS      = 1696;
 constexpr uint16_t ID_NAVICEPHEMERIS    = 2123;
@@ -90,19 +87,20 @@ constexpr const char* LOG_BESTVEL       = "BESTVELB";  // Binary
 constexpr const char* LOG_PSRDOPB       = "PSRDOPB";   // Binary
 constexpr const char* LOG_BESTXYZB      = "BESTXYZB";  // Binary
 
+// GPS ephemeris: RTKLIB decodes RAWEPHEMB (ID 41) only. GPSEPHEMB (ID 7) is
+// not handled by RTKLIB's novatel.c, so we request RAWEPHEMB instead.
 constexpr const char* LOG_RAWEPHEM      = "RAWEPHEMB";
 constexpr const char* LOG_IONUTC        = "IONUTCB";
 constexpr const char* LOG_RAWWAASFRAME  = "RAWWAASFRAMEB";
-constexpr const char* LOG_GPSEPHEM      = "RAWEPHEMB";    // RTKLIB decodes ID 41 (RAWEPHEMB), NOT ID 7 (GPSEPHEMB)
 constexpr const char* LOG_GLOEPHEMERIS  = "GLOEPHEMERISB";
+// GALEPHEMERISB (ID 1122) carries both I/NAV and F/NAV data; GALINAVEPHEMERISB
+// (ID 1309) is not supported by RTKLIB and unnecessary.
 constexpr const char* LOG_GALEPHEMERIS  = "GALEPHEMERISB";
-// Note: GALINAVEPHEMERISB (ID 1309) is NOT supported by RTKLIB.
-// GALEPHEMERISB (ID 1122) already contains both I/NAV and F/NAV data,
-// so a separate GALINAVEPHEMERIS log is unnecessary.
-constexpr const char* LOG_GALINAVEPHEMERIS = "GALEPHEMERISB"; // alias → same as LOG_GALEPHEMERIS
 constexpr const char* LOG_GALIONO       = "GALIONOB";
 constexpr const char* LOG_GALCLOCK      = "GALCLOCKB";
-constexpr const char* LOG_QZSSEPHEMERIS = "QZSSRAWEPHEMB"; // RTKLIB decodes ID 1331 (QZSSRAWEPHEMB), NOT ID 1336 (QZSSEPHEMERISB)
+// QZSS ephemeris: RTKLIB decodes QZSSRAWEPHEMB (ID 1331) only. QZSSEPHEMERISB
+// (ID 1336) is not handled by RTKLIB's novatel.c.
+constexpr const char* LOG_QZSSRAWEPHEM  = "QZSSRAWEPHEMB";
 constexpr const char* LOG_QZSSIONUTC    = "QZSSIONUTCB";
 constexpr const char* LOG_BDSEPHEMERIS  = "BDSEPHEMERISB";
 constexpr const char* LOG_NAVICEPHEMERIS = "NAVICEPHEMERISB";

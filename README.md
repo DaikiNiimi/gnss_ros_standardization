@@ -22,16 +22,16 @@ fusion frameworks can be developed once and reused everywhere.
 
 ## Demo
 
+Hardware and ROS 2 node configuration used in the demo:
+
+<p align="center">
+  <img src="fig/demo_setup.svg" alt="Hardware and ROS 2 node configuration" width="850">
+</p>
+
 Demo of real-time kinematic (RTK) positioning using this ROS 2 package:
 
 <p align="center">
   <img src="fig/rtk_demo.gif" alt="RTK positioning demo" width="800">
-</p>
-
-Hardware and ROS 2 node configuration used in the demo above:
-
-<p align="center">
-  <img src="fig/demo_setup.svg" alt="Hardware and ROS 2 node configuration" width="850">
 </p>
 
 ## Supported ROS 2 distributions
@@ -48,10 +48,10 @@ Hardware and ROS 2 node configuration used in the demo above:
 | u-blox (UBX) | ✓ | ✓ | ✓ | ✓ |
 | Septentrio (SBF) | ✓ | ✓ | ✓ | ✓ |
 | NovAtel (OEM4/6/7) | ✓ | ✓ | ✓ | ✓ |
-| RTCM3 (input) | ✓ | ✓ | — | — | — |
+| RTCM3 (MSM4/7) | ✓ | ✓ | — | — | — |
 
 Per-receiver protocol message tables (UBX message IDs, SBF block IDs,
-NovAtel log IDs, RTCM types) live in the component READMEs linked below.
+NovAtel log IDs, RTCM types) are shown in the component READMEs.
 
 ## Dependencies
 
@@ -77,12 +77,12 @@ colcon build
 source install/setup.bash
 ```
 
-If you cloned without `--recursive`, run `git submodule update --init --recursive`.
+If you cloned the repository without `--recursive`, make sure to run `git submodule update --init --recursive`.
 
 ## Components
 
-Each component has its own README with the full message table, parameter list,
-and `ros2 run` examples.
+Each component has its own README with detailed information including message
+tables, parameter lists, and `ros2 run` examples.
 
 | Component | Purpose | README |
 |---|---|---|
@@ -101,12 +101,6 @@ by Tomoji Takasu, licensed under BSD 2-Clause.
 ## License
 
 Released under the [MIT License](LICENSE).
-
-## Contributing
-
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for
-guidelines on reporting issues, submitting pull requests, and the development
-workflow.
 
 ## Contact
 

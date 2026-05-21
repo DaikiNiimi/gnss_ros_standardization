@@ -87,7 +87,9 @@ See [`config/real_time_kinematic.yaml`](../../config/real_time_kinematic.yaml) f
 
 Loose-coupled GNSS/IMU extended Kalman filter. Fuses `/gnss/solution` (from
 SPP or RTK) with `/gnss/imu/data_raw` (and optionally wheel speed) to produce a
-higher-rate solution.
+higher-rate solution. GNSS / wheel-speed observations are time-aligned to the
+state by re-integrating buffered IMU samples up to the measurement timestamp
+(`ekf.time_align_to_gnss`, `ekf.imu_buffer_duration`).
 
 ```bash
 ros2 run gnss_ros_standardization gnss_imu_kalman_filter --ros-args \
@@ -111,6 +113,7 @@ ros2 run gnss_ros_standardization gnss_imu_kalman_filter --ros-args \
 | `local_origin.{mode,pos}` | Local ENU origin: `auto` or fixed `[lat, lon, alt]` |
 | `ekf.sigma_{acc,gyr,acc_bias,gyr_bias}` | Process noise σ |
 | `ekf.init_{pos,vel,att,acc_bias,gyr_bias}_std` | Initial covariance σ |
+| `ekf.time_align_to_gnss`, `ekf.imu_buffer_duration` | IMU-buffer time alignment of observations |
 | `gnss_update_mode` | `fix_only` / `fix_and_float` / `all` |
 | `gnss_heading_speed_threshold` | Min speed [m/s] for GNSS-velocity-derived heading |
 | `use_wheel_speed`, `wheel_speed_{topic_type,mode,sigma}` | Wheel-speed update |

@@ -372,8 +372,8 @@ class NovatelDriverNode : public rclcpp::Node {
     else                         sendCommand("UNLOG " + port_pfx + novatel::LOG_BESTXYZB);
 
     if (config_.enable_gps_ephem) {
-      sendCommand("LOG " + port_pfx + novatel::LOG_GPSEPHEM + onchanged);
-    } else { sendCommand("UNLOG " + port_pfx + novatel::LOG_GPSEPHEM); }
+      sendCommand("LOG " + port_pfx + novatel::LOG_RAWEPHEM + onchanged);
+    } else { sendCommand("UNLOG " + port_pfx + novatel::LOG_RAWEPHEM); }
 
     if (config_.enable_glo_ephem) {
       sendCommand("LOG " + port_pfx + novatel::LOG_GLOEPHEMERIS + onchanged);
@@ -392,8 +392,8 @@ class NovatelDriverNode : public rclcpp::Node {
     } else { sendCommand("UNLOG " + port_pfx + novatel::LOG_BDSEPHEMERIS); }
 
     if (config_.enable_qzs_ephem) {
-      sendCommand("LOG " + port_pfx + novatel::LOG_QZSSEPHEMERIS + onchanged);
-    } else { sendCommand("UNLOG " + port_pfx + novatel::LOG_QZSSEPHEMERIS); }
+      sendCommand("LOG " + port_pfx + novatel::LOG_QZSSRAWEPHEM + onchanged);
+    } else { sendCommand("UNLOG " + port_pfx + novatel::LOG_QZSSRAWEPHEM); }
 
     if (config_.enable_navic_ephem) {
       sendCommand("LOG " + port_pfx + novatel::LOG_NAVICEPHEMERIS + onchanged);

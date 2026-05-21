@@ -17,6 +17,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <deque>
 
 extern "C" {
 #include "rtklib.h"
@@ -119,8 +120,14 @@ struct EkfConfig {
 
   // GNSS update
   GnssUpdateMode gnss_update_mode = GnssUpdateMode::FIX_ONLY;
-  double gnss_heading_speed_threshold = 0.5;   // [m/s]
-  double gnss_pos_gate_chi2 = 7.815;           // Mahalanobis gate threshold (3DoF 99% = 7.815)
+  // Minimum horizontal speed [m/s] to use GNSS Doppler heading update.
+  // Below this speed Doppler direction is dominated by noise and yaw becomes unobservable.
+  double gnss_heading_speed_threshold = 1.5;
+  double gnss_pos_gate_chi2 = 7.815;           // Mahalanobis gate threshold (3DoF 95% = 7.815, 99% = 11.345)
+
+  // Time alignment of out-of-sync GNSS / wheel-speed measurements via IMU buffer
+  bool   time_align_to_gnss   = true;   // false: legacy immediate-update (no time alignment)
+  double imu_buffer_duration  = 2.0;    // [s] retain IMU samples for this duration
 
   // Wheel speed
   bool   use_wheel_speed    = false;
@@ -139,6 +146,17 @@ struct EkfConfig {
   // IMU mounting
   Eigen::Vector3d lever_arm = Eigen::Vector3d::Zero();  // [m]
   Eigen::Vector3d imu_orientation_rpy = Eigen::Vector3d::Zero();  // [rad]
+};
+
+/**
+ * @brief Single IMU sample retained in the ring buffer for time-aligned propagation
+ *        of asynchronous observations (GNSS, wheel speed). Body-frame values are
+ *        already corrected for the IMU mounting rotation.
+ */
+struct ImuSample {
+  rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
+  Eigen::Vector3d acc_body = Eigen::Vector3d::Zero();
+  Eigen::Vector3d gyr_body = Eigen::Vector3d::Zero();
 };
 
 /**
@@ -252,7 +270,17 @@ class GnssImuKalmanFilter : public rclcpp::Node {
    * @param covariance       Measurement noise covariance (3x3)
    */
   void processWheelSpeed(const Eigen::Vector3d& linear_velocity,
-                         const Eigen::Matrix3d& covariance);
+                         const Eigen::Matrix3d& covariance,
+                         const rclcpp::Time& t_obs);
+
+  /**
+   * @brief Advance the EKF state from prev_imu_stamp_ to t_obs using buffered IMU samples.
+   *        Used to time-align asynchronous observations (GNSS, wheel speed) before
+   *        applying their measurement update. Forward-only: out-of-sequence
+   *        measurements (t_obs < prev_imu_stamp_) trigger a warning and the state
+   *        is left unchanged (caller may proceed with the legacy immediate-update).
+   */
+  void predictToTime(const rclcpp::Time& t_obs);
 
   // ---- Initialization ----
 
@@ -361,9 +389,12 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   Eigen::Vector3d origin_llh_  = Eigen::Vector3d::Zero();  // lat[rad], lon[rad], alt[m]
   bool origin_set_ = false;
 
-  // Previous IMU timestamp
+  // Previous IMU timestamp — also marks the time of the current EKF state.
   rclcpp::Time prev_imu_stamp_{0, 0, RCL_ROS_TIME};
   bool has_prev_imu_stamp_ = false;
+
+  // Ring buffer of recent IMU samples for time-aligned observation updates.
+  std::deque<ImuSample> imu_buffer_;
 
   // Latest sensor snapshots for CSV
   GnssSnapshot latest_gnss_;

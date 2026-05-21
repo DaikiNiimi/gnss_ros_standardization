@@ -41,6 +41,12 @@ gnss_imu_kalman_filter:
       init_acc_bias_std: [0.1, 0.1, 0.1]            # [m/s²] ~10 mg
       init_gyr_bias_std: [0.01, 0.01, 0.01]         # [rad/s] ~0.6°/s
 
+      # IMU buffer for time alignment of GNSS / wheel-speed measurements.
+      # When time_align_to_gnss=true, the EKF re-integrates IMU samples up to the
+      # observation timestamp before applying the measurement update.
+      time_align_to_gnss: true
+      imu_buffer_duration: 2.0                      # [s] IMU sample retention
+
     # ==========================================================================
     # GNSS Observation Update Mode
     # ==========================================================================
@@ -48,6 +54,20 @@ gnss_imu_kalman_filter:
     # "fix_float" : Use Fix + Float solutions
     # "all"       : Use all solution types (including Single, SBAS, DGPS, PPP)
     gnss_update_mode: "fix_only"
+
+    # Mahalanobis distance² gate for GNSS position update (outlier rejection)
+    # 3-DoF chi² table: 95% = 7.815, 99% = 11.345
+    gnss_pos_gate_chi2: 7.815
+
+    # ==========================================================================
+    # CSV Log Output
+    # ==========================================================================
+    csv:
+      dir: ""                                    # output directory ("" = current working directory)
+      sensors_log_enabled: true                  # raw sensor data log (IMU/GNSS/wheel speed) at IMU rate
+      sensors_log_filename: "ekf_sensors_log.csv"
+      state_log_enabled: true                   # EKF estimated state + diagonal covariance log
+      state_log_filename: "ekf_state_log.csv"
     
     # ==========================================================================
     # Wheel Speed (Optional)
@@ -76,8 +96,10 @@ gnss_imu_kalman_filter:
     # ==========================================================================
     # State Update Thresholds
     # ==========================================================================
-    # Minimum valid horizontal speed (from Doppler) to initialize or update yaw [m/s]
-    gnss_heading_speed_threshold: 0.5
+    # Minimum valid horizontal speed (from Doppler) to initialize or update yaw [m/s].
+    # Below this speed the Doppler direction is dominated by noise and yaw becomes
+    # unobservable — keep at >=1.5 m/s to avoid spurious heading updates while stationary.
+    gnss_heading_speed_threshold: 1.5
 
     # ==========================================================================
     # IMU Installation & Lever-Arm
