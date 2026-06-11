@@ -44,6 +44,7 @@ public:
     this->declare_parameter("image_width", 1280);
     this->declare_parameter("image_height", 720);
     this->declare_parameter("font_scale", 1.0);
+    this->declare_parameter("render_scale", 2);
     this->declare_parameter("fixed_latitude", 0.0);
     this->declare_parameter("fixed_longitude", 0.0);
     this->declare_parameter("fixed_altitude", 0.0);
@@ -63,7 +64,10 @@ public:
 
     width_ = this->get_parameter("image_width").as_int();
     height_ = this->get_parameter("image_height").as_int();
-    font_scale_ = this->get_parameter("font_scale").as_double();
+    // Render at ss_ x resolution then downscale with INTER_AREA: small Hershey
+    // glyphs drawn at 1x lose strokes to quantization no matter the thickness.
+    ss_ = std::clamp((int)this->get_parameter("render_scale").as_int(), 1, 4);
+    font_scale_ = this->get_parameter("font_scale").as_double() * ss_;
 
     fixed_pos_lla_[0] = this->get_parameter("fixed_latitude").as_double();
     fixed_pos_lla_[1] = this->get_parameter("fixed_longitude").as_double();
@@ -114,7 +118,7 @@ public:
       });
 
     render_timer_ = this->create_wall_timer(
-      10ms, std::bind(&GnssVisualizer::renderTimerCallback, this));
+      33ms, std::bind(&GnssVisualizer::renderTimerCallback, this));
 
     if (use_gui_) {
       cv::namedWindow("GNSS Visualizer", cv::WINDOW_NORMAL);
@@ -163,7 +167,13 @@ private:
   std::deque<PosEntry> pos_history_;
 
   int width_, height_;
-  double font_scale_ = 1.0;
+  int ss_ = 2;                 // supersampling factor (internal px = display px * ss_)
+  double font_scale_ = 1.0;    // already multiplied by ss_
+
+  // Scale a display-pixel constant to internal canvas pixels.
+  int px(double v) const { return (int)std::lround(v * ss_); }
+  // Line/text thickness in internal pixels.
+  int lw(int t = 1) const { return std::max(1, t * ss_); }
   double fixed_pos_lla_[3];
   int zoom_level_ = 0;
   bool use_gui_ = true;
@@ -266,9 +276,12 @@ private:
   }
 
   void handleMouseClick(int x, int y) {
+    // Window shows the downscaled image; button rects are in internal canvas coords.
+    x *= ss_;
+    y *= ss_;
     // Position plot check
-    int mid_x = width_ / 2;
-    int mid_y = height_ / 2;
+    int mid_x = width_ * ss_ / 2;
+    int mid_y = height_ * ss_ / 2;
     cv::Rect pos_roi(0, mid_y, mid_x, mid_y);
 
     if (pos_roi.contains(cv::Point(x, y))) {
@@ -436,27 +449,36 @@ private:
   }
 
   void renderLoop(bool process_gui = true) {
-    cv::Mat canvas(height_, width_, CV_8UC3, COL_BG);
+    const int W = width_ * ss_;
+    const int H = height_ * ss_;
+    cv::Mat canvas(H, W, CV_8UC3, COL_BG);
 
-    int mid_x = width_ / 2;
-    int mid_y = height_ / 2;
+    int mid_x = W / 2;
+    int mid_y = H / 2;
 
     renderStatus      (canvas, cv::Rect(0, 0, mid_x, mid_y));
     renderSkyplot     (canvas, cv::Rect(mid_x, 0, mid_x, mid_y));
     renderPositionPlot(canvas, cv::Rect(0, mid_y, mid_x, mid_y));
     renderSnrPlot     (canvas, cv::Rect(mid_x, mid_y, mid_x, mid_y));
 
-    cv::line(canvas, cv::Point(mid_x, 0), cv::Point(mid_x, height_), COL_DIVIDER, 2);
-    cv::line(canvas, cv::Point(0, mid_y), cv::Point(width_, mid_y), COL_DIVIDER, 2);
+    cv::line(canvas, cv::Point(mid_x, 0), cv::Point(mid_x, H), COL_DIVIDER, lw(2));
+    cv::line(canvas, cv::Point(0, mid_y), cv::Point(W, mid_y), COL_DIVIDER, lw(2));
+
+    cv::Mat out;
+    if (ss_ > 1) {
+      cv::resize(canvas, out, cv::Size(width_, height_), 0, 0, cv::INTER_AREA);
+    } else {
+      out = canvas;
+    }
 
     if (publish_image_) {
-      sensor_msgs::msg::Image::SharedPtr msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", canvas).toImageMsg();
+      sensor_msgs::msg::Image::SharedPtr msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", out).toImageMsg();
       msg->header.stamp = this->now();
       image_pub_->publish(*msg);
     }
 
     if (use_gui_) {
-      cv::imshow("GNSS Visualizer", canvas);
+      cv::imshow("GNSS Visualizer", out);
       if (process_gui) {
         int key = cv::waitKey(1) & 0xff;
         if (key == 'v' || key == 'V') {
@@ -469,9 +491,9 @@ private:
   }
 
   void drawPanelHeader(cv::Mat& img, cv::Rect roi, const std::string& title) {
-    int hh = 24;
+    int hh = px(24);
     cv::rectangle(img, cv::Rect(roi.x, roi.y, roi.width, hh), COL_PANEL_BG, -1);
-    cv::putText(img, title, cv::Point(roi.x + 8, roi.y + 17), FONT_LABEL, font_scale_ * 0.55, cv::Scalar(240,240,240), 1);
+    cv::putText(img, title, cv::Point(roi.x + px(8), roi.y + px(17)), FONT_LABEL, font_scale_ * 0.55, cv::Scalar(240,240,240), lw(), cv::LINE_AA);
   }
 
   void renderStatus(cv::Mat& img, cv::Rect roi) {
@@ -479,12 +501,12 @@ private:
 
     std::lock_guard<std::mutex> lock(data_mutex_);
 
-    int y = roi.y + 45;
-    int x = roi.x + 15;
-    int dy = 24;
+    int y = roi.y + px(45);
+    int x = roi.x + px(15);
+    int dy = px(24);
 
-    auto text = [&](const std::string& s, cv::Scalar col = cv::Scalar(30,30,30), double sc = 0.50, int th = 1) {
-      cv::putText(img, s, cv::Point(x, y), FONT_LABEL, font_scale_ * sc, col, th);
+    auto text = [&](const std::string& s, cv::Scalar col = cv::Scalar(30,30,30), double sc = 0.50, int t = 1) {
+      cv::putText(img, s, cv::Point(x, y), FONT_LABEL, font_scale_ * sc, col, lw(t), cv::LINE_AA);
       y += dy;
     };
 
@@ -514,11 +536,11 @@ private:
       if (norm(fixed_pos_lla_, 3) > 0.001) { status_str = "MANUAL"; status_col = cv::Scalar(0,120,120); use_fixed = true; }
     }
 
-    int badge_w = 10 + (int)status_str.size() * 14;
-    cv::rectangle(img, cv::Rect(x, y-18, badge_w, 24), status_col, -1);
-    cv::rectangle(img, cv::Rect(x, y-18, badge_w, 24), status_col * 0.7, 1);
-    cv::putText(img, status_str, cv::Point(x+5, y), FONT_LABEL, font_scale_ * 0.6, cv::Scalar(255,255,255), 2);
-    y += dy + 4;
+    int badge_w = px(10 + (int)status_str.size() * 14);
+    cv::rectangle(img, cv::Rect(x, y-px(18), badge_w, px(24)), status_col, -1);
+    cv::rectangle(img, cv::Rect(x, y-px(18), badge_w, px(24)), status_col * 0.7, lw());
+    cv::putText(img, status_str, cv::Point(x+px(5), y), FONT_LABEL, font_scale_ * 0.6, cv::Scalar(255,255,255), lw(2), cv::LINE_AA);
+    y += dy + px(4);
 
     double lat=0, lon=0, alt=0;
     if (last_sol_ && !use_fixed) { lat=last_sol_->latitude; lon=last_sol_->longitude; alt=last_sol_->altitude; }
@@ -541,7 +563,7 @@ private:
       text(ss.str(), COL_TEXT_DIM, 0.42);
     }
 
-    y += 2;
+    y += px(2);
     int n_sol = last_sol_ ? last_sol_->num_sats : 0;
     std::map<int, int> sats_by_sys;
     int n_unique = 0;
@@ -564,10 +586,10 @@ private:
       const int systems[] = {SYS_GPS, SYS_GLO, SYS_GAL, SYS_CMP, SYS_QZS, SYS_IRN, SYS_SBS};
       for (int sys : systems) {
         if (sats_by_sys[sys] == 0 && sys == SYS_IRN) continue;
-        cv::circle(img, cv::Point(sx+4, y-5), 4, sysColor(sys), -1);
+        cv::circle(img, cv::Point(sx+px(4), y-px(5)), px(4), sysColor(sys), -1, cv::LINE_AA);
         std::string lbl = sysName(sys) + ":" + std::to_string(sats_by_sys[sys]);
-        cv::putText(img, lbl, cv::Point(sx+11, y), FONT_LABEL, font_scale_ * 0.38, COL_TEXT);
-        sx += 12 + (int)lbl.size() * 7;
+        cv::putText(img, lbl, cv::Point(sx+px(11), y), FONT_LABEL, font_scale_ * 0.38, COL_TEXT, lw(), cv::LINE_AA);
+        sx += px(12 + (int)lbl.size() * 7);
       }
       y += dy;
     }
@@ -603,31 +625,32 @@ private:
   void renderSkyplot(cv::Mat& img, cv::Rect roi) {
     drawPanelHeader(img, roi, "Skyplot");
 
+    int hdr_h = px(24);
     int cx = roi.x + roi.width / 2;
-    int cy = roi.y + 24 + (roi.height - 24) / 2;
-    int r  = std::min(roi.width, roi.height - 24) / 2 - 30;
+    int cy = roi.y + hdr_h + (roi.height - hdr_h) / 2;
+    int r  = std::min(roi.width, roi.height - hdr_h) / 2 - px(30);
 
     for (int el_deg = 0; el_deg <= 90; el_deg += 30) {
       int ri = (int)(r * (1.0 - el_deg / 90.0));
-      if (ri > 0) cv::circle(img, cv::Point(cx, cy), ri, COL_GRID, 1);
+      if (ri > 0) cv::circle(img, cv::Point(cx, cy), ri, COL_GRID, lw(), cv::LINE_AA);
     }
-    cv::line(img, cv::Point(cx-r, cy), cv::Point(cx+r, cy), COL_GRID, 1);
-    cv::line(img, cv::Point(cx, cy-r), cv::Point(cx, cy+r), COL_GRID, 1);
+    cv::line(img, cv::Point(cx-r, cy), cv::Point(cx+r, cy), COL_GRID, lw());
+    cv::line(img, cv::Point(cx, cy-r), cv::Point(cx, cy+r), COL_GRID, lw());
     int d = (int)(r * 0.707);
-    cv::line(img, cv::Point(cx-d, cy-d), cv::Point(cx+d, cy+d), cv::Scalar(225,225,225), 1);
-    cv::line(img, cv::Point(cx+d, cy-d), cv::Point(cx-d, cy+d), cv::Scalar(225,225,225), 1);
+    cv::line(img, cv::Point(cx-d, cy-d), cv::Point(cx+d, cy+d), cv::Scalar(225,225,225), lw(), cv::LINE_AA);
+    cv::line(img, cv::Point(cx+d, cy-d), cv::Point(cx-d, cy+d), cv::Scalar(225,225,225), lw(), cv::LINE_AA);
 
-    cv::putText(img, "N", cv::Point(cx-6, cy-r-6),  FONT_LABEL, font_scale_ * 0.55, COL_TEXT, 1);
-    cv::putText(img, "S", cv::Point(cx-5, cy+r+16), FONT_LABEL, font_scale_ * 0.55, COL_TEXT, 1);
-    cv::putText(img, "E", cv::Point(cx+r+6, cy+5),  FONT_LABEL, font_scale_ * 0.55, COL_TEXT, 1);
-    cv::putText(img, "W", cv::Point(cx-r-22, cy+5), FONT_LABEL, font_scale_ * 0.55, COL_TEXT, 1);
+    cv::putText(img, "N", cv::Point(cx-px(6), cy-r-px(6)),  FONT_LABEL, font_scale_ * 0.55, COL_TEXT, lw(), cv::LINE_AA);
+    cv::putText(img, "S", cv::Point(cx-px(5), cy+r+px(16)), FONT_LABEL, font_scale_ * 0.55, COL_TEXT, lw(), cv::LINE_AA);
+    cv::putText(img, "E", cv::Point(cx+r+px(6), cy+px(5)),  FONT_LABEL, font_scale_ * 0.55, COL_TEXT, lw(), cv::LINE_AA);
+    cv::putText(img, "W", cv::Point(cx-r-px(22), cy+px(5)), FONT_LABEL, font_scale_ * 0.55, COL_TEXT, lw(), cv::LINE_AA);
 
     for (int el : {30, 60}) {
       int ri = (int)(r * (1.0 - el / 90.0));
       std::string lbl = std::to_string(el);
-      cv::putText(img, lbl, cv::Point(cx+3, cy-ri+13), FONT_LABEL, font_scale_ * 0.35, COL_TEXT_DIM);
+      cv::putText(img, lbl, cv::Point(cx+px(3), cy-ri+px(13)), FONT_LABEL, font_scale_ * 0.35, COL_TEXT_DIM, lw(), cv::LINE_AA);
     }
-    cv::putText(img, "90", cv::Point(cx+3, cy+12), FONT_LABEL, font_scale_ * 0.3, COL_TEXT_DIM);
+    cv::putText(img, "90", cv::Point(cx+px(3), cy+px(12)), FONT_LABEL, font_scale_ * 0.3, COL_TEXT_DIM, lw(), cv::LINE_AA);
 
     std::lock_guard<std::mutex> lock(data_mutex_);
     auto sat_azel = computeSatAzEl();
@@ -644,38 +667,38 @@ private:
     }
 
     for (const auto& sp : sat_plots) {
-      cv::circle(img, cv::Point(sp.px, sp.py), 6, cv::Scalar(255,255,255), -1);
-      cv::circle(img, cv::Point(sp.px, sp.py), 6, sysColor(sp.sys), 2);
-      cv::circle(img, cv::Point(sp.px, sp.py), 4, sysColor(sp.sys), -1);
+      cv::circle(img, cv::Point(sp.px, sp.py), px(6), cv::Scalar(255,255,255), -1, cv::LINE_AA);
+      cv::circle(img, cv::Point(sp.px, sp.py), px(6), sysColor(sp.sys), lw(2), cv::LINE_AA);
+      cv::circle(img, cv::Point(sp.px, sp.py), px(4), sysColor(sp.sys), -1, cv::LINE_AA);
     }
 
     std::vector<cv::Rect> occupied;
     for (const auto& sp : sat_plots) {
-      occupied.push_back(cv::Rect(sp.px - 8, sp.py - 8, 16, 16));
+      occupied.push_back(cv::Rect(sp.px - px(8), sp.py - px(8), px(16), px(16)));
     }
 
     for (const auto& sp : sat_plots) {
       int baseline = 0;
-      cv::Size tsize = cv::getTextSize(sp.id, FONT_LABEL, 0.38, 1, &baseline);
+      cv::Size tsize = cv::getTextSize(sp.id, FONT_LABEL, font_scale_ * 0.38, lw(), &baseline);
       int tw = tsize.width;
       int th = tsize.height;
 
       struct Cand { int dx, dy; };
       Cand cands[] = {
-        {8, 4},
-        {-tw - 8, 4},
-        {-tw / 2, -10},
-        {-tw / 2, th + 10},
-        {8, -10},
-        {-tw - 8, -10},
-        {8, th + 10},
-        {-tw - 8, th + 10}
+        {px(8), px(4)},
+        {-tw - px(8), px(4)},
+        {-tw / 2, -px(10)},
+        {-tw / 2, th + px(10)},
+        {px(8), -px(10)},
+        {-tw - px(8), -px(10)},
+        {px(8), th + px(10)},
+        {-tw - px(8), th + px(10)}
       };
 
       Cand best_cand = cands[0];
 
       for (auto c : cands) {
-        cv::Rect r(sp.px + c.dx - 2, sp.py + c.dy - th - 2, tw + 4, th + 4);
+        cv::Rect r(sp.px + c.dx - px(2), sp.py + c.dy - th - px(2), tw + px(4), th + px(4));
         bool collision = false;
         for (const auto& occ : occupied) {
           if ((r.x < occ.x + occ.width) && (r.x + r.width > occ.x) &&
@@ -692,20 +715,20 @@ private:
 
       int lx = sp.px + best_cand.dx;
       int ly = sp.py + best_cand.dy;
-      occupied.push_back(cv::Rect(lx - 2, ly - th - 2, tw + 4, th + 4));
-      
+      occupied.push_back(cv::Rect(lx - px(2), ly - th - px(2), tw + px(4), th + px(4)));
+
       // Draw text with outline (halo) for readability
-      cv::putText(img, sp.id, cv::Point(lx, ly), FONT_LABEL, font_scale_ * 0.38, COL_BG, 3);
-      cv::putText(img, sp.id, cv::Point(lx, ly), FONT_LABEL, font_scale_ * 0.38, COL_TEXT, 1);
+      cv::putText(img, sp.id, cv::Point(lx, ly), FONT_LABEL, font_scale_ * 0.38, COL_BG, lw(3), cv::LINE_AA);
+      cv::putText(img, sp.id, cv::Point(lx, ly), FONT_LABEL, font_scale_ * 0.38, COL_TEXT, lw(), cv::LINE_AA);
     }
 
-    int lx = roi.x + roi.width - 55;
-    int ly = roi.y + roi.height - 95;
+    int lx = roi.x + roi.width - px(55);
+    int ly = roi.y + roi.height - px(95);
     const int systems[] = {SYS_GPS, SYS_GLO, SYS_GAL, SYS_CMP, SYS_QZS, SYS_IRN, SYS_SBS};
     for (int sys : systems) {
-      cv::circle(img, cv::Point(lx, ly), 5, sysColor(sys), -1);
-      cv::putText(img, sysName(sys), cv::Point(lx+10, ly+4), FONT_LABEL, font_scale_ * 0.38, COL_TEXT);
-      ly += 14;
+      cv::circle(img, cv::Point(lx, ly), px(5), sysColor(sys), -1, cv::LINE_AA);
+      cv::putText(img, sysName(sys), cv::Point(lx+px(10), ly+px(4)), FONT_LABEL, font_scale_ * 0.38, COL_TEXT, lw(), cv::LINE_AA);
+      ly += px(14);
     }
   }
 
@@ -745,22 +768,22 @@ private:
     for (const auto& [sat, _] : sig_by_sat) sat_list.push_back(sat);
 
     int n_sats   = sat_list.size();
-    int hdr_h    = 24;
-    int margin_l = 75; 
-    int margin_r = 10;
-    int margin_b = 60;
-    int margin_t = 5;
+    int hdr_h    = px(24);
+    int margin_l = px(75);
+    int margin_r = px(10);
+    int margin_b = px(60);
+    int margin_t = px(5);
     int total_h  = roi.height - hdr_h - margin_b - margin_t;
     int n_plots  = 4;
-    int gap      = 12; // Increased gap between plots
+    int gap      = px(12); // Increased gap between plots
     int sub_h    = (total_h - (n_plots - 1) * gap) / n_plots;
     int plot_w   = roi.width - margin_l - margin_r;
     int start_x  = roi.x + margin_l;
 
     double slot_w = (double)plot_w / n_sats;
     double bar_w  = slot_w * 0.7;
-    if (bar_w > 20) bar_w = 20;
-    if (bar_w < 2) bar_w = 2;
+    if (bar_w > px(20)) bar_w = px(20);
+    if (bar_w < px(2)) bar_w = px(2);
 
     struct SubPlotConfig { const char* title; double max_val; };
     SubPlotConfig configs[4] = {
@@ -773,27 +796,27 @@ private:
 
       cv::rectangle(img, cv::Rect(start_x, top_y, plot_w, sub_h), cv::Scalar(252,252,252), -1);
 
-      cv::putText(img, configs[pi].title, cv::Point(roi.x + 4, top_y + sub_h / 2 + 4), FONT_LABEL, font_scale_ * 0.32, COL_TEXT_DIM, 1);
+      cv::putText(img, configs[pi].title, cv::Point(roi.x + px(4), top_y + sub_h / 2 + px(4)), FONT_LABEL, font_scale_ * 0.32, COL_TEXT_DIM, lw(), cv::LINE_AA);
 
       double max_val = configs[pi].max_val;
       int step = (pi == 0) ? 15 : 10; // Elev: 15 deg steps, SNR: 10 dBHz steps
       for (int v = 0; v <= (int)max_val; v += step) {
         int gy = bottom_y - (int)((v / max_val) * sub_h);
         cv::Scalar gc = (v % (step*2) == 0) ? COL_GRID : cv::Scalar(232,232,232);
-        cv::line(img, cv::Point(start_x, gy), cv::Point(start_x + plot_w, gy), gc, 1);
+        cv::line(img, cv::Point(start_x, gy), cv::Point(start_x + plot_w, gy), gc, lw());
         if (v > 0 && v < (int)max_val) {
-          cv::putText(img, std::to_string(v), cv::Point(start_x - 22, gy + 4), FONT_LABEL, font_scale_ * 0.28, COL_TEXT_DIM);
+          cv::putText(img, std::to_string(v), cv::Point(start_x - px(22), gy + px(4)), FONT_LABEL, font_scale_ * 0.28, COL_TEXT_DIM, lw(), cv::LINE_AA);
         }
       }
 
       if (pi > 0) {
         // ... threshold lines ...
         int y20 = bottom_y - (int)((20.0 / max_val) * sub_h);
-        for (int dx = start_x; dx < start_x + plot_w; dx += 8)
-          cv::line(img, cv::Point(dx, y20), cv::Point(std::min(dx+4, start_x+plot_w), y20), cv::Scalar(0,140,255), 1);
+        for (int dx = start_x; dx < start_x + plot_w; dx += px(8))
+          cv::line(img, cv::Point(dx, y20), cv::Point(std::min(dx+px(4), start_x+plot_w), y20), cv::Scalar(0,140,255), lw());
         int y35 = bottom_y - (int)((35.0 / max_val) * sub_h);
-        for (int dx = start_x; dx < start_x + plot_w; dx += 8)
-          cv::line(img, cv::Point(dx, y35), cv::Point(std::min(dx+4, start_x+plot_w), y35), cv::Scalar(60,180,60), 1);
+        for (int dx = start_x; dx < start_x + plot_w; dx += px(8))
+          cv::line(img, cv::Point(dx, y35), cv::Point(std::min(dx+px(4), start_x+plot_w), y35), cv::Scalar(60,180,60), lw());
       }
 
       for (int si = 0; si < n_sats; si++) {
@@ -824,48 +847,46 @@ private:
         int bx = cx - (int)(bar_w / 2);
         cv::Rect bar(bx, bottom_y - (int)h, (int)bar_w, (int)h);
         cv::rectangle(img, bar, col, -1);
-        cv::rectangle(img, bar, col * 0.7, 1);
+        cv::rectangle(img, bar, col * 0.7, lw());
       }
     }
 
-    int label_y_start = roi.y + hdr_h + margin_t + n_plots * (sub_h + gap) + 4;
+    int label_y_start = roi.y + hdr_h + margin_t + n_plots * (sub_h + gap) + px(4);
 
     for (int si = 0; si < n_sats; si++) {
       int sat = sat_list[si];
       int sys = satsys(sat, nullptr);
-      
+
       double cx_f = start_x + slot_w * si + slot_w / 2.0;
       int cx = (int)cx_f;
 
       std::string label = sat_ids[sat];
-      
+
       // Calculate exact text size for centering
       int baseline = 0;
-      cv::Size ref_size = cv::getTextSize(label, FONT_LABEL, 0.32, 1, &baseline);
-      int txt_w = ref_size.width; 
+      cv::Size ref_size = cv::getTextSize(label, FONT_LABEL, font_scale_ * 0.32, lw(), &baseline);
+      int txt_w = ref_size.width;
       int txt_h = ref_size.height;
-      
+
       // Create exact-size image for rotation
       // Mat(rows, cols) -> (height, width)
-      cv::Mat txt_img(txt_h + 8, txt_w + 4, CV_8UC3, COL_BG);
-      // Fill with BG to avoid artifacts
-      txt_img = COL_BG;
-      cv::putText(txt_img, label, cv::Point(2, txt_h + 4), FONT_LABEL, font_scale_ * 0.32, sysColor(sys), 1);
-      
+      cv::Mat txt_img(txt_h + px(8), txt_w + px(4), CV_8UC3, COL_BG);
+      cv::putText(txt_img, label, cv::Point(px(2), txt_h + px(4)), FONT_LABEL, font_scale_ * 0.32, sysColor(sys), lw(), cv::LINE_AA);
+
       cv::Mat rot;
       cv::rotate(txt_img, rot, cv::ROTATE_90_CLOCKWISE);
 
       // Center horizontally on cx
       int tx = cx - rot.cols / 2;
       int ty = label_y_start;
-      
+
       // Relaxed clipping: Allow render if part of label is inside ROI x-range
       // Also check bottom boundary
       if (tx + rot.cols > roi.x && tx < roi.x + roi.width && ty + rot.rows < roi.y + roi.height) {
         int st_x = std::max(0, tx);
-        int ed_x = std::min(width_, tx + rot.cols);
+        int ed_x = std::min(img.cols, tx + rot.cols);
         int st_y = std::max(0, ty);
-        int ed_y = std::min(height_, ty + rot.rows);
+        int ed_y = std::min(img.rows, ty + rot.rows);
         if (st_x < ed_x && st_y < ed_y) {
           int src_x = st_x - tx;
           int src_y = st_y - ty;
@@ -873,14 +894,10 @@ private:
           int h = ed_y - st_y;
           cv::Rect src_rect(src_x, src_y, w, h);
           cv::Rect dst_rect(st_x, st_y, w, h);
-          
-          cv::Mat src_crop = rot(src_rect);
-          cv::Mat dst_crop = img(dst_rect);
-          
-          cv::Mat mask;
-          cv::inRange(src_crop, COL_BG, COL_BG, mask);
-          cv::bitwise_not(mask, mask);
-          src_crop.copyTo(dst_crop, mask);
+
+          // Label area background matches COL_BG, so a plain copy keeps the
+          // anti-aliased glyph edges intact (a binary mask would shred them).
+          rot(src_rect).copyTo(img(dst_rect));
         }
       }
     }
@@ -902,13 +919,14 @@ private:
   void renderPositionPlot(cv::Mat& img, cv::Rect roi) {
     drawPanelHeader(img, roi, "Position (ENU)");
 
-    int hdr_h = 24;
+    int hdr_h = px(24);
     int cx = roi.x + roi.width / 2;
     int cy = roi.y + hdr_h + (roi.height - hdr_h) / 2;
 
     // Determine viewport (world center + scale) based on view mode.
+    // scale is in internal canvas px per meter, hence the ss_ factor.
     double view_cx_w = 0.0, view_cy_w = 0.0;
-    double scale = 5.0 * std::pow(2.0, zoom_level_);
+    double scale = 5.0 * std::pow(2.0, zoom_level_) * ss_;
 
     {
       std::lock_guard<std::mutex> lock(data_mutex_);
@@ -933,11 +951,12 @@ private:
         double avail_w = roi.width  * 0.9;
         double avail_h = (roi.height - hdr_h) * 0.9;
         scale = std::min(avail_w / span_x, avail_h / span_y);
-        if (!std::isfinite(scale) || scale <= 0.0) scale = 5.0;
+        if (!std::isfinite(scale) || scale <= 0.0) scale = 5.0 * ss_;
       }
     }
 
-    double grid_m = pickGridMeters(scale);
+    // pickGridMeters targets display pixels, so pass the display-space scale.
+    double grid_m = pickGridMeters(scale / ss_);
 
     cv::Scalar gridCol(225,225,225);
     for (int gi = -100; gi <= 100; ++gi) {
@@ -945,29 +964,29 @@ private:
       int off = (int)(gi * grid_m * scale);
       int gy = cy + off;
       if (gy > roi.y + hdr_h && gy < roi.y + roi.height)
-        cv::line(img, cv::Point(roi.x, gy), cv::Point(roi.x+roi.width, gy), gridCol, 1);
+        cv::line(img, cv::Point(roi.x, gy), cv::Point(roi.x+roi.width, gy), gridCol, lw());
       int gx = cx + off;
       if (gx > roi.x && gx < roi.x + roi.width)
-        cv::line(img, cv::Point(gx, roi.y+hdr_h), cv::Point(gx, roi.y+roi.height), gridCol, 1);
+        cv::line(img, cv::Point(gx, roi.y+hdr_h), cv::Point(gx, roi.y+roi.height), gridCol, lw());
     }
-    cv::line(img, cv::Point(roi.x, cy), cv::Point(roi.x+roi.width, cy), cv::Scalar(190,190,190), 1);
-    cv::line(img, cv::Point(cx, roi.y+hdr_h), cv::Point(cx, roi.y+roi.height), cv::Scalar(190,190,190), 1);
+    cv::line(img, cv::Point(roi.x, cy), cv::Point(roi.x+roi.width, cy), cv::Scalar(190,190,190), lw());
+    cv::line(img, cv::Point(cx, roi.y+hdr_h), cv::Point(cx, roi.y+roi.height), cv::Scalar(190,190,190), lw());
 
-    cv::putText(img, "E", cv::Point(roi.x + roi.width - 18, cy - 4), FONT_LABEL, font_scale_ * 0.45, COL_TEXT_DIM);
-    cv::putText(img, "N", cv::Point(cx + 4, roi.y + hdr_h + 14), FONT_LABEL, font_scale_ * 0.45, COL_TEXT_DIM);
+    cv::putText(img, "E", cv::Point(roi.x + roi.width - px(18), cy - px(4)), FONT_LABEL, font_scale_ * 0.45, COL_TEXT_DIM, lw(), cv::LINE_AA);
+    cv::putText(img, "N", cv::Point(cx + px(4), roi.y + hdr_h + px(14)), FONT_LABEL, font_scale_ * 0.45, COL_TEXT_DIM, lw(), cv::LINE_AA);
 
     {
-      int sx = roi.x + 10;
-      int sy = roi.y + roi.height - 15;
+      int sx = roi.x + px(10);
+      int sy = roi.y + roi.height - px(15);
       int bar_px = (int)(grid_m * scale);
-      if (bar_px > 5 && bar_px < roi.width - 20) {
-        cv::line(img, cv::Point(sx, sy), cv::Point(sx + bar_px, sy), COL_TEXT, 2);
-        cv::line(img, cv::Point(sx, sy-3), cv::Point(sx, sy+3), COL_TEXT, 1);
-        cv::line(img, cv::Point(sx+bar_px, sy-3), cv::Point(sx+bar_px, sy+3), COL_TEXT, 1);
+      if (bar_px > px(5) && bar_px < roi.width - px(20)) {
+        cv::line(img, cv::Point(sx, sy), cv::Point(sx + bar_px, sy), COL_TEXT, lw(2));
+        cv::line(img, cv::Point(sx, sy-px(3)), cv::Point(sx, sy+px(3)), COL_TEXT, lw());
+        cv::line(img, cv::Point(sx+bar_px, sy-px(3)), cv::Point(sx+bar_px, sy+px(3)), COL_TEXT, lw());
         std::stringstream ss;
         if (grid_m < 1.0) ss << std::fixed << std::setprecision(2) << grid_m << "m";
         else ss << (int)grid_m << "m";
-        cv::putText(img, ss.str(), cv::Point(sx + bar_px/2 - 12, sy - 5), FONT_LABEL, font_scale_ * 0.38, COL_TEXT);
+        cv::putText(img, ss.str(), cv::Point(sx + bar_px/2 - px(12), sy - px(5)), FONT_LABEL, font_scale_ * 0.38, COL_TEXT, lw(), cv::LINE_AA);
       }
     }
 
@@ -982,13 +1001,13 @@ private:
         if (zoom_level_ >= 0) zss << " x" << (1 << zoom_level_);
         else zss << " x1/" << (1 << (-zoom_level_));
       }
-      cv::putText(img, zss.str(), cv::Point(roi.x + roi.width - 220, roi.y + hdr_h + 16), FONT_LABEL, font_scale_ * 0.42, COL_TEXT_DIM, 1);
+      cv::putText(img, zss.str(), cv::Point(roi.x + roi.width - px(220), roi.y + hdr_h + px(16)), FONT_LABEL, font_scale_ * 0.42, COL_TEXT_DIM, lw(), cv::LINE_AA);
 
       // Buttons (right to left): CLR | + | - | MODE
-      cv::Rect btn_mode    (roi.x + roi.width - 130, roi.y + 4, 26, 16);
-      cv::Rect btn_zoom_out(roi.x + roi.width - 100, roi.y + 4, 20, 16);
-      cv::Rect btn_zoom_in (roi.x + roi.width - 75,  roi.y + 4, 20, 16);
-      cv::Rect btn_clear   (roi.x + roi.width - 45,  roi.y + 4, 30, 16);
+      cv::Rect btn_mode    (roi.x + roi.width - px(130), roi.y + px(4), px(26), px(16));
+      cv::Rect btn_zoom_out(roi.x + roi.width - px(100), roi.y + px(4), px(20), px(16));
+      cv::Rect btn_zoom_in (roi.x + roi.width - px(75),  roi.y + px(4), px(20), px(16));
+      cv::Rect btn_clear   (roi.x + roi.width - px(45),  roi.y + px(4), px(30), px(16));
       btn_mode_rect_     = btn_mode;
       btn_clear_rect_    = btn_clear;
       btn_zoom_out_rect_ = btn_zoom_out;
@@ -998,20 +1017,20 @@ private:
       cv::rectangle(img, btn_zoom_out, cv::Scalar(200,200,200), -1);
       cv::rectangle(img, btn_zoom_in,  cv::Scalar(200,200,200), -1);
       cv::rectangle(img, btn_clear,    cv::Scalar(200,200,200), -1);
-      cv::rectangle(img, btn_mode,     cv::Scalar(100,100,100), 1);
-      cv::rectangle(img, btn_zoom_out, cv::Scalar(100,100,100), 1);
-      cv::rectangle(img, btn_zoom_in,  cv::Scalar(100,100,100), 1);
-      cv::rectangle(img, btn_clear,    cv::Scalar(100,100,100), 1);
+      cv::rectangle(img, btn_mode,     cv::Scalar(100,100,100), lw());
+      cv::rectangle(img, btn_zoom_out, cv::Scalar(100,100,100), lw());
+      cv::rectangle(img, btn_zoom_in,  cv::Scalar(100,100,100), lw());
+      cv::rectangle(img, btn_clear,    cv::Scalar(100,100,100), lw());
 
-      cv::putText(img, viewModeStr(view_mode_), cv::Point(btn_mode.x + 3, btn_mode.y + 12), FONT_LABEL, font_scale_ * 0.38, cv::Scalar(0,0,0), 1);
-      cv::putText(img, "-",   cv::Point(btn_zoom_out.x + 5, btn_zoom_out.y + 12), FONT_LABEL, font_scale_ * 0.5,  cv::Scalar(0,0,0), 1);
-      cv::putText(img, "+",   cv::Point(btn_zoom_in.x + 4,  btn_zoom_in.y + 12),  FONT_LABEL, font_scale_ * 0.5,  cv::Scalar(0,0,0), 1);
-      cv::putText(img, "CLR", cv::Point(btn_clear.x + 3,    btn_clear.y + 12),    FONT_LABEL, font_scale_ * 0.38, cv::Scalar(0,0,0), 1);
+      cv::putText(img, viewModeStr(view_mode_), cv::Point(btn_mode.x + px(3), btn_mode.y + px(12)), FONT_LABEL, font_scale_ * 0.38, cv::Scalar(0,0,0), lw(), cv::LINE_AA);
+      cv::putText(img, "-",   cv::Point(btn_zoom_out.x + px(5), btn_zoom_out.y + px(12)), FONT_LABEL, font_scale_ * 0.5,  cv::Scalar(0,0,0), lw(), cv::LINE_AA);
+      cv::putText(img, "+",   cv::Point(btn_zoom_in.x + px(4),  btn_zoom_in.y + px(12)),  FONT_LABEL, font_scale_ * 0.5,  cv::Scalar(0,0,0), lw(), cv::LINE_AA);
+      cv::putText(img, "CLR", cv::Point(btn_clear.x + px(3),    btn_clear.y + px(12)),    FONT_LABEL, font_scale_ * 0.38, cv::Scalar(0,0,0), lw(), cv::LINE_AA);
     }
 
     std::lock_guard<std::mutex> lock(data_mutex_);
     if (pos_history_.empty()) {
-      cv::drawMarker(img, cv::Point(cx, cy), cv::Scalar(0,0,200), cv::MARKER_CROSS, 10, 1);
+      cv::drawMarker(img, cv::Point(cx, cy), cv::Scalar(0,0,200), cv::MARKER_CROSS, px(10), lw(), cv::LINE_AA);
       return;
     }
 
@@ -1034,11 +1053,11 @@ private:
 
       if (prev_p.x != -1 && pos_history_[i].status == prev_status) {
          if (roi.contains(p) || roi.contains(prev_p)) {
-           cv::line(img, prev_p, p, col, 1, cv::LINE_AA);
+           cv::line(img, prev_p, p, col, lw(), cv::LINE_AA);
          }
       }
       if (roi.contains(p)) {
-        int dot_r = (scale > 200.0) ? 2 : 1;
+        int dot_r = (scale > 200.0 * ss_) ? px(2) : px(1);
         cv::circle(img, p, dot_r, col, -1, cv::LINE_AA);
       }
 
@@ -1051,8 +1070,8 @@ private:
                    cy - (int)((last.y - view_cy_w) * scale));
     if (roi.contains(pCur)) {
       cv::Scalar cur_col = statusColor(last.status);
-      cv::circle(img, pCur, 5, cur_col, -1);
-      cv::circle(img, pCur, 5, cv::Scalar(255,255,255), 1);
+      cv::circle(img, pCur, px(5), cur_col, -1, cv::LINE_AA);
+      cv::circle(img, pCur, px(5), cv::Scalar(255,255,255), lw(), cv::LINE_AA);
     }
 
     if (last_sol_ && last_sol_->pos_enu_cov.size() >= 9) {
@@ -1072,8 +1091,8 @@ private:
             double angle = 0.5 * std::atan2(2*b, a-dd) * 180.0 / M_PI;
             int ax1 = (int)(std::sqrt(l1) * scale);
             int ax2 = (int)(std::sqrt(l2) * scale);
-            if (ax1 > 2 && ax2 > 2 && ax1 < roi.width && ax2 < roi.height) {
-              cv::ellipse(img, pCur, cv::Size(ax1, ax2), -angle, 0, 360, cv::Scalar(200,100,100), 1);
+            if (ax1 > px(2) && ax2 > px(2) && ax1 < roi.width && ax2 < roi.height) {
+              cv::ellipse(img, pCur, cv::Size(ax1, ax2), -angle, 0, 360, cv::Scalar(200,100,100), lw(), cv::LINE_AA);
             }
           }
         }
@@ -1081,8 +1100,8 @@ private:
     }
 
     {
-      int lx = roi.x + roi.width - 75;
-      int ly = roi.y + roi.height - 70;
+      int lx = roi.x + roi.width - px(75);
+      int ly = roi.y + roi.height - px(70);
       const std::pair<uint8_t, const char*> status_list[] = {
         {gnss_ros_standardization::msg::GnssSolution::STATUS_FIX, "FIX"},
         {gnss_ros_standardization::msg::GnssSolution::STATUS_FLOAT, "FLOAT"},
@@ -1091,9 +1110,9 @@ private:
         {gnss_ros_standardization::msg::GnssSolution::STATUS_PPP, "PPP"},
       };
       for (const auto& [st, name] : status_list) {
-        cv::circle(img, cv::Point(lx, ly), 4, statusColor(st), -1);
-        cv::putText(img, name, cv::Point(lx+8, ly+4), FONT_LABEL, font_scale_ * 0.32, COL_TEXT);
-        ly += 12;
+        cv::circle(img, cv::Point(lx, ly), px(4), statusColor(st), -1, cv::LINE_AA);
+        cv::putText(img, name, cv::Point(lx+px(8), ly+px(4)), FONT_LABEL, font_scale_ * 0.32, COL_TEXT, lw(), cv::LINE_AA);
+        ly += px(12);
       }
     }
   }
