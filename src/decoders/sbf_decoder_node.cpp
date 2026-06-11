@@ -622,21 +622,29 @@ class SbfDecoderNode : public rclcpp::Node {
   // Solution Publishing
 
   void publishSolution(msg::GnssSolution& sol) {
-    // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
-    // trusts time_week/time_tow already filled by NmeaParser from the sentence
-    // itself.
+    // BINARY path: SBF PVT blocks carry WNc+TOW, so the parser has already
+    // filled time_week/time_tow with the solution's own epoch — trust them.
+    // raw_.time (RTKLIB observation-decode clock) is only a fallback; using it
+    // unconditionally would timestamp the position with the latest
+    // *observation* epoch instead. NMEA path trusts time_week/time_tow already
+    // filled by NmeaParser from the sentence itself.
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
-      const double tow = time2gpst(raw_.time, &week_for_stamp);
-      if (raw_.time.time != 0 && week_for_stamp > 0) {
-        sol.time_week = static_cast<uint32_t>(week_for_stamp);
-        sol.time_tow  = tow;
+      if (sol.time_week > 0) {
+        week_for_stamp = static_cast<int>(sol.time_week);
+        t_gpst = gpst2time(week_for_stamp, sol.time_tow);
       } else {
-        week_for_stamp = 0;
+        const double tow = time2gpst(raw_.time, &week_for_stamp);
+        if (raw_.time.time != 0 && week_for_stamp > 0) {
+          sol.time_week = static_cast<uint32_t>(week_for_stamp);
+          sol.time_tow  = tow;
+        } else {
+          week_for_stamp = 0;
+        }
+        t_gpst = raw_.time;
       }
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
-      t_gpst = raw_.time;
     } else {
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_NMEA;
       if (sol.time_week > 0) {

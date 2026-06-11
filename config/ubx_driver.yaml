@@ -78,6 +78,12 @@ ubx_driver_node:
       nav_posecef: false   # NAV-POSECEF (0x01,0x01) → pos_ecef
       nav_velecef: false   # NAV-VELECEF (0x01,0x11) → vel_ecef
 
+      # High-precision position (mm-level resolution). Highest-priority position
+      # source: HPPOSLLH/HPPOSECEF > NAV-PVT > NMEA. Requires nav_pvt: true
+      # (HPPOS carries position only; status/velocity/sats come from NAV-PVT).
+      nav_hpposllh: false    # NAV-HPPOSLLH (0x01,0x14) → latitude/longitude/altitude
+      nav_hpposecef: false   # NAV-HPPOSECEF (0x01,0x13) → pos_ecef
+
       # NMEA messages (disable to save bandwidth)
       nmea_gga: true 
       nmea_rmc: false
@@ -121,6 +127,9 @@ ubx_driver_node:
     #   If messages.nav_pvt is true → BINARY source (NMEA parsed but not published)
     #   Otherwise → NMEA source
     # No mid-session switching.
+    # Position priority within the BINARY source (per epoch):
+    #   LLH      : NAV-HPPOSLLH > NAV-PVT
+    #   pos_ecef : NAV-HPPOSECEF > NAV-POSECEF > derived from LLH
 
     # Ephemeris publishing — snapshot-on-change + heartbeat
     # Topic always carries the full current state; logging this one topic is

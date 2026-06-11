@@ -38,6 +38,8 @@ requested message rates and constellations.
 | `messages.nav_cov` | `UBX-NAV-COV` | `/gnss/nmea_solution` |
 | `messages.nav_posecef` | `UBX-NAV-POSECEF` | `/gnss/nmea_solution` (optional native ECEF) |
 | `messages.nav_velecef` | `UBX-NAV-VELECEF` | `/gnss/nmea_solution` (optional native ECEF) |
+| `messages.nav_hpposllh` | `UBX-NAV-HPPOSLLH` | `/gnss/nmea_solution` (high-precision LLH; overrides NAV-PVT position; requires `nav_pvt: true`) |
+| `messages.nav_hpposecef` | `UBX-NAV-HPPOSECEF` | `/gnss/nmea_solution` (high-precision ECEF; overrides NAV-POSECEF; requires `nav_pvt: true`) |
 | `messages.nmea_gga` / `.nmea_rmc` / `.nmea_gsa` / `.nmea_gst` | NMEA `GGA/RMC/GSA/GST` | `/gnss/nmea_solution` (fallback) |
 | `messages.nmea_high_precision` | NMEA high precision | extra lat/lon decimal places |
 | `messages.esf_raw` | `UBX-ESF-RAW` | `/gnss/imu/data_raw` (IMU-enabled receiver) |

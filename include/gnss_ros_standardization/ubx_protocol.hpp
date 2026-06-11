@@ -34,11 +34,13 @@ constexpr uint8_t ID_ACK_NAK = 0x00;
 constexpr uint8_t ID_ACK_ACK = 0x01;
 
 // NAV
-constexpr uint8_t ID_NAV_PVT     = 0x07;
-constexpr uint8_t ID_NAV_DOP     = 0x04;
-constexpr uint8_t ID_NAV_COV     = 0x36;
-constexpr uint8_t ID_NAV_POSECEF = 0x01;
-constexpr uint8_t ID_NAV_VELECEF = 0x11;
+constexpr uint8_t ID_NAV_PVT       = 0x07;
+constexpr uint8_t ID_NAV_DOP       = 0x04;
+constexpr uint8_t ID_NAV_COV       = 0x36;
+constexpr uint8_t ID_NAV_POSECEF   = 0x01;
+constexpr uint8_t ID_NAV_VELECEF   = 0x11;
+constexpr uint8_t ID_NAV_HPPOSECEF = 0x13;
+constexpr uint8_t ID_NAV_HPPOSLLH  = 0x14;
 
 // ESF (External Sensor Fusion)
 constexpr uint8_t ID_ESF_RAW = 0x03;  // Raw IMU measurements (uncalibrated, IMU-internal scale)
@@ -153,6 +155,8 @@ constexpr uint32_t CFG_MSGOUT_UBX_NAV_DOP_I2C     = 0x20910038;
 constexpr uint32_t CFG_MSGOUT_UBX_NAV_COV_I2C     = 0x20910083;
 constexpr uint32_t CFG_MSGOUT_UBX_NAV_POSECEF_I2C = 0x20910024;
 constexpr uint32_t CFG_MSGOUT_UBX_NAV_VELECEF_I2C = 0x2091003D;
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_HPPOSECEF_I2C = 0x2091002E;
+constexpr uint32_t CFG_MSGOUT_UBX_NAV_HPPOSLLH_I2C  = 0x20910033;
 
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_GGA_I2C   = 0x209100BA;
 constexpr uint32_t CFG_MSGOUT_NMEA_ID_GLL_I2C   = 0x209100C9;
@@ -547,6 +551,102 @@ inline bool parseNavVelEcef(const uint8_t* p, size_t len,
 }
 
 }  // namespace nav_velecef
+
+// NAV-HPPOSECEF parser (UBX-NAV-HPPOSECEF, class=0x01 id=0x13)
+// Payload: version(U1) + reserved(3) + iTOW(U4) + ecefX/Y/Z(I4, cm)
+//          + ecefXHp/YHp/ZHp(I1, 0.1 mm) + flags(U1, bit0=invalidEcef)
+//          + pAcc(U4, 0.1 mm) = 28 bytes
+// NOTE: iTOW is at offset 4, unlike most NAV-* messages (offset 0).
+namespace nav_hpposecef {
+
+constexpr int MIN_LEN      = 28;
+constexpr int OFFSET_ITOW  = 4;
+constexpr int OFFSET_X     = 8;
+constexpr int OFFSET_Y     = 12;
+constexpr int OFFSET_Z     = 16;
+constexpr int OFFSET_XHP   = 20;
+constexpr int OFFSET_YHP   = 21;
+constexpr int OFFSET_ZHP   = 22;
+constexpr int OFFSET_FLAGS = 23;
+constexpr int OFFSET_PACC  = 24;
+constexpr uint8_t FLAG_INVALID_ECEF = 1u << 0;
+
+template <typename T>
+inline T read_le(const uint8_t* p) { T v; std::memcpy(&v, p, sizeof(T)); return v; }
+
+/// Parse UBX-NAV-HPPOSECEF payload into a high-precision ECEF position [m].
+/// Combines the cm-resolution base and the 0.1 mm Hp correction in double,
+/// preserving the full 0.1 mm resolution. Returns false if payload too short
+/// or invalidEcef flag is set.
+inline bool parseNavHpPosEcef(const uint8_t* p, size_t len, double out_xyz[3]) {
+  if (len < static_cast<size_t>(MIN_LEN)) return false;
+  if (p[OFFSET_FLAGS] & FLAG_INVALID_ECEF) return false;
+  out_xyz[0] = static_cast<double>(read_le<int32_t>(p + OFFSET_X)) * 0.01 +
+               static_cast<double>(read_le<int8_t>(p + OFFSET_XHP)) * 1e-4;
+  out_xyz[1] = static_cast<double>(read_le<int32_t>(p + OFFSET_Y)) * 0.01 +
+               static_cast<double>(read_le<int8_t>(p + OFFSET_YHP)) * 1e-4;
+  out_xyz[2] = static_cast<double>(read_le<int32_t>(p + OFFSET_Z)) * 0.01 +
+               static_cast<double>(read_le<int8_t>(p + OFFSET_ZHP)) * 1e-4;
+  return true;
+}
+
+}  // namespace nav_hpposecef
+
+// NAV-HPPOSLLH parser (UBX-NAV-HPPOSLLH, class=0x01 id=0x14)
+// Payload: version(U1) + reserved(2) + flags(U1, bit0=invalidLlh) + iTOW(U4)
+//          + lon/lat(I4, 1e-7 deg) + height/hMSL(I4, mm)
+//          + lonHp/latHp(I1, 1e-9 deg) + heightHp/hMSLHp(I1, 0.1 mm)
+//          + hAcc/vAcc(U4, 0.1 mm) = 36 bytes
+// NOTE: iTOW is at offset 4, unlike most NAV-* messages (offset 0).
+namespace nav_hpposllh {
+
+constexpr int MIN_LEN         = 36;
+constexpr int OFFSET_FLAGS    = 3;
+constexpr int OFFSET_ITOW     = 4;
+constexpr int OFFSET_LON      = 8;
+constexpr int OFFSET_LAT      = 12;
+constexpr int OFFSET_HEIGHT   = 16;
+constexpr int OFFSET_LONHP    = 24;
+constexpr int OFFSET_LATHP    = 25;
+constexpr int OFFSET_HEIGHTHP = 26;
+constexpr int OFFSET_HACC     = 28;
+constexpr int OFFSET_VACC     = 32;
+constexpr uint8_t FLAG_INVALID_LLH = 1u << 0;
+
+template <typename T>
+inline T read_le(const uint8_t* p) { T v; std::memcpy(&v, p, sizeof(T)); return v; }
+
+/// High-precision geodetic position parsed from NAV-HPPOSLLH. Kept out of
+/// GnssSolution on purpose: NAV-PVT writes latitude/longitude/altitude
+/// unconditionally, so the HP values are applied at epoch-flush time to stay
+/// independent of in-epoch message arrival order.
+struct Result {
+  double lat_deg;   ///< geodetic latitude  [deg], 1e-9 deg resolution
+  double lon_deg;   ///< geodetic longitude [deg], 1e-9 deg resolution
+  double alt_m;     ///< ellipsoidal height [m], 0.1 mm resolution
+  double hacc_m;    ///< horizontal accuracy 1-sigma [m]
+  double vacc_m;    ///< vertical accuracy 1-sigma [m]
+};
+
+/// Parse UBX-NAV-HPPOSLLH payload. Base (1e-7 deg / mm) and Hp correction
+/// (1e-9 deg / 0.1 mm) are combined in double in a single expression — double
+/// carries ~15-16 significant digits, ample for 1e-9 deg at |lat| <= 90.
+/// Returns false if payload too short or invalidLlh flag is set.
+inline bool parseNavHpPosLlh(const uint8_t* p, size_t len, Result& out) {
+  if (len < static_cast<size_t>(MIN_LEN)) return false;
+  if (p[OFFSET_FLAGS] & FLAG_INVALID_LLH) return false;
+  out.lon_deg = static_cast<double>(read_le<int32_t>(p + OFFSET_LON)) * 1e-7 +
+                static_cast<double>(read_le<int8_t>(p + OFFSET_LONHP)) * 1e-9;
+  out.lat_deg = static_cast<double>(read_le<int32_t>(p + OFFSET_LAT)) * 1e-7 +
+                static_cast<double>(read_le<int8_t>(p + OFFSET_LATHP)) * 1e-9;
+  out.alt_m   = static_cast<double>(read_le<int32_t>(p + OFFSET_HEIGHT)) * 1e-3 +
+                static_cast<double>(read_le<int8_t>(p + OFFSET_HEIGHTHP)) * 1e-4;
+  out.hacc_m  = static_cast<double>(read_le<uint32_t>(p + OFFSET_HACC)) * 1e-4;
+  out.vacc_m  = static_cast<double>(read_le<uint32_t>(p + OFFSET_VACC)) * 1e-4;
+  return true;
+}
+
+}  // namespace nav_hpposllh
 
 }  // namespace ubx
 }  // namespace gnss_ros_standardization

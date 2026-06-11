@@ -624,21 +624,29 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   void publishSolution(msg::GnssSolution& sol) {
     // Time/source policy:
-    //   BINARY path: trust the RTKLIB-binary-decoder timestamp (raw_.time) and
-    //                stamp solution_source accordingly.
+    //   BINARY path: the OEM4 header carries (week, ms), already written into
+    //                time_week/time_tow by aggregateEpochBoundary() — trust
+    //                them. raw_.time (RTKLIB observation-decode clock) is only
+    //                a fallback; using it unconditionally would timestamp the
+    //                position with the latest *observation* epoch instead.
     //   NMEA  path: the NmeaParser has already populated time_week/time_tow
     //                from the sentence itself, so reassemble gtime_t from those
     //                instead of borrowing raw_.time (which may be stale).
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
-      const double tow = time2gpst(raw_.time, &week_for_stamp);
-      if (week_for_stamp > 0) {
-        sol.time_week = static_cast<uint32_t>(week_for_stamp);
-        sol.time_tow  = tow;
+      if (sol.time_week > 0) {
+        week_for_stamp = static_cast<int>(sol.time_week);
+        t_gpst = gpst2time(week_for_stamp, sol.time_tow);
+      } else {
+        const double tow = time2gpst(raw_.time, &week_for_stamp);
+        if (week_for_stamp > 0) {
+          sol.time_week = static_cast<uint32_t>(week_for_stamp);
+          sol.time_tow  = tow;
+        }
+        t_gpst = raw_.time;
       }
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
-      t_gpst = raw_.time;
     } else {
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_NMEA;
       if (sol.time_week > 0) {

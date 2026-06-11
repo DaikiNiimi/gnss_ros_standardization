@@ -263,6 +263,8 @@ class UbxDecoderNode : public rclcpp::Node {
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_COV)     handleNavCov();
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_POSECEF) handleNavPosEcef();
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_VELECEF) handleNavVelEcef();
+    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_HPPOSECEF) handleNavHpPosEcef();
+    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_HPPOSLLH)  handleNavHpPosLlh();
   }
 
   // Solution source policy (grace-period detection):
@@ -306,9 +308,11 @@ class UbxDecoderNode : public rclcpp::Node {
   // of NAV-DOP/NAV-COV the receiver is configured to emit.
   // NAV-DOP is tracked separately in a persistent cache (last_dop_) so it can
   // survive Pending resets and be staleness-gated against the PVT cadence.
-  static constexpr uint8_t COV_BIT_COV     = 0x1;
-  static constexpr uint8_t COV_BIT_POSECEF = 0x2;
-  static constexpr uint8_t COV_BIT_VELECEF = 0x4;
+  static constexpr uint8_t COV_BIT_COV       = 0x1;
+  static constexpr uint8_t COV_BIT_POSECEF   = 0x2;
+  static constexpr uint8_t COV_BIT_VELECEF   = 0x4;
+  static constexpr uint8_t COV_BIT_HPPOSLLH  = 0x8;
+  static constexpr uint8_t COV_BIT_HPPOSECEF = 0x10;
 
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
@@ -316,6 +320,12 @@ class UbxDecoderNode : public rclcpp::Node {
     uint8_t cov_received{0};
     uint8_t cov_ever_seen{0};
     msg::GnssSolution buf{};
+    // High-precision scratch (NAV-HPPOSLLH / NAV-HPPOSECEF). Kept outside buf
+    // and applied at flush time: NAV-PVT writes lat/lon/alt unconditionally,
+    // so writing HP values into buf would make the result depend on in-epoch
+    // arrival order.
+    ubx::nav_hpposllh::Result hp_llh{};
+    double hp_ecef[3]{0.0, 0.0, 0.0};
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
 
@@ -327,16 +337,39 @@ class UbxDecoderNode : public rclcpp::Node {
   uint32_t last_flushed_week_{0};
   uint32_t last_flushed_tow_ms_{UINT32_MAX};
 
-  static uint32_t readItowMs(const uint8_t* p, size_t len) {
-    if (len < 4) return UINT32_MAX;
+  // offset: iTOW position in the payload — 0 for most NAV-* messages,
+  // ubx::nav_hpposllh/nav_hpposecef::OFFSET_ITOW (4) for the HP messages.
+  // Reading the wrong offset breaks TOW epoch grouping and stalls publishing
+  // until the watchdog fires, so HP handlers must pass their OFFSET_ITOW.
+  static uint32_t readItowMs(const uint8_t* p, size_t len, size_t offset = 0) {
+    if (len < offset + 4) return UINT32_MAX;
     uint32_t v = 0;
-    std::memcpy(&v, p, 4);
+    std::memcpy(&v, p + offset, 4);
     return v;
   }
 
   bool pendingComplete() const {
     return pending_.has_pvt &&
            pending_.cov_received == pending_.cov_ever_seen;
+  }
+
+  // Epoch-gap diagnostic: learns the nominal cadence as the smallest positive
+  // epoch delta seen so far, and warns when a delta exceeds 2.5x that cadence —
+  // i.e., whole epochs are missing from the stream (link loss or the receiver
+  // skipping epochs). last_tow_s / min_period_s are caller-owned state;
+  // a backwards tow (week rollover) only reseeds the state.
+  void warnOnEpochGap(const char* what, double tow_s,
+                      double& last_tow_s, double& min_period_s) {
+    if (last_tow_s >= 0.0 && tow_s > last_tow_s) {
+      const double dt = tow_s - last_tow_s;
+      if (min_period_s == 0.0 || dt < min_period_s) min_period_s = dt;
+      if (dt > min_period_s * 2.5) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "%s epoch gap: %.1fs (expected %.3fs) — epochs missing from the stream",
+          what, dt, min_period_s);
+      }
+    }
+    last_tow_s = tow_s;
   }
 
   // Orphan guard: if this block's TOW matches the last published TOW, it's a
@@ -371,6 +404,8 @@ class UbxDecoderNode : public rclcpp::Node {
     pending_.has_pvt = true;
     pending_.last_update = now();
     saw_binary_during_grace_ = true;
+    warnOnEpochGap("NAV-PVT", tow * 1e-3,
+                   pvt_gap_last_tow_s_, pvt_gap_min_period_s_);
     commitSourceLockIfDue();
     if (pendingComplete()) flushPending();
   }
@@ -459,6 +494,48 @@ class UbxDecoderNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
+  void handleNavHpPosEcef() {
+    startGraceIfNeeded();
+    const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size(),
+                                    ubx::nav_hpposecef::OFFSET_ITOW);
+    if (isLateOrphan(tow, COV_BIT_HPPOSECEF)) return;
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_hpposecef::parseNavHpPosEcef(ubx_payload_.data(), ubx_payload_.size(),
+                                               pending_.hp_ecef)) {
+      return;
+    }
+    pending_.cov_received  |= COV_BIT_HPPOSECEF;
+    pending_.cov_ever_seen |= COV_BIT_HPPOSECEF;
+    pending_.last_update = now();
+    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
+    if (pendingComplete()) flushPending();
+  }
+
+  void handleNavHpPosLlh() {
+    startGraceIfNeeded();
+    const uint32_t tow = readItowMs(ubx_payload_.data(), ubx_payload_.size(),
+                                    ubx::nav_hpposllh::OFFSET_ITOW);
+    if (isLateOrphan(tow, COV_BIT_HPPOSLLH)) return;
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_hpposllh::parseNavHpPosLlh(ubx_payload_.data(), ubx_payload_.size(),
+                                             pending_.hp_llh)) {
+      return;
+    }
+    pending_.cov_received  |= COV_BIT_HPPOSLLH;
+    pending_.cov_ever_seen |= COV_BIT_HPPOSLLH;
+    pending_.last_update = now();
+    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
+    if (pendingComplete()) flushPending();
+  }
+
   void flushPending() {
     const uint8_t ever_seen = pending_.cov_ever_seen;
     const uint8_t recv      = pending_.cov_received;
@@ -470,6 +547,29 @@ class UbxDecoderNode : public rclcpp::Node {
     // Snapshot ECEF-direct fields before LLH-driven derivation overwrites them.
     msg::GnssSolution ecef_direct = pending_.buf;
     binary_solution_ = pending_.buf;
+
+    // HPPOSLLH override (highest-priority LLH source): replace the NAV-PVT
+    // position before geometry derivation so the derived ECEF inherits the
+    // high-precision values. The accuracy fields refresh the diagonal-only
+    // covariance unless NAV-COV already provided the full 3x3 (signalled by a
+    // non-zero off-diagonal, same contract as parseNavPvt).
+    if (recv & COV_BIT_HPPOSLLH) {
+      binary_solution_.latitude  = pending_.hp_llh.lat_deg;
+      binary_solution_.longitude = pending_.hp_llh.lon_deg;
+      binary_solution_.altitude  = pending_.hp_llh.alt_m;
+      const bool pos_cov_from_nav_cov =
+          binary_solution_.pos_enu_cov[1] != 0.0 ||
+          binary_solution_.pos_enu_cov[2] != 0.0 ||
+          binary_solution_.pos_enu_cov[5] != 0.0;
+      if (!pos_cov_from_nav_cov) {
+        const double h_var_per_axis =
+            pending_.hp_llh.hacc_m * pending_.hp_llh.hacc_m * 0.5;
+        binary_solution_.pos_enu_cov[0] = h_var_per_axis;
+        binary_solution_.pos_enu_cov[4] = h_var_per_axis;
+        binary_solution_.pos_enu_cov[8] =
+            pending_.hp_llh.vacc_m * pending_.hp_llh.vacc_m;
+      }
+    }
 
     decoder_common::finalizeBinarySolutionGeometry(binary_solution_);
 
@@ -488,8 +588,12 @@ class UbxDecoderNode : public rclcpp::Node {
     std::copy(std::begin(e), std::end(e),
               binary_solution_.vel_cov_ecef.begin());
 
-    // ECEF-direct overrides: NAV-POSECEF / NAV-VELECEF take priority if seen.
-    if (recv & COV_BIT_POSECEF) {
+    // ECEF-direct overrides, by priority: HPPOSECEF > NAV-POSECEF > LLH-derived.
+    if (recv & COV_BIT_HPPOSECEF) {
+      binary_solution_.pos_ecef.x = pending_.hp_ecef[0];
+      binary_solution_.pos_ecef.y = pending_.hp_ecef[1];
+      binary_solution_.pos_ecef.z = pending_.hp_ecef[2];
+    } else if (recv & COV_BIT_POSECEF) {
       binary_solution_.pos_ecef = ecef_direct.pos_ecef;
     }
     if (recv & COV_BIT_VELECEF) {
@@ -659,19 +763,35 @@ class UbxDecoderNode : public rclcpp::Node {
   // Solution Publishing
 
   void publishSolution(msg::GnssSolution& sol) {
-    // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
+    // BINARY path: time_tow keeps the PVT epoch's own iTOW (set by
+    // parseNavPvt); raw_.time (RTKLIB observation-decode clock) supplies only
+    // the week number, which UBX NAV-* payloads do not carry. Overwriting tow
+    // with raw_.time would timestamp the position with the latest
+    // *observation* epoch instead of the solution's own epoch. NMEA path
     // trusts time_week/time_tow already filled by NmeaParser from the sentence
     // itself.
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
-      const double tow = time2gpst(raw_.time, &week_for_stamp);
+      const double raw_tow = time2gpst(raw_.time, &week_for_stamp);
       if (week_for_stamp > 0) {
-        sol.time_week = static_cast<uint32_t>(week_for_stamp);
-        sol.time_tow  = tow;
+        if (sol.time_tow > 0.0) {
+          // Week-rollover guard: iTOW vs raw_tow more than half a week apart
+          // means the two clocks straddle a GPS week boundary.
+          if      (sol.time_tow - raw_tow >  302400.0) week_for_stamp -= 1;
+          else if (sol.time_tow - raw_tow < -302400.0) week_for_stamp += 1;
+          sol.time_week = static_cast<uint32_t>(week_for_stamp);
+          t_gpst = gpst2time(week_for_stamp, sol.time_tow);
+        } else {
+          // iTOW unavailable (exact week-start epoch) — previous behavior.
+          sol.time_week = static_cast<uint32_t>(week_for_stamp);
+          sol.time_tow  = raw_tow;
+          t_gpst = raw_.time;
+        }
+      } else {
+        t_gpst = raw_.time;
       }
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
-      t_gpst = raw_.time;
     } else {
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_NMEA;
       if (sol.time_week > 0) {
@@ -747,6 +867,9 @@ class UbxDecoderNode : public rclcpp::Node {
     int week = 0;
     const gtime_t obs_time = raw_.obs.data[0].time;
     const double tow = time2gpst(obs_time, &week);
+
+    warnOnEpochGap("Observation", tow,
+                   obs_gap_last_tow_s_, obs_gap_min_period_s_);
 
     msg::GnssObservations msg;
     msg.header.stamp    = (use_gps_timestamp_ && week > 0)
@@ -838,6 +961,12 @@ class UbxDecoderNode : public rclcpp::Node {
   uint16_t             ubx_len_{0};
   uint16_t             ubx_pos_{0};
   std::vector<uint8_t> ubx_payload_;
+
+  // Epoch-gap detection state (see warnOnEpochGap)
+  double pvt_gap_last_tow_s_{-1.0};
+  double pvt_gap_min_period_s_{0.0};
+  double obs_gap_last_tow_s_{-1.0};
+  double obs_gap_min_period_s_{0.0};
 
   // Ephemeris dedup
   gnss_utils::EphemerisStore eph_store_;

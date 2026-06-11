@@ -52,6 +52,8 @@ struct UbxConfig {
   bool enable_nav_cov{false};
   bool enable_nav_posecef{false};
   bool enable_nav_velecef{false};
+  bool enable_nav_hpposllh{false};
+  bool enable_nav_hpposecef{false};
   bool enable_nmea_gga{false};
   bool enable_nmea_rmc{false};
   bool enable_nmea_gsa{false};
@@ -144,6 +146,8 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.nav_cov",     config_.enable_nav_cov);
     declare_parameter<bool>("messages.nav_posecef", config_.enable_nav_posecef);
     declare_parameter<bool>("messages.nav_velecef", config_.enable_nav_velecef);
+    declare_parameter<bool>("messages.nav_hpposllh",  config_.enable_nav_hpposllh);
+    declare_parameter<bool>("messages.nav_hpposecef", config_.enable_nav_hpposecef);
     declare_parameter<bool>("messages.nmea_gga", config_.enable_nmea_gga);
     declare_parameter<bool>("messages.nmea_rmc", config_.enable_nmea_rmc);
     declare_parameter<bool>("messages.nmea_gsa", config_.enable_nmea_gsa);
@@ -188,6 +192,8 @@ class UbxDriverNode : public rclcpp::Node {
     config_.enable_nav_cov     = get_parameter("messages.nav_cov").as_bool();
     config_.enable_nav_posecef = get_parameter("messages.nav_posecef").as_bool();
     config_.enable_nav_velecef = get_parameter("messages.nav_velecef").as_bool();
+    config_.enable_nav_hpposllh  = get_parameter("messages.nav_hpposllh").as_bool();
+    config_.enable_nav_hpposecef = get_parameter("messages.nav_hpposecef").as_bool();
     config_.enable_nmea_gga = get_parameter("messages.nmea_gga").as_bool();
     config_.enable_nmea_rmc = get_parameter("messages.nmea_rmc").as_bool();
     config_.enable_nmea_gsa = get_parameter("messages.nmea_gsa").as_bool();
@@ -244,6 +250,13 @@ class UbxDriverNode : public rclcpp::Node {
 
     // Lock solution source at startup. BINARY if NAV-PVT is enabled, else NMEA.
     // No mid-session switching: if binary stops, output pauses rather than falling back.
+    // HPPOS messages refine the BINARY solution but cannot anchor an epoch alone.
+    if ((config_.enable_nav_hpposllh || config_.enable_nav_hpposecef) &&
+        !config_.enable_nav_pvt) {
+      RCLCPP_WARN(get_logger(),
+        "messages.nav_hpposllh/nav_hpposecef require messages.nav_pvt: true — "
+        "HPPOS carries position only; no binary solution will be published without NAV-PVT.");
+    }
     source_ = config_.enable_nav_pvt ? SolutionSource::BINARY : SolutionSource::NMEA;
     initPendingExpectedMask();
     start_time_ = now();
@@ -280,9 +293,10 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Enabled messages:");
     RCLCPP_INFO(get_logger(), "  Observation  : RAWX=%s SFRBX=%s",
       on(config_.enable_rawx), on(config_.enable_sfrbx));
-    RCLCPP_INFO(get_logger(), "  PVT (binary) : NAV-PVT=%s NAV-DOP=%s NAV-COV=%s NAV-POSECEF=%s NAV-VELECEF=%s",
+    RCLCPP_INFO(get_logger(), "  PVT (binary) : NAV-PVT=%s NAV-DOP=%s NAV-COV=%s NAV-POSECEF=%s NAV-VELECEF=%s NAV-HPPOSLLH=%s NAV-HPPOSECEF=%s",
       on(config_.enable_nav_pvt), on(config_.enable_nav_dop), on(config_.enable_nav_cov),
-      on(config_.enable_nav_posecef), on(config_.enable_nav_velecef));
+      on(config_.enable_nav_posecef), on(config_.enable_nav_velecef),
+      on(config_.enable_nav_hpposllh), on(config_.enable_nav_hpposecef));
     RCLCPP_INFO(get_logger(), "  NMEA         : GGA=%s RMC=%s GSA=%s GST=%s HiPrec=%s",
       on(config_.enable_nmea_gga), on(config_.enable_nmea_rmc),
       on(config_.enable_nmea_gsa), on(config_.enable_nmea_gst),
@@ -706,6 +720,8 @@ class UbxDriverNode : public rclcpp::Node {
           {ubx::CFG_MSGOUT_UBX_NAV_COV_I2C     + port, config_.enable_nav_cov     ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_NAV_POSECEF_I2C + port, config_.enable_nav_posecef ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_NAV_VELECEF_I2C + port, config_.enable_nav_velecef ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_HPPOSLLH_I2C  + port, config_.enable_nav_hpposllh  ? 1u : 0u, 1},
+          {ubx::CFG_MSGOUT_UBX_NAV_HPPOSECEF_I2C + port, config_.enable_nav_hpposecef ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_ESF_RAW_I2C   + port, config_.enable_esf_raw ? 1u : 0u, 1},
           {ubx::CFG_MSGOUT_UBX_ESF_INS_I2C   + port, config_.enable_esf_ins ? 1u : 0u, 1},
       };
@@ -776,6 +792,8 @@ class UbxDriverNode : public rclcpp::Node {
     sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_COV,     config_.enable_nav_cov,     "NAV-COV");
     sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_POSECEF, config_.enable_nav_posecef, "NAV-POSECEF");
     sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_VELECEF, config_.enable_nav_velecef, "NAV-VELECEF");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_HPPOSLLH,  config_.enable_nav_hpposllh,  "NAV-HPPOSLLH");
+    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_HPPOSECEF, config_.enable_nav_hpposecef, "NAV-HPPOSECEF");
     sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_RAW,   config_.enable_esf_raw, "ESF-RAW");
     sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_INS,   config_.enable_esf_ins, "ESF-INS");
 
@@ -1014,6 +1032,8 @@ class UbxDriverNode : public rclcpp::Node {
     if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_COV)     handleNavCov();
     if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_POSECEF) handleNavPosEcef();
     if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_VELECEF) handleNavVelEcef();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_HPPOSECEF) handleNavHpPosEcef();
+    if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_HPPOSLLH)  handleNavHpPosLlh();
   }
 
   // Sign-extend the lower 24 bits of a uint32 into an int32.
@@ -1194,9 +1214,11 @@ class UbxDriverNode : public rclcpp::Node {
   // NAV-DOP is tracked separately in a persistent cache (last_dop_) so it can
   // survive Pending resets and be staleness-gated against the PVT cadence.
   // Only NAV-COV/POSECEF/VELECEF contribute to completion.
-  static constexpr uint8_t COV_BIT_COV     = 0x1;
-  static constexpr uint8_t COV_BIT_POSECEF = 0x2;
-  static constexpr uint8_t COV_BIT_VELECEF = 0x4;
+  static constexpr uint8_t COV_BIT_COV       = 0x1;
+  static constexpr uint8_t COV_BIT_POSECEF   = 0x2;
+  static constexpr uint8_t COV_BIT_VELECEF   = 0x4;
+  static constexpr uint8_t COV_BIT_HPPOSLLH  = 0x8;
+  static constexpr uint8_t COV_BIT_HPPOSECEF = 0x10;
 
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
@@ -1204,6 +1226,11 @@ class UbxDriverNode : public rclcpp::Node {
     uint8_t cov_received{0};
     uint8_t cov_expected{0};   // derived from YAML config (fixed at startup)
     msg::GnssSolution buf{};
+    // High-precision scratch (NAV-HPPOSLLH / NAV-HPPOSECEF). Kept outside buf
+    // and applied at flush time so the result does not depend on the in-epoch
+    // arrival order vs NAV-PVT (which writes lat/lon/alt unconditionally).
+    ubx::nav_hpposllh::Result hp_llh{};
+    double hp_ecef[3]{0.0, 0.0, 0.0};
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
 
@@ -1218,15 +1245,21 @@ class UbxDriverNode : public rclcpp::Node {
 
   void initPendingExpectedMask() {
     pending_.cov_expected =
-        (config_.enable_nav_cov     ? COV_BIT_COV     : uint8_t{0}) |
-        (config_.enable_nav_posecef ? COV_BIT_POSECEF : uint8_t{0}) |
-        (config_.enable_nav_velecef ? COV_BIT_VELECEF : uint8_t{0});
+        (config_.enable_nav_cov       ? COV_BIT_COV       : uint8_t{0}) |
+        (config_.enable_nav_posecef   ? COV_BIT_POSECEF   : uint8_t{0}) |
+        (config_.enable_nav_velecef   ? COV_BIT_VELECEF   : uint8_t{0}) |
+        (config_.enable_nav_hpposllh  ? COV_BIT_HPPOSLLH  : uint8_t{0}) |
+        (config_.enable_nav_hpposecef ? COV_BIT_HPPOSECEF : uint8_t{0});
   }
 
-  static uint32_t readItowMs(const uint8_t* p, size_t len) {
-    if (len < 4) return UINT32_MAX;
+  // offset: iTOW position in the payload — 0 for most NAV-* messages,
+  // ubx::nav_hpposllh/nav_hpposecef::OFFSET_ITOW (4) for the HP messages.
+  // Reading the wrong offset breaks TOW epoch grouping and stalls publishing
+  // until the watchdog fires, so HP handlers must pass their OFFSET_ITOW.
+  static uint32_t readItowMs(const uint8_t* p, size_t len, size_t offset = 0) {
+    if (len < offset + 4) return UINT32_MAX;
     uint32_t v = 0;
-    std::memcpy(&v, p, 4);
+    std::memcpy(&v, p + offset, 4);
     return v;
   }
 
@@ -1338,6 +1371,44 @@ class UbxDriverNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
+  void handleNavHpPosEcef() {
+    if (!config_.enable_nav_hpposecef) return;
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size(),
+                                    ubx::nav_hpposecef::OFFSET_ITOW);
+    if (isLateOrphan(tow)) return;
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_hpposecef::parseNavHpPosEcef(ubx_frm_payload_.data(),
+                                               ubx_frm_payload_.size(),
+                                               pending_.hp_ecef)) {
+      return;
+    }
+    pending_.cov_received  |= COV_BIT_HPPOSECEF;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
+  }
+
+  void handleNavHpPosLlh() {
+    if (!config_.enable_nav_hpposllh) return;
+    const uint32_t tow = readItowMs(ubx_frm_payload_.data(), ubx_frm_payload_.size(),
+                                    ubx::nav_hpposllh::OFFSET_ITOW);
+    if (isLateOrphan(tow)) return;
+    if (tow != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+      flushPending();
+    }
+    pending_.tow_ms = tow;
+    if (!ubx::nav_hpposllh::parseNavHpPosLlh(ubx_frm_payload_.data(),
+                                             ubx_frm_payload_.size(),
+                                             pending_.hp_llh)) {
+      return;
+    }
+    pending_.cov_received  |= COV_BIT_HPPOSLLH;
+    pending_.last_update = now();
+    if (pendingComplete()) flushPending();
+  }
+
   void flushPending() {
     const uint8_t expected = pending_.cov_expected;
     const uint8_t recv     = pending_.cov_received;
@@ -1349,6 +1420,29 @@ class UbxDriverNode : public rclcpp::Node {
     // Snapshot ECEF-direct fields before LLH-driven derivation overwrites them.
     msg::GnssSolution ecef_direct = pending_.buf;
     binary_solution_ = pending_.buf;
+
+    // HPPOSLLH override (highest-priority LLH source): replace the NAV-PVT
+    // position before geometry derivation so the derived ECEF inherits the
+    // high-precision values. The accuracy fields refresh the diagonal-only
+    // covariance unless NAV-COV already provided the full 3x3 (signalled by a
+    // non-zero off-diagonal, same contract as parseNavPvt).
+    if (recv & COV_BIT_HPPOSLLH) {
+      binary_solution_.latitude  = pending_.hp_llh.lat_deg;
+      binary_solution_.longitude = pending_.hp_llh.lon_deg;
+      binary_solution_.altitude  = pending_.hp_llh.alt_m;
+      const bool pos_cov_from_nav_cov =
+          binary_solution_.pos_enu_cov[1] != 0.0 ||
+          binary_solution_.pos_enu_cov[2] != 0.0 ||
+          binary_solution_.pos_enu_cov[5] != 0.0;
+      if (!pos_cov_from_nav_cov) {
+        const double h_var_per_axis =
+            pending_.hp_llh.hacc_m * pending_.hp_llh.hacc_m * 0.5;
+        binary_solution_.pos_enu_cov[0] = h_var_per_axis;
+        binary_solution_.pos_enu_cov[4] = h_var_per_axis;
+        binary_solution_.pos_enu_cov[8] =
+            pending_.hp_llh.vacc_m * pending_.hp_llh.vacc_m;
+      }
+    }
 
     // Derive ECEF position/velocity from LLH/ENU using current solution's LLH.
     decoder_common::finalizeBinarySolutionGeometry(binary_solution_);
@@ -1368,8 +1462,12 @@ class UbxDriverNode : public rclcpp::Node {
     std::copy(std::begin(e), std::end(e),
               binary_solution_.vel_cov_ecef.begin());
 
-    // ECEF-direct overrides: NAV-POSECEF / NAV-VELECEF take priority if seen.
-    if (recv & COV_BIT_POSECEF) {
+    // ECEF-direct overrides, by priority: HPPOSECEF > NAV-POSECEF > LLH-derived.
+    if (recv & COV_BIT_HPPOSECEF) {
+      binary_solution_.pos_ecef.x = pending_.hp_ecef[0];
+      binary_solution_.pos_ecef.y = pending_.hp_ecef[1];
+      binary_solution_.pos_ecef.z = pending_.hp_ecef[2];
+    } else if (recv & COV_BIT_POSECEF) {
       binary_solution_.pos_ecef = ecef_direct.pos_ecef;
     }
     if (recv & COV_BIT_VELECEF) {
@@ -1427,19 +1525,35 @@ class UbxDriverNode : public rclcpp::Node {
         return;
     }
 
-    // BINARY path uses raw_.time (RTKLIB binary decoder timestamp); NMEA path
+    // BINARY path: time_tow keeps the PVT epoch's own iTOW (set by
+    // parseNavPvt); raw_.time (RTKLIB observation-decode clock) supplies only
+    // the week number, which UBX NAV-* payloads do not carry. Overwriting tow
+    // with raw_.time would timestamp the position with the latest
+    // *observation* epoch instead of the solution's own epoch. NMEA path
     // trusts time_week/time_tow already filled by NmeaParser from the sentence
     // itself.
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
-      const double tow = time2gpst(raw_.time, &week_for_stamp);
+      const double raw_tow = time2gpst(raw_.time, &week_for_stamp);
       if (week_for_stamp > 0) {
-        sol.time_week = static_cast<uint32_t>(week_for_stamp);
-        sol.time_tow  = tow;
+        if (sol.time_tow > 0.0) {
+          // Week-rollover guard: iTOW vs raw_tow more than half a week apart
+          // means the two clocks straddle a GPS week boundary.
+          if      (sol.time_tow - raw_tow >  302400.0) week_for_stamp -= 1;
+          else if (sol.time_tow - raw_tow < -302400.0) week_for_stamp += 1;
+          sol.time_week = static_cast<uint32_t>(week_for_stamp);
+          t_gpst = gpst2time(week_for_stamp, sol.time_tow);
+        } else {
+          // iTOW unavailable (exact week-start epoch) — previous behavior.
+          sol.time_week = static_cast<uint32_t>(week_for_stamp);
+          sol.time_tow  = raw_tow;
+          t_gpst = raw_.time;
+        }
+      } else {
+        t_gpst = raw_.time;
       }
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
-      t_gpst = raw_.time;
     } else {
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_NMEA;
       if (sol.time_week > 0) {

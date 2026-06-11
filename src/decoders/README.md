@@ -100,6 +100,8 @@ ros2 run gnss_ros_standardization ubx_decoder_node --ros-args \
 | `UBX-NAV-COV` | `0x01 / 0x36` | Position and velocity covariance in the receiver's navigation frame | Refines covariance when emitted by the receiver |
 | `UBX-NAV-POSECEF` | `0x01 / 0x01` | Receiver ECEF position | Optional native ECEF position source |
 | `UBX-NAV-VELECEF` | `0x01 / 0x11` | Receiver ECEF velocity | Optional native ECEF velocity source |
+| `UBX-NAV-HPPOSLLH` | `0x01 / 0x14` | High-precision geodetic position (1e-9 deg / 0.1 mm) | Highest-priority LLH source; overrides NAV-PVT position |
+| `UBX-NAV-HPPOSECEF` | `0x01 / 0x13` | High-precision ECEF position (0.1 mm) | Highest-priority ECEF source; overrides NAV-POSECEF |
 | NMEA `GGA/RMC/GSA/GST` | — | NMEA position, velocity, DOP, and covariance fallback | Used only when no binary PVT is selected |
 
 `/gnss/imu/data_raw`:
