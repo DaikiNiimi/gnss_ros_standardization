@@ -21,9 +21,8 @@ sbf_driver_node:
     # (MeasEpoch, PVT, ...) at the licensed measurement rate, ExtSensorMeas at
     # the IMU's native sample rate. So for GNSS 10 Hz + IMU 100 Hz set 100
     # (msec10), and for IMU 200 Hz set 200 (msec5); GNSS stays at the receiver's
-    # cap (e.g. 10 Hz) either way — same behavior as the WebUI SBF interval.
-    # The effective IMU rate is bounded by the IMU's own sample rate. If the
-    # receiver rejects the interval, the startup response log shows the error.
+    # cap (e.g. 10 Hz) either way.
+
     publish_rate: 10
     
     # ROS settings
@@ -103,7 +102,7 @@ sbf_driver_node:
       # When pvt_geodetic=true, pos_cov_geodetic=true is strongly recommended
       # (otherwise pos_enu_cov will be zero). Same applies to pvt_cartesian /
       # pos_cov_cartesian for ECEF.
-      pvt_geodetic: false       # PVTGeodetic    (ID 4007) → LLH + vel_NED
+      pvt_geodetic: true       # PVTGeodetic    (ID 4007) → LLH + vel_NED
       pos_cov_geodetic: false   # PosCovGeodetic (ID 5906) → pos_enu_cov 3x3
       vel_cov_geodetic: false   # VelCovGeodetic (ID 5908) → vel_enu_cov 3x3
       pvt_cartesian: false      # PVTCartesian    (ID 4006) → ECEF pos + vel
@@ -119,10 +118,10 @@ sbf_driver_node:
 
       # NMEA output (used for GnssSolution topic via NmeaParser)
       # Sentences are output on the same physical port as SBF (Stream2, sec1 = 1 Hz)
-      nmea_gga: true         # GGA: position, fix quality, satellites, HDOP, altitude
-      nmea_rmc: true         # RMC: velocity (speed/course)
-      nmea_gsa: true         # GSA: DOP values
-      nmea_gst: true         # GST: position standard deviations (for covariance)
+      nmea_gga: false         # GGA: position, fix quality, satellites, HDOP, altitude
+      nmea_rmc: false         # RMC: velocity (speed/course)
+      nmea_gsa: false         # GSA: DOP values
+      nmea_gst: false         # GST: position standard deviations (for covariance)
 
     # Solution source policy (locked at startup):
     #   If messages.pvt_geodetic OR messages.pvt_cartesian is true → BINARY

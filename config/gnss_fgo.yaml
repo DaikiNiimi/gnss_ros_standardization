@@ -1,0 +1,113 @@
+gnss_fgo:
+  ros__parameters:
+    topics:
+      rover_observation: "/gnss/observation"
+      base_observation: "/base/gnss/observation"
+      ephemeris: "/gnss/ephemeris"
+      solution: "/gnss/fgo/solution"
+
+    # Base station antenna position. REQUIRED.
+    # An error here translates the whole estimated trajectory by roughly the
+    # same amount (the DD model anchors the rover to this point).
+    # postype: "llh" (deg, deg, ellipsoidal m) or "ecef" (m)
+    base_position:
+      postype: "llh"
+      pos: [35.704944440, 139.721694440, 74.3800]
+
+    # ENU output origin. Priority: fixed_origin > base_position.
+    fixed_origin:
+      postype: "llh"
+      pos: [0.0, 0.0, 0.0]
+
+    masks:
+      elevation_deg: 15.0
+      snr_dbhz: 35.0          # flat SNR mask [dBHz]; 0 disables it
+      # Elevation-dependent SNR mask (RTKLIB testsnr), same model as the RTK
+      # example: nine thresholds [dBHz] at 5,15,...,85 deg per band. When enabled
+      # it takes precedence over the flat snr_dbhz above.
+      snrmask:
+        enable: true
+        l1: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        l2: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        l5: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+
+    # GLONASS is off by default: inter-frequency biases do not cancel in DD
+    # across heterogeneous receivers, and FDMA wavelengths differ per pair.
+    navsys:
+      gps: true
+      glo: false
+      gal: true
+      bds: true
+      qzs: true
+    glonass_carrier_dd: false
+
+    # Ambiguities are resolved per epoch (the epochs are independent). Reliable
+    # instantaneous AR needs strong geometry or multiple frequencies, so dual-
+    # frequency (L1+L2) is recommended; L1-only fixes only with good geometry.
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false
+
+    # Maximum rover-base age for forming DD pairs [s].
+    max_age_s: 5.0
+
+    # UNDIFFERENCED (zenith) measurement sigmas. The double-difference noise is
+    # derived from these by error propagation, so the same sigma feeds both the
+    # float DD factors and the correlated AR covariance (RTKLIB ddcov).
+    noise:
+      pr_sigma_m: 0.5        # undifferenced pseudorange sigma [m]
+      cp_sigma_m: 0.005      # undifferenced carrier phase sigma [m]
+      elevation_weighting: true   # sigma / sin(elevation)
+
+    # Robust (Huber M-estimator) measurement noise on the DD factors.
+    robust:
+      enable: true
+      huber_k: 1.345
+
+    ambiguity:
+      # Loose prior on every (fresh, per-epoch) ambiguity. The GTSAM DD carrier
+      # factor uses (N_ref, N_tar) keys, so each (system,band) group keeps a
+      # 1-D gauge freedom that this prior fixes.
+      prior_sigma_cycles: 100.0    # target ambiguities (loose)
+      # Per-group reference ambiguity prior: tight, fixes the DD gauge.
+      ref_prior_sigma_cycles: 0.001
+
+    ambiguity_resolution:
+      enable: true
+      ratio_threshold: 3.0
+      # AR satellite selection: cycle-slipped/half-cycle carriers and pairs below
+      # el_mask_deg are excluded, then a single LAMBDA + ratio test on at least
+      # min_fix DDs (canonical RTKLIB resamb_LAMBDA). The correlated DD covariance
+      # keeps the ratio test valid.
+      el_mask_deg: 15.0
+      min_fix: 5
+      # Fault detection & exclusion (FDE): after fixing, check the post-fix
+      # carrier residuals; if the largest exceeds fde_threshold_m (an undetected
+      # multipath / half-cycle outlier), drop that satellite and re-fix, up to
+      # fde_max_exclude times. A fix is published only with clean residuals AND a
+      # passing ratio - so an outlier can be removed to salvage a float, and a
+      # wrong fix that slipped past the ratio is rejected.
+      fde_enable: true
+      fde_threshold_m: 0.05
+      fde_max_exclude: 2
+
+    # Loose prior on the rover position, used only on the first epoch and after a
+    # motion gap. Otherwise the position is carried across epochs by the motion
+    # factor below.
+    position_prior:
+      std_m: 100.0
+
+    # Inter-epoch motion model: a BetweenFactor<Point3> ties X(k) to X(k-1) by
+    # the Doppler-derived displacement (0.5*(v_{k-1}+v_k)*dt). This is what
+    # RTKLIB's EKF does in every armode (dynamics on); it smooths the float
+    # position so per-epoch (instantaneous) AR can actually fix. Ambiguities
+    # stay per-epoch - only the position is carried.
+    motion:
+      vel_sigma_mps: 0.1      # floor on the Doppler velocity sigma
+      accel_sigma_mps2: 3.0   # unmodelled acceleration (process noise)
+      max_dt_s: 5.0           # beyond this gap, re-anchor with the position prior
+
+    isam2:
+      relinearize_threshold: 0.01
+      relinearize_skip: 1

@@ -68,7 +68,7 @@ ubx_driver_node:
     # Receiver Generation
     # Options: G9 (F9P/M8 etc.), G10 (X20P etc.)
     # G9 uses legacy CFG commands, G10 uses CFG-VALSET
-    generation: "G10"
+    generation: "G9"
     
     # ==========================================================================
     # Output Messages
@@ -84,7 +84,7 @@ ubx_driver_node:
       # When nav_pvt=true, the solution source is locked to BINARY at startup;
       # /gnss/nmea_solution carries NAV-PVT-derived fix (hAcc/vAcc → covariance,
       # carrSoln → STATUS_FIX/FLOAT/DGPS/SINGLE classification).
-      nav_pvt: false
+      nav_pvt: true
 
       # DOP values (NAV-DOP) and full 3x3 position/velocity covariance (NAV-COV, NED→ENU).
       # NAV-COV overwrites the diagonal-only covariance from NAV-PVT when enabled.
@@ -99,11 +99,11 @@ ubx_driver_node:
       # High-precision position (mm-level resolution). Highest-priority position
       # source: HPPOSLLH/HPPOSECEF > NAV-PVT > NMEA. Requires nav_pvt: true
       # (HPPOS carries position only; status/velocity/sats come from NAV-PVT).
-      nav_hpposllh: false    # NAV-HPPOSLLH (0x01,0x14) → latitude/longitude/altitude
+      nav_hpposllh: true    # NAV-HPPOSLLH (0x01,0x14) → latitude/longitude/altitude
       nav_hpposecef: false   # NAV-HPPOSECEF (0x01,0x13) → pos_ecef
 
       # NMEA messages (disable to save bandwidth)
-      nmea_gga: true
+      nmea_gga: false
       nmea_rmc: false
       nmea_gsa: false
       nmea_gst: false
@@ -118,7 +118,7 @@ ubx_driver_node:
       #          rate_hz); batched messages are split into one Imu per sample.
       # ESF-INS: receiver-calibrated angular rate + linear acceleration → /gnss/imu/data
       # Both can be enabled simultaneously; they publish to different topics.
-      esf_raw: true
+      esf_raw: false
       esf_ins: false
 
     # ==========================================================================

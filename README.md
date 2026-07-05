@@ -20,6 +20,14 @@ fusion frameworks can be developed once and reused everywhere.
 - Support diverse GNSS receivers and formats (u-blox, Septentrio, NovAtel, RTCM3)
 - Reproduce experiments across systems with consistent interfaces
 
+Building tightly-coupled estimators on top of this package is meant to be easy:
+the included `GnssPreprocessor` turns the standardized topics into
+optimizer-ready data (satellite positions, double differences, wavelengths), so
+feeding e.g. [GTSAM's official GNSS factors](https://gtsam.org/2026/06/10/rtk-gnss-double-difference.html)
+takes only a few lines. See the
+[tightly-coupled FGO examples](examples/README.md) — RTK-grade FIX solutions
+from a factor graph, and full GNSS/IMU tight coupling with IMU preintegration.
+
 ## Demo
 
 Hardware and ROS 2 node configuration used in the demo:
@@ -66,6 +74,12 @@ NovAtel log IDs, RTCM types) are shown in the component READMEs.
 - **Third-party** (vendored as a git submodule):
   [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB)
   — RTKLIB by T. Takasu, demo5 fork by T. Everett (BSD 2-Clause)
+- **Optional** — only for the opt-in tightly-coupled FGO examples
+  (`-DBUILD_GTSAM_FGO_EXAMPLES=ON`): [GTSAM](https://github.com/borglab/gtsam)
+  (develop branch, BSD-3-Clause). It is **not** fetched by `rosdep`/`colcon` and
+  is not a submodule — the GNSS factors are only on GTSAM's `develop` branch and
+  need specific build flags, so build it from source once (below). The default
+  build does not need GTSAM at all.
 
 ## Installation
 
@@ -79,6 +93,44 @@ source install/setup.bash
 
 If you cloned the repository without `--recursive`, make sure to run `git submodule update --init --recursive`.
 
+### Optional: tightly-coupled FGO examples (GTSAM)
+
+The [`tightly_coupled_gnss`](examples/tightly_coupled_gnss/) and
+[`tightly_coupled_gnss_imu`](examples/tightly_coupled_gnss_imu/) examples need
+[GTSAM](https://github.com/borglab/gtsam) built from its `develop` branch (the
+GNSS double-difference factors are not in a release tag yet). Build and install
+it once — `rosdep`/`colcon` do **not** fetch it:
+
+```bash
+git clone https://github.com/borglab/gtsam.git && cd gtsam
+git checkout develop
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+  -DGTSAM_USE_SYSTEM_EIGEN=ON -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF \
+  -DGTSAM_BUILD_TESTS=OFF -DGTSAM_BUILD_EXAMPLES_ALWAYS=OFF \
+  -DGTSAM_BUILD_UNSTABLE=OFF -DGTSAM_BUILD_PYTHON=OFF \
+  -DCMAKE_INSTALL_PREFIX=$HOME/gtsam-install
+cmake --build build -j"$(nproc)" && cmake --install build
+cd ..
+```
+
+`-DGTSAM_USE_SYSTEM_EIGEN=ON` and `-DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF` are
+**required** (this package uses the system Eigen; mixing GTSAM's bundled Eigen or
+native alignment corrupts memory at the ABI boundary) — see
+[examples/tightly_coupled_gnss/README.md](examples/tightly_coupled_gnss/README.md).
+For a system-wide install use `sudo cmake --install build` (no prefix) instead —
+that path is on the default loader path, so nothing else is needed.
+
+Then build this package with the FGO examples enabled:
+
+```bash
+colcon build --cmake-args -DBUILD_GTSAM_FGO_EXAMPLES=ON \
+  -DGTSAM_DIR=$HOME/gtsam-install/lib/cmake/GTSAM
+```
+
+The FGO executables embed the GTSAM library path in their RPATH, so
+`ros2 run gnss_ros_standardization gnss_fgo` works with **no `LD_LIBRARY_PATH`**
+even when GTSAM lives in a non-system prefix like `$HOME/gtsam-install`.
+
 ## Components
 
 Each component has its own README with detailed information including message
@@ -89,7 +141,7 @@ tables, parameter lists, and `ros2 run` examples.
 | Decoders | Stream-only: NTRIP / TCP / Serial → ROS topics | [src/decoders/README.md](src/decoders/README.md) |
 | Drivers | Connect to receiver, configure outputs, decode | [src/drivers/README.md](src/drivers/README.md) |
 | Converters | RINEX ↔ rosbag and RTKLIB `.pos` ↔ rosbag | [src/converter/README.md](src/converter/README.md) |
-| Examples | SPP, RTK, loose-coupled GNSS/IMU EKF | [examples/README.md](examples/README.md) |
+| Examples | SPP, RTK, loose-coupled GNSS/IMU EKF, tightly-coupled FGO (GTSAM) | [examples/README.md](examples/README.md) |
 | Messages | Public ROS message contract | [msg/README.md](msg/README.md) |
 
 ## Acknowledgements
@@ -97,6 +149,10 @@ tables, parameter lists, and `ros2 run` examples.
 This project uses [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB),
 maintained by Tim Everett, based on [RTKLIB](https://github.com/tomojitakasu/RTKLIB)
 by Tomoji Takasu, licensed under BSD 2-Clause.
+
+The tightly-coupled FGO examples build on [GTSAM](https://github.com/borglab/gtsam)
+by the Borglab (Frank Dellaert et al.), licensed under BSD-3-Clause, using its
+[official GNSS double-difference factors](https://gtsam.org/2026/06/10/rtk-gnss-double-difference.html).
 
 ## License
 

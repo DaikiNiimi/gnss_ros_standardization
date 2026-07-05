@@ -1,0 +1,116 @@
+gnss_imu_fgo:
+  ros__parameters:
+    topics:
+      rover_observation: "/gnss/observation"
+      base_observation: "/base/gnss/observation"
+      ephemeris: "/gnss/ephemeris"
+      imu: "/gnss/imu/data_raw"
+      solution: "/gnss/fgo/solution"
+
+    # Base station antenna position. REQUIRED (see tightly_coupled_gnss).
+    base_position:
+      postype: "llh"
+      pos: [35.704944440, 139.721694440, 74.3800]
+
+    # Body-frame translation from the body/IMU origin to the GNSS antenna
+    # phase center [m]. Convention: x forward, y left, z up (body frame).
+    lever_arm: [0.0, 0.0, 0.0]
+
+    # ENU anchor for the navigation frame (also the ENU output origin).
+    # "gnss_fix": first GNSS a-priori position. "manual": use pos below.
+    local_origin:
+      mode: "gnss_fix"
+      postype: "llh"
+      pos: [0.0, 0.0, 0.0]
+
+    masks:
+      elevation_deg: 15.0
+      snr_dbhz: 35.0          # flat SNR mask [dBHz]; 0 disables it
+      # Elevation-dependent SNR mask (RTKLIB testsnr), same model as gnss_fgo:
+      # nine thresholds [dBHz] at 5,15,...,85 deg per band. When enabled it takes
+      # precedence over the flat snr_dbhz above.
+      snrmask:
+        enable: true
+        l1: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        l2: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        l5: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+
+    navsys:
+      gps: true
+      glo: false
+      gal: true
+      bds: true
+      qzs: true
+    glonass_carrier_dd: false
+
+    # Per-epoch ambiguities: dual-frequency (L1+L2) makes instantaneous AR
+    # much more reliable (the IMU helps too, but the carrier is per-epoch).
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false
+
+    max_age_s: 5.0
+
+    # Undifferenced (zenith) measurement sigmas; DD noise is derived by error
+    # propagation (Var(DD)=Var(SD_ref)+Var(SD_tar), Var(SD)=2*sigma_und^2).
+    noise:
+      pr_sigma_m: 0.5
+      cp_sigma_m: 0.005
+      elevation_weighting: true
+
+    # Robust (Huber M-estimator) measurement noise on the DD factors.
+    robust:
+      enable: true
+      huber_k: 1.345
+
+    ambiguity:
+      # Loose prior on every (fresh, per-epoch) ambiguity for gauge fixing.
+      prior_sigma_cycles: 100.0    # target ambiguities (loose)
+      # Per-group reference ambiguity prior: tight, fixes the DD gauge.
+      ref_prior_sigma_cycles: 0.001
+
+    ambiguity_resolution:
+      enable: true
+      ratio_threshold: 3.0
+      el_mask_deg: 15.0
+      min_fix: 5
+      # Fault detection & exclusion on post-fix carrier residuals (see gnss_fgo).
+      fde_enable: true
+      fde_threshold_m: 0.05
+      fde_max_exclude: 2
+
+    # ENU output origin: fixed_origin (if set) > local nav anchor > base.
+    fixed_origin:
+      postype: "llh"
+      pos: [0.0, 0.0, 0.0]
+
+    # GNSS Doppler velocity factor on V(k). vel_sigma_mps is a floor on the
+    # Doppler velocity sigma; low-speed degradation is handled by the Huber
+    # kernel (robust.enable / robust.huber_k above).
+    motion:
+      vel_sigma_mps: 0.1
+
+    # IMU noise densities (defaults follow gnss_imu_kalman_filter.yaml).
+    imu:
+      sigma_acc: 0.3          # [m/s^2/sqrt(Hz)]
+      sigma_gyr: 0.01         # [rad/s/sqrt(Hz)]
+      sigma_acc_bias: 1.0e-4  # [m/s^2/sqrt(s)]
+      sigma_gyr_bias: 1.0e-5  # [rad/s/sqrt(s)]
+
+    # Static initialization: the platform must be stationary for imu_duration
+    # seconds. Roll/pitch come from gravity, gyro bias from the gyro mean;
+    # yaw is unknown (prior = att_std_yaw) and converges once the platform
+    # accelerates/turns. A permanently static platform never observes yaw.
+    init:
+      imu_duration: 1.0       # [s]
+      pos_std: 10.0           # [m]
+      vel_std: 0.3            # [m/s]
+      att_std_rp: 0.1         # [rad]
+      att_std_yaw: 3.14159    # [rad]
+      acc_bias_std: 0.1       # [m/s^2]
+      gyr_bias_std: 0.01      # [rad/s]
+
+    isam2:
+      relinearize_threshold: 0.01
+      relinearize_skip: 1

@@ -411,6 +411,21 @@ if(BUILD_GTSAM_FGO_EXAMPLES)
     add_dependencies(gnss_imu_fgo ${_rosidl_deps})
     install(TARGETS gnss_imu_fgo DESTINATION lib/${PROJECT_NAME})
   endif()
+
+  # Embed GTSAM's library directory in the installed FGO binaries so they run
+  # without LD_LIBRARY_PATH even when GTSAM lives in a non-system prefix
+  # (e.g. $HOME/gtsam-install). INSTALL_RPATH_USE_LINK_PATH picks up the absolute
+  # dir of the linked gtsam target, so this works wherever GTSAM was installed.
+  # `--disable-new-dtags` emits DT_RPATH instead of DT_RUNPATH: DT_RPATH is also
+  # searched for GTSAM's own transitive deps (libmetis-gtsam / libcephes-gtsam,
+  # which libgtsam.so carries no runpath for), whereas DT_RUNPATH would not
+  # cascade to them and the node would fail to load without LD_LIBRARY_PATH.
+  foreach(_fgo_exe gnss_fgo gnss_imu_fgo)
+    if(TARGET ${_fgo_exe})
+      set_target_properties(${_fgo_exe} PROPERTIES INSTALL_RPATH_USE_LINK_PATH ON)
+      target_link_options(${_fgo_exe} PRIVATE "-Wl,--disable-new-dtags")
+    endif()
+  endforeach()
 endif()
 
 # Tests (run locally with `colcon test`; CI wiring is handled separately)
@@ -465,7 +480,7 @@ if(BUILD_TESTING)
       endif()
       if(TARGET ${_fgo_test})
         target_include_directories(${_fgo_test} PUBLIC ${_gen_include}
-          "${CMAKE_CURRENT_SOURCE_DIR}/examples/tightly_coupled_gnss")
+          "${CMAKE_CURRENT_SOURCE_DIR}/examples/fgo_common")
         target_link_libraries(${_fgo_test} gnss_utils gtsam)
         ament_target_dependencies(${_fgo_test} rclcpp std_msgs builtin_interfaces)
         add_dependencies(${_fgo_test} ${_rosidl_deps})
