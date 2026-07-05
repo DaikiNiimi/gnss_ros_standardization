@@ -14,19 +14,31 @@ sbf_driver_node:
     # Examples:
     #   serial:///dev/ttyACM0:115200
     #   tcpcli://192.168.1.100:5000
-    stream_path: "serial:///dev/ttyACM1:115200"
+    stream_path: "serial:///dev/ttyACM0:115200"
     
-    # Measurement rate in Hz (1-100)
+    # Output interval in Hz (1-200) for ALL SBF blocks on Stream1, including
+    # ExtSensorMeas. The receiver caps each block individually: GNSS blocks
+    # (MeasEpoch, PVT, ...) at the licensed measurement rate, ExtSensorMeas at
+    # the IMU's native sample rate. So for GNSS 10 Hz + IMU 100 Hz set 100
+    # (msec10), and for IMU 200 Hz set 200 (msec5); GNSS stays at the receiver's
+    # cap (e.g. 10 Hz) either way — same behavior as the WebUI SBF interval.
+    # The effective IMU rate is bounded by the IMU's own sample rate. If the
+    # receiver rejects the interval, the startup response log shows the error.
     publish_rate: 10
     
     # ROS settings
     frame_id: "gnss_link"
     
     # Send configuration commands on startup
-    # Set to false to use the receiver's current configuration as-is
+    # Set to false to use the receiver's current configuration as-is.
+    # Note: the driver claims SBF Stream1 and NMEA Stream2 — any existing
+    # receiver config on those streams is overwritten. Use false to preserve
+    # a WebUI-made setup.
     configure_on_startup: true
 
-    # Use GPS week/tow for message header stamps instead of system clock
+    # Use GPS week/tow for message header stamps instead of system clock.
+    # Recommended for tight GNSS/IMU coupling: ExtSensorMeas carries its own
+    # TOW+WNc, so IMU samples get sub-ms receiver-clock stamps as well.
     use_gps_timestamp: false
 
     # Topic Names
@@ -34,6 +46,17 @@ sbf_driver_node:
     ephemeris_topic: "/gnss/ephemeris"
     solution_topic: "/gnss/nmea_solution"
     imu_raw_topic: "/gnss/imu/data_raw"       # ExtSensorMeas (uncalibrated)
+
+    # RTCM relay (PC -> receiver) for receiver on-chip RTK, RTKLIB STRSVR-style.
+    # When enabled, the driver hosts a TCP server at `listen`; raw RTCM bytes
+    # pushed there are written down the (read-write) serial link, so the receiver
+    # runs RTK internally. Feed it from rtcm_decoder_node
+    # (-p rtcm_relay:="tcpcli://127.0.0.1:5557"), or any RTKLIB str2str/STRSVR.
+    # Septentrio auto-detects RTCMv3 on the connected port (usually no extra cmd).
+    # Use a distinct port per receiver when running several drivers on one PC.
+    rtcm_relay:
+      enabled: false
+      listen: "tcpsvr://:5557" # RTKLIB stream path; ":port" binds all interfaces
 
     # ==========================================================================
     # Receiver Configuration
@@ -43,7 +66,7 @@ sbf_driver_node:
     # Specifies which logical port on the receiver to configure for SBF output.
     # Common values: USB1, USB2, COM1, COM2, IP10...
     # Must match the physical connection used by stream_path.
-    receiver_port: "USB2"
+    receiver_port: "USB1"
 
     # ==========================================================================
     # Output Messages
@@ -58,7 +81,7 @@ sbf_driver_node:
       gal_nav: true          # GALNav    (ID 4002) — Galileo decoded ephemeris
       bds_nav: true          # BDSNav    (ID 4081) — BeiDou decoded ephemeris
       qzs_nav: true          # QZSNav    (ID 4095) — QZSS decoded ephemeris
-      navic_nav: true        # NavICLNav (ID 4254) — NavIC decoded ephemeris
+      navic_nav: false        # NavICLNav (ID 4254) — NavIC decoded ephemeris
 
       # Raw navigation subframe blocks (decoded by RTKLIB input_sbf()).
       # Enabling these makes the receiver emit subframes at ~6 s cadence per
@@ -73,7 +96,7 @@ sbf_driver_node:
       gal_nav_raw: true       # GALRawINAV+GALRawFNAV (ID 4023+4022) — Galileo I/F-NAV
       bds_nav_raw: true       # BDSRaw      (ID 4047) — BeiDou navigation frame
       qzs_nav_raw: true       # QZSRawL1CA  (ID 4066) — QZSS L1 C/A subframe
-      navic_nav_raw: true     # NAVICRaw    (ID 4093) — NavIC subframe
+      navic_nav_raw: false     # NAVICRaw    (ID 4093) — NavIC subframe
       
       # Binary PVT (preferred over NMEA when enabled — produces full-precision
       # GnssSolution with 3x3 covariance). See "Solution source policy" below.
@@ -89,6 +112,9 @@ sbf_driver_node:
       dop: false                # DOP            (ID 4001) → pdop/hdop/vdop (+ gdop = sqrt(pdop²+tdop²))
 
       # IMU output (requires AsteRx-i / mosaic-X5 or other receiver with integrated IMU)
+      # Output on Stream1 at the publish_rate interval, capped at the IMU's
+      # native sample rate. For high-rate IMU set publish_rate to the IMU rate
+      # or above (e.g. 100).
       ext_sensor_meas: false   # Uncalibrated raw IMU accel + gyro → /gnss/imu/data_raw
 
       # NMEA output (used for GnssSolution topic via NmeaParser)

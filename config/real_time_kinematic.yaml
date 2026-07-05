@@ -51,10 +51,7 @@ real_time_kinematic:
     # ==========================================================================
     # Setting 1 (pos1)
     # ==========================================================================
-    pos1:
-      # Positioning mode (2:kinematic, 1:static, 0:single) - Kinematic is default for this node
-      # posmode: 2 
-      
+    pos1:    
       # Elevation mask in degrees
       elmask: 15.0
       # Dynamics model (0:off, 1:on)
@@ -111,7 +108,7 @@ real_time_kinematic:
       # Obs outage count to reset bias
       aroutcnt: 5
       # Max age of differential (s)
-      maxage: 30.0
+      maxage: 10.0
       # Solution sync mode (0:off, 1:on)
       syncsol: 1
       # Slip threshold of geometry-free phase (m)

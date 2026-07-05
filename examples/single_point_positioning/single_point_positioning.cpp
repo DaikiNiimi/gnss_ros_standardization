@@ -264,10 +264,11 @@ class SppPntposNode : public rclcpp::Node {
       return;
     }
 
-    publishSolution(obs, sol, ssat);
+    publishSolution(obs, sol, ssat, in->header.stamp);
   }
 
-  void publishSolution(const std::vector<obsd_t>& obs, const sol_t& sol, const ssat_t* ssat) {
+  void publishSolution(const std::vector<obsd_t>& obs, const sol_t& sol, const ssat_t* ssat,
+                       const builtin_interfaces::msg::Time& stamp) {
     int cnt_sys[7] = {};
     int cnt_frq[NFREQ] = {};
     for (const auto& ob : obs) {
@@ -321,7 +322,10 @@ class SppPntposNode : public rclcpp::Node {
         sat_breakdown, frq_breakdown, gnss_utils::solqToString(sol.stat).c_str());
 
     auto sol_msg = std::make_unique<grs::GnssSolution>();
-    sol_msg->header.stamp = this->now();
+    // Stamp with the measurement epoch (input observation header.stamp), not
+    // this->now(): the processing wall-clock breaks downstream time alignment
+    // under rosbag replay (see real_time_kinematic.cpp for the same fix).
+    sol_msg->header.stamp = stamp;
     sol_msg->header.frame_id = "gnss_link";
 
     int week = 0;

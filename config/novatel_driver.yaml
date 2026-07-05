@@ -15,7 +15,10 @@ novatel_driver_node:
     # Frame ID for checking TF
     frame_id: "gnss_link"
 
-    # Publish rate in Hz (max dependent on receiver model and baud rate)
+    # GNSS log rate in Hz, 1-20 (effective max dependent on receiver model and
+    # baud rate). Applies only to the ONTIME GNSS logs (RANGE, BESTPOS, ...).
+    # IMU logs (RAWIMUSX / CORRIMUDATA) are requested ONNEW and arrive at the
+    # IMU's native sample rate, independent of this setting.
     publish_rate: 1
 
     # Receiver port to configure data output on (e.g., USB1, COM1, COM2)
@@ -25,7 +28,9 @@ novatel_driver_node:
     # Whether to send configuration commands on startup
     configure_on_startup: true
 
-    # Use GPS week/tow for message header stamps instead of system clock
+    # Use GPS week/tow for message header stamps instead of system clock.
+    # Recommended for tight GNSS/IMU coupling: RAWIMUSX/CORRIMUDATA carry
+    # their own Week+Seconds, so IMU samples get receiver-clock stamps too.
     use_gps_timestamp: false
 
     # Topic Names
@@ -34,6 +39,21 @@ novatel_driver_node:
     solution_topic: "/gnss/nmea_solution"
     imu_topic:     "/gnss/imu/data"      # CORRIMUDATA (calibrated)
     imu_raw_topic: "/gnss/imu/data_raw"  # RAWIMUSX (uncalibrated)
+
+    # RTCM relay (PC -> receiver) for receiver on-chip RTK, RTKLIB STRSVR-style.
+    # The driver hosts a TCP server at `listen`; RTCM bytes pushed there (e.g. by
+    # rtcm_decoder_node -p rtcm_relay:="tcpcli://127.0.0.1:5558") are forwarded
+    # to the receiver.
+    # NovAtel cannot mix RTCM input with NOVATEL commands/logs on one logical
+    # port, so `output` must be a SECOND /dev device (one USB cable exposes
+    # /dev/ttyUSB0/1/2). The driver puts that port into RTCMV3 by sending
+    # `INTERFACEMODE THISPORT RTCMV3 NONE OFF` over it; `stream_path` stays
+    # NOVATEL. See src/drivers/README.md.
+    rtcm_relay:
+      enabled: false
+      listen: "tcpsvr://:5558"    # corrections come in here (TCP server)
+      output: ""                  # dedicated correction port, e.g. "serial:///dev/ttyUSB2:230400" (must differ from stream_path)
+      correction_port: "THISPORT" # INTERFACEMODE target, sent over `output` (leave THISPORT)
 
     # ==========================================================================
     # Message Configuration

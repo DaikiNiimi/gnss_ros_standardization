@@ -46,6 +46,7 @@ class UbxDecoderNode : public rclcpp::Node {
     initializePublishers();
     initializeDecoder();
     openStream();
+    openRtcmRelay();
     startPolling();
 
     RCLCPP_INFO(get_logger(), "UBX Decoder initialized");
@@ -54,11 +55,11 @@ class UbxDecoderNode : public rclcpp::Node {
   ~UbxDecoderNode() override {
     try {
       strclose(&stream_);
+      relay_.close();
     } catch (...) {
       // Ignore errors during cleanup
     }
     free_raw(&raw_);
-    free_rtcm(&rtcm_);
   }
 
  private:
@@ -78,6 +79,8 @@ class UbxDecoderNode : public rclcpp::Node {
     declare_parameter<double>("ephemeris.max_age_s", 0.0);  // 0 = keep all
     declare_parameter<bool>("use_gps_timestamp", false);
     declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
+    // RTCM relay listen URI (opt-in, see openRtcmRelay). Empty = disabled.
+    declare_parameter<std::string>("rtcm_relay", "");
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
 
@@ -129,10 +132,6 @@ class UbxDecoderNode : public rclcpp::Node {
       RCLCPP_ERROR(get_logger(), "Failed to initialize raw decoder");
       throw std::runtime_error("init_raw failed");
     }
-    if (init_rtcm(&rtcm_) != 1) {
-      RCLCPP_ERROR(get_logger(), "Failed to initialize RTCM decoder");
-      throw std::runtime_error("init_rtcm failed");
-    }
   }
 
   void startPolling() {
@@ -142,42 +141,40 @@ class UbxDecoderNode : public rclcpp::Node {
   // Stream Management
 
   void openStream() {
-    const std::string stream_path = get_parameter("stream_path").as_string();
-    std::string path = stream_path;
-
-    // Match stream type from URI prefix
-    int stream_type = 0;
-    bool matched = false;
-    for (const auto& def : ubx::kStreamTypes) {
-      if (path.rfind(def.prefix, 0) == 0) {
-        stream_type = def.type;
-        path.erase(0, def.prefix.size());
-        matched = true;
-        break;
-      }
-    }
-
-    if (!matched) {
-      RCLCPP_ERROR(get_logger(), "Unsupported stream path format: %s", stream_path.c_str());
-      throw std::runtime_error("Unsupported stream_path format");
-    }
-
-    if (stream_type == STR_SERIAL && path.rfind("/dev/", 0) == 0) {
-      path.erase(0, 5);
-    }
-
-    std::vector<char> path_buf(path.begin(), path.end());
-    path_buf.push_back('\0');
-
-    if (!stropen(&stream_, stream_type, STR_MODE_R, path_buf.data())) {
-      RCLCPP_ERROR(get_logger(), "Failed to open stream: %s", stream_path.c_str());
+    // The RTCM relay writes corrections back down this stream, so it needs a
+    // read-write open; without relay keep the passive read-only open.
+    const int mode = get_parameter("rtcm_relay").as_string().empty()
+                     ? STR_MODE_R : STR_MODE_RW;
+    if (!decoder_common::openStreamPath(get_logger(), stream_,
+                                        get_parameter("stream_path").as_string(),
+                                        mode, "Input")) {
       throw std::runtime_error("stropen failed");
     }
+  }
 
-    RCLCPP_INFO(get_logger(), "Stream opened: %s", stream_path.c_str());
+  // RTCM relay (RTKLIB STRSVR-style): host a TCP server (recommended
+  // "tcpsvr://:5556", fed by rtcm_decoder_node's rtcm_relay) and write incoming
+  // corrections to the receiver stream in pollStream() for on-chip RTK. No
+  // receiver command is sent; the port's inProtoMask must already include
+  // RTCM3 (F9P default) — see src/decoders/README.md.
+  void openRtcmRelay() {
+    const std::string listen = get_parameter("rtcm_relay").as_string();
+    if (listen.empty()) return;
+    if (get_parameter("stream_path").as_string().rfind("file://", 0) == 0) {
+      RCLCPP_WARN(get_logger(),
+        "rtcm_relay is set but stream_path is a file:// stream — forwarded "
+        "corrections have no receiver to reach.");
+    }
+    if (!relay_.open(get_logger(), listen)) {
+      throw std::runtime_error("RTCM relay stropen failed");
+    }
   }
 
   void pollStream() {
+    // RTCM relay: drain corrections from the TCP server and write them to the
+    // receiver stream. Same poll thread as the read below, so no lock.
+    relay_.drainTo(get_logger(), *get_clock(), stream_);
+
     uint8_t buffer[ubx::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
 
@@ -188,7 +185,7 @@ class UbxDecoderNode : public rclcpp::Node {
       const int result = input_ubx(&raw_, byte);
       handleDecodeResult(result);
 
-      // Feed parallel UBX mini-framer for ESF-INS and NAV-ATT
+      // Parallel UBX mini-framer (ESF / NAV blocks)
       parseUbxByte(byte);
 
       // Feed NMEA text parser
@@ -211,7 +208,7 @@ class UbxDecoderNode : public rclcpp::Node {
     maybeWatchdogFlushPendingPvt();
   }
 
-  // UBX Mini-Framer (parallel to RTKLIB, for ESF-INS and NAV-ATT)
+  // UBX Mini-Framer (parallel to RTKLIB, for ESF and NAV blocks)
 
   void parseUbxByte(uint8_t byte) {
     switch (ubx_state_) {
@@ -267,16 +264,11 @@ class UbxDecoderNode : public rclcpp::Node {
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_HPPOSLLH)  handleNavHpPosLlh();
   }
 
-  // Solution source policy (grace-period detection):
-  //   Start in UNDETERMINED. Parse both NMEA and binary into their own
-  //   buffers but publish nothing for the first kGracePeriodSec.
-  //   If any binary PVT arrived during grace → lock BINARY (PVT wins when both
-  //   are present in the stream). Else after grace expires → lock NMEA.
-  // This guarantees deterministic, PVT-preferred behavior regardless of
-  // whether NMEA or PVT happens to arrive first in the byte stream.
+  // Solution source policy: publish nothing for kGracePeriodSec; binary PVT
+  // seen during grace → lock BINARY, else lock NMEA. Deterministic and
+  // PVT-preferred regardless of arrival order.
   enum class SolutionSource { UNDETERMINED, BINARY, NMEA };
-  // 1.0 s safely covers a 1 Hz PVT cadence worst-case. Higher PVT rates lock
-  // BINARY in milliseconds — grace only affects NMEA-only commit latency.
+  // 1.0 s covers a 1 Hz PVT cadence; higher rates lock BINARY in milliseconds.
   static constexpr double kGracePeriodSec = 1.0;
 
   void startGraceIfNeeded() {
@@ -299,15 +291,9 @@ class UbxDecoderNode : public rclcpp::Node {
     }
   }
 
-  // PVT TOW Aggregation (mirrors SBF decoder pattern)
-  //
-  // All NAV-* messages carry iTOW at payload offset 0. We buffer per-epoch into
-  // PendingPvt and flush only when the set of cov blocks seen so far is
-  // complete. cov_ever_seen is sticky and self-calibrates after the first
-  // epoch of each cov type — so the flush condition adapts to whichever subset
-  // of NAV-DOP/NAV-COV the receiver is configured to emit.
-  // NAV-DOP is tracked separately in a persistent cache (last_dop_) so it can
-  // survive Pending resets and be staleness-gated against the PVT cadence.
+  // PVT TOW aggregation: buffer NAV-* blocks per iTOW epoch and flush when the
+  // learned block set is complete (cov_ever_seen is sticky — it self-calibrates
+  // to whichever blocks the receiver actually emits).
   static constexpr uint8_t COV_BIT_COV       = 0x1;
   static constexpr uint8_t COV_BIT_POSECEF   = 0x2;
   static constexpr uint8_t COV_BIT_VELECEF   = 0x4;
@@ -337,10 +323,8 @@ class UbxDecoderNode : public rclcpp::Node {
   uint32_t last_flushed_week_{0};
   uint32_t last_flushed_tow_ms_{UINT32_MAX};
 
-  // offset: iTOW position in the payload — 0 for most NAV-* messages,
-  // ubx::nav_hpposllh/nav_hpposecef::OFFSET_ITOW (4) for the HP messages.
-  // Reading the wrong offset breaks TOW epoch grouping and stalls publishing
-  // until the watchdog fires, so HP handlers must pass their OFFSET_ITOW.
+  // offset: iTOW position — 0 for most NAV-* payloads, OFFSET_ITOW (4) for the
+  // HP messages; the wrong offset breaks TOW grouping (stalls until watchdog).
   static uint32_t readItowMs(const uint8_t* p, size_t len, size_t offset = 0) {
     if (len < offset + 4) return UINT32_MAX;
     uint32_t v = 0;
@@ -372,12 +356,9 @@ class UbxDecoderNode : public rclcpp::Node {
     last_tow_s = tow_s;
   }
 
-  // Orphan guard: if this block's TOW matches the last published TOW, it's a
-  // late arrival from an eager-flush'd epoch. Update cov_ever_seen for learning
-  // (so the next epoch waits for the full set), but do NOT re-accumulate into
-  // pending_.buf (would cause an orphan duplicate publish at next TOW boundary).
-  // NAV-* bodies don't carry GPS week directly; we fall back to TOW-only when
-  // pending_.buf.time_week is 0 (it's only set at publishSolution time).
+  // Orphan guard: same TOW as the last publish → late arrival from an eager
+  // flush. Update cov_ever_seen only; re-accumulating would duplicate-publish.
+  // Week falls back to TOW-only while this epoch has no PVT (time_week == 0).
   bool isLateOrphan(uint32_t tow, uint8_t cov_bit) {
     const uint32_t week = pending_.buf.time_week;
     if (last_flushed_tow_ms_ != UINT32_MAX &&
@@ -410,10 +391,7 @@ class UbxDecoderNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
-  // NAV-DOP: parsed into the persistent last_dop_ cache, NOT into pending_.
-  // Does NOT participate in completion and does NOT trigger flush. At flush
-  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
-  // enough (within 0..PVT_period after PVT) to populate the published solution.
+  // NAV-DOP: cached in last_dop_; applied at flush by applyDopWithStaleness().
   // NAV-DOP carries no GPS week → last_dop_.week = 0 (helper skips week check).
   void handleNavDop() {
     startGraceIfNeeded();
@@ -548,11 +526,9 @@ class UbxDecoderNode : public rclcpp::Node {
     msg::GnssSolution ecef_direct = pending_.buf;
     binary_solution_ = pending_.buf;
 
-    // HPPOSLLH override (highest-priority LLH source): replace the NAV-PVT
-    // position before geometry derivation so the derived ECEF inherits the
-    // high-precision values. The accuracy fields refresh the diagonal-only
-    // covariance unless NAV-COV already provided the full 3x3 (signalled by a
-    // non-zero off-diagonal, same contract as parseNavPvt).
+    // HPPOSLLH override (highest-priority LLH source), applied before geometry
+    // derivation. Its accuracy fields refresh the covariance diagonal unless
+    // NAV-COV already provided the full 3x3 (non-zero off-diagonal).
     if (recv & COV_BIT_HPPOSLLH) {
       binary_solution_.latitude  = pending_.hp_llh.lat_deg;
       binary_solution_.longitude = pending_.hp_llh.lon_deg;
@@ -607,8 +583,7 @@ class UbxDecoderNode : public rclcpp::Node {
     }
     prev_pvt_tow_ms_ = pending_.tow_ms;
 
-    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
-    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    // DOP staleness gate (see gnss_utils::applyDopWithStaleness).
     gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
                                       binary_solution_.time_week,
                                       pending_.tow_ms, pvt_period_ms_);
@@ -631,71 +606,50 @@ class UbxDecoderNode : public rclcpp::Node {
     }
   }
 
-  // Sign-extend the lower 24 bits of a uint32 into an int32.
-  static int32_t signExtend24(uint32_t v) {
-    return (v & 0x00800000u) ? static_cast<int32_t>(v | 0xFF000000u)
-                             : static_cast<int32_t>(v & 0x00FFFFFFu);
-  }
-
-  // UBX-ESF-RAW: 4-byte reserved header + N × { data(u4) + sTtag(u4) }.
-  // data low 24 bits = signed measurement, high 8 bits = data type.
+  // UBX-ESF-RAW: batched IMU samples, one Imu published per sTtag sample set
+  // (see ubx::esf_raw::parseEsfRawSamples). ESF-RAW carries no GNSS time —
+  // only the receiver-internal sTtag — so stamps stay host-clock based even
+  // with use_gps_timestamp: the read time anchors the newest sample and
+  // earlier samples are spaced backwards by sTtag deltas, keeping per-sample
+  // dt accurate for downstream integration.
   void handleEsfRaw() {
-    constexpr int kHeaderLen = 4;
-    constexpr int kBlockLen  = 8;
-    const int n = (static_cast<int>(ubx_payload_.size()) - kHeaderLen) / kBlockLen;
-    if (n <= 0) return;
+    const auto samples = ubx::esf_raw::parseEsfRawSamples(ubx_payload_);
+    if (samples.empty()) return;
 
-    double accel[3] = {0, 0, 0};
-    double gyro[3]  = {0, 0, 0};
-    bool   has_accel[3] = {false, false, false};
-    bool   has_gyro[3]  = {false, false, false};
-    const double deg2rad = M_PI / 180.0;
-
-    for (int i = 0; i < n; ++i) {
-      const uint8_t* p = ubx_payload_.data() + kHeaderLen + i * kBlockLen;
-      uint32_t data = 0;
-      std::memcpy(&data, p, 4);
-      const uint8_t type = static_cast<uint8_t>((data >> 24) & 0xFFu);
-      const int32_t val  = signExtend24(data);
-
-      switch (type) {
-        case ubx::esf_raw::TYPE_GYRO_X:
-          gyro[0] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[0] = true; break;
-        case ubx::esf_raw::TYPE_GYRO_Y:
-          gyro[1] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[1] = true; break;
-        case ubx::esf_raw::TYPE_GYRO_Z:
-          gyro[2] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[2] = true; break;
-        case ubx::esf_raw::TYPE_ACCEL_X:
-          accel[0] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[0] = true; break;
-        case ubx::esf_raw::TYPE_ACCEL_Y:
-          accel[1] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[1] = true; break;
-        case ubx::esf_raw::TYPE_ACCEL_Z:
-          accel[2] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[2] = true; break;
-        default: break;
-      }
+    const rclcpp::Time anchor = now();
+    const uint32_t last_sttag = samples.back().sttag;
+    // Sanity guard: a batch spanning > 1 s means a wrong tick constant or
+    // corrupted time tags — fall back to stamping the whole batch at arrival.
+    const double span_s =
+        (last_sttag - samples.front().sttag) * ubx::esf_raw::STTAG_TICK_S;
+    const bool spread_ok = span_s <= 1.0;
+    if (!spread_ok) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        "ESF-RAW sTtag span %.3f s exceeds 1 s — stamping batch at arrival time", span_s);
     }
 
-    if (!(has_accel[0] || has_accel[1] || has_accel[2] ||
-          has_gyro[0]  || has_gyro[1]  || has_gyro[2])) return;
+    for (const auto& s : samples) {
+      sensor_msgs::msg::Imu imu;
+      const double back_s =
+          spread_ok ? (last_sttag - s.sttag) * ubx::esf_raw::STTAG_TICK_S : 0.0;
+      imu.header.stamp    = anchor - rclcpp::Duration::from_seconds(back_s);
+      imu.header.frame_id = frame_id_;
 
-    sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
-    imu.header.frame_id = frame_id_;
+      imu.orientation_covariance[0] = -1.0;
 
-    imu.orientation_covariance[0] = -1.0;
+      imu.angular_velocity.x = s.gyro[0];
+      imu.angular_velocity.y = s.gyro[1];
+      imu.angular_velocity.z = s.gyro[2];
+      imu.linear_acceleration.x = s.accel[0];
+      imu.linear_acceleration.y = s.accel[1];
+      imu.linear_acceleration.z = s.accel[2];
 
-    imu.angular_velocity.x = gyro[0];
-    imu.angular_velocity.y = gyro[1];
-    imu.angular_velocity.z = gyro[2];
-    imu.linear_acceleration.x = accel[0];
-    imu.linear_acceleration.y = accel[1];
-    imu.linear_acceleration.z = accel[2];
+      auto unk = ins::makeUnknownCovariance();
+      std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+      std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
-    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
-
-    imu_raw_pub_->publish(imu);
+      imu_raw_pub_->publish(imu);
+    }
   }
 
   void handleEsfIns() {
@@ -763,13 +717,8 @@ class UbxDecoderNode : public rclcpp::Node {
   // Solution Publishing
 
   void publishSolution(msg::GnssSolution& sol) {
-    // BINARY path: time_tow keeps the PVT epoch's own iTOW (set by
-    // parseNavPvt); raw_.time (RTKLIB observation-decode clock) supplies only
-    // the week number, which UBX NAV-* payloads do not carry. Overwriting tow
-    // with raw_.time would timestamp the position with the latest
-    // *observation* epoch instead of the solution's own epoch. NMEA path
-    // trusts time_week/time_tow already filled by NmeaParser from the sentence
-    // itself.
+    // BINARY: keep the epoch's own iTOW; raw_.time supplies only the GPS week
+    // (UBX NAV-* payloads carry none). NMEA: NmeaParser filled week/tow.
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
@@ -861,9 +810,7 @@ class UbxDecoderNode : public rclcpp::Node {
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
 
-    // Use per-observation time, NOT raw_.time: RTKLIB advances raw_.time to
-    // the next epoch when input_*()==1 fires (the trigger is the next epoch's
-    // first byte); raw_.obs.data[*] still holds the just-completed epoch.
+    // obs.data[0].time, not raw_.time (already advanced to the next epoch).
     int week = 0;
     const gtime_t obs_time = raw_.obs.data[0].time;
     const double tow = time2gpst(obs_time, &week);
@@ -933,7 +880,9 @@ class UbxDecoderNode : public rclcpp::Node {
 
   stream_t stream_{};
   raw_t    raw_{};
-  rtcm_t   rtcm_{};
+
+  // RTCM relay (PC -> receiver): STRSVR-style TCP server -> receiver stream
+  decoder_common::RtcmRelayServer relay_;
 
   // NMEA parsing state
   gnss_utils::NmeaParser nmea_parser_;

@@ -136,6 +136,7 @@ struct StreamTypeDef {
 /// Supported stream type prefixes
 constexpr StreamTypeDef kStreamTypes[] = {
     {"tcpcli://", STR_TCPCLI},
+    {"tcpsvr://", STR_TCPSVR},
     {"serial://", STR_SERIAL},
     {"ntrip://", STR_NTRIPCLI},
     {"file://", STR_FILE},
@@ -147,7 +148,10 @@ constexpr StreamTypeDef kStreamTypes[] = {
 /// @param rate_hz Publish rate in Hz
 /// @return Interval string (e.g., "sec1", "msec100")
 inline std::string getIntervalString(int rate_hz) {
+    if (rate_hz >= 200) return "msec5";
     if (rate_hz >= 100) return "msec10";
+    if (rate_hz >= 50)  return "msec20";
+    if (rate_hz >= 25)  return "msec40";
     if (rate_hz >= 20)  return "msec50";
     if (rate_hz >= 10)  return "msec100";
     if (rate_hz >= 5)   return "msec200";

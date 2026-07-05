@@ -16,9 +16,9 @@ The goal is to make GNSS raw observations and ephemeris uniformly accessible
 across receiver brands so that tight-coupling GNSS/IMU methods and multi-sensor
 fusion frameworks can be developed once and reused everywhere.
 
-- Consume GNSS raw observations through standardized ROS 2 topics in robotics applications
+- Subscribe to raw GNSS observations via standardized ROS 2 topics in robotics applications
 - Support diverse GNSS receivers and formats (u-blox, Septentrio, NovAtel, RTCM3)
-- Reproduce experiments across platforms with consistent interfaces
+- Reproduce experiments across systems with consistent interfaces
 
 ## Demo
 
@@ -89,7 +89,7 @@ tables, parameter lists, and `ros2 run` examples.
 | Decoders | Stream-only: NTRIP / TCP / Serial → ROS topics | [src/decoders/README.md](src/decoders/README.md) |
 | Drivers | Connect to receiver, configure outputs, decode | [src/drivers/README.md](src/drivers/README.md) |
 | Converters | RINEX ↔ rosbag and RTKLIB `.pos` ↔ rosbag | [src/converter/README.md](src/converter/README.md) |
-| Positioning | SPP, RTK, loose-coupled GNSS/IMU EKF | [src/positioning/README.md](src/positioning/README.md) |
+| Examples | SPP, RTK, loose-coupled GNSS/IMU EKF | [examples/README.md](examples/README.md) |
 | Messages | Public ROS message contract | [msg/README.md](msg/README.md) |
 
 ## Acknowledgements

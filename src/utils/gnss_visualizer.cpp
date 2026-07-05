@@ -33,7 +33,7 @@
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 
-// MALIB includes
+// RTKLIB includes
 #include "rtklib.h"
 
 using namespace std::chrono_literals;

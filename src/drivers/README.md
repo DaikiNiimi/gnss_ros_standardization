@@ -15,6 +15,36 @@ The decoder layer is shared with [`../decoders/`](../decoders/) — refer to
 message listed below. Message-level semantics (frames, NaN convention,
 covariance frame) live in [`../../msg/README.md`](../../msg/README.md).
 
+## RTCM relay (receiver on-chip RTK)
+
+Every driver can forward RTCM base-station corrections to the receiver,
+RTKLIB-STRSVR-style: the driver hosts a TCP server (`rtcm_relay.listen`) and
+writes any bytes pushed there down to the receiver, which then computes RTK
+on-chip. Feed the server from `rtcm_decoder_node`
+(`-p rtcm_relay:="tcpcli://127.0.0.1:<port>"`, which also keeps publishing the
+base observations as topics) or from any RTKLIB `str2str`/STRSVR. See
+[`../decoders/README.md`](../decoders/README.md) for the full pipeline diagram
+and the per-receiver input requirements.
+
+| YAML key | Applies to | Meaning |
+|---|---|---|
+| `rtcm_relay.enabled` | all drivers | `false` (default) disables the relay entirely |
+| `rtcm_relay.listen` | all drivers | Listen URI for incoming corrections; recommended `tcpsvr://:5556` (ubx) / `:5557` (sbf) / `:5558` (novatel) |
+| `rtcm_relay.output` | NovAtel only | OS device of the dedicated RTCMV3 correction port (e.g. `serial:///dev/ttyUSB2:230400`); must differ from `stream_path` |
+| `rtcm_relay.correction_port` | NovAtel only | `INTERFACEMODE` target sent over `output` itself — leave `THISPORT` |
+
+Receiver-side requirements:
+
+- **u-blox**: the connected port's `inProtoMask` must include RTCM3 (F9P
+  default) — corrections and UBX output share one port.
+- **Septentrio**: the connected port must accept RTCMv3 input (`setDataInOut`;
+  auto-detected on most firmware).
+- **NovAtel**: RTCM input cannot share a logical port with NOVATEL
+  commands/logs, so a second `/dev` device is required (`rtcm_relay.output`).
+  One USB cable already exposes three (`/dev/ttyUSB0/1/2`); the driver switches
+  that port to RTCMV3 by sending `INTERFACEMODE THISPORT RTCMV3 NONE OFF` over
+  it, so its NovAtel logical name never needs to be known.
+
 ---
 
 ## `ubx_driver_node`

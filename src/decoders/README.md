@@ -2,7 +2,7 @@
 
 Decoder nodes receive a **binary GNSS byte stream** (via NTRIP, TCP, or Serial), parse the protocol using the embedded **RTKLIB (rtklibexplorer fork)** library, and publish standardized ROS 2 messages.
 
-Unlike the drivers in [`../drivers/`](../drivers/), decoders are **passive and do not configure the receiver**.
+Unlike the drivers in [`../drivers/`](../drivers/), decoders are **passive and do not configure the receiver** — this also holds when the RTCM relay below is enabled: correction bytes are forwarded verbatim. The single exception is the NovAtel decoder's dedicated correction port, which receives one `INTERFACEMODE` command over that port itself (never over the decoded-log port); see the relay section.
 
 ## Supported Decoders
 
@@ -24,7 +24,9 @@ All decoders accept a `stream_path` parameter specifying the source stream. The 
 |---|---|---|
 | **NTRIP** | `ntrip://user:pass@caster.example.com:2101/MOUNT` | Connects to an NTRIP caster mountpoint. |
 | **TCP Client** | `tcpcli://192.168.1.100:9000` | Connects to a TCP server broadcasting GNSS data. |
+| **TCP Server** | `tcpsvr://:5556` | Hosts a TCP server and accepts pushed data. |
 | **Serial** | `serial:///dev/ttyUSB0:115200` | Connects to a local serial port. |
+| **File** | `file:///path/to/log.bin` | Replays a recorded raw log. |
 
 ---
 
@@ -42,6 +44,75 @@ All decoders accept a `stream_path` parameter specifying the source stream. The 
 | `ephemeris.max_age_s` | `double` | `0.0` | Maximum age of ephemeris to keep in cache (seconds). `0.0` keeps all received ephemerides. |
 | `use_gps_timestamp` | `bool` | `false` | If `true`, the ROS message headers will use GPS/GPST time instead of the ROS system clock. |
 | `origin` | `double[]` | `[0.0, 0.0, 0.0]` | Fixed ECEF/ENU local origin `[Latitude (deg), Longitude (deg), Altitude (m)]` for ENU local coordinates. |
+| `rtcm_relay` | `string` | `""` (disabled) | Listen URI for incoming RTCM corrections, written back down the receiver stream for on-chip RTK (see below). On `rtcm_decoder_node` the direction is reversed: it is the *output* URI the decoded source bytes are forwarded to. |
+| `rtcm_relay_output` | `string` | `""` | *NovAtel decoder only.* OS device of the dedicated RTCMV3 correction port (e.g. `serial:///dev/ttyUSB2:230400`). Empty writes corrections to the main stream (not supported on NovAtel hardware). |
+| `rtcm_relay_correction_port` | `string` | `"THISPORT"` | *NovAtel decoder only.* `INTERFACEMODE` target, sent over `rtcm_relay_output` itself — leave `THISPORT`. |
+
+---
+
+## RTCM correction relay (receiver on-chip RTK)
+
+A decoder holds the receiver port exclusively, so nothing else can feed
+RTK corrections to the receiver — on single-port connections (a u-blox USB
+cable, a lone UART to an OEM board) there would be no correction path at all.
+The `rtcm_relay` parameter solves this RTKLIB-STRSVR-style: the decoder hosts a
+TCP server, and raw RTCM bytes pushed there are written back down the stream it
+already owns. The receiver then computes RTK on-chip and its Fix appears in the
+decoded PVT output as usual.
+
+```
+NTRIP caster / base ──> rtcm_decoder_node ──> tcpcli ──> tcpsvr ──> *_decoder ──> receiver port ──> on-chip RTK
+                        -p rtcm_relay:="tcpcli://127.0.0.1:5556"    -p rtcm_relay:="tcpsvr://:5556"
+```
+
+```bash
+# Rover decoder (u-blox example) — hosts the correction server
+ros2 run gnss_ros_standardization ubx_decoder_node --ros-args \
+  -p stream_path:="serial:///dev/ttyACM0:115200" \
+  -p rtcm_relay:="tcpsvr://:5556"
+
+# Correction source — decodes the base stream to topics AND forwards it
+ros2 run gnss_ros_standardization rtcm_decoder_node --ros-args \
+  -p stream_path:="ntrip://user:pass@caster:2101/MOUNT" \
+  -p rtcm_relay:="tcpcli://127.0.0.1:5556"
+```
+
+Recommended ports match the drivers so the `rtcm_decoder_node` command line is
+identical in driver and decoder operation: **ubx = 5556, sbf = 5557,
+novatel = 5558**.
+
+**NovAtel needs a dedicated correction port**, same as the driver:
+`INTERFACEMODE` is per-direction and a port receiving RTCMV3 stops interpreting
+NOVATEL input, so corrections cannot share the decoded-log port. A single USB
+cable exposes three `/dev` devices (receiver USB1/2/3) — point
+`rtcm_relay_output` at a spare one and the decoder configures it by sending
+`INTERFACEMODE THISPORT RTCMV3 NONE OFF` over that port itself (the main log
+port is never touched):
+
+```bash
+ros2 run gnss_ros_standardization novatel_decoder_node --ros-args \
+  -p stream_path:="serial:///dev/ttyUSB1:230400" \
+  -p rtcm_relay:="tcpsvr://:5558" \
+  -p rtcm_relay_output:="serial:///dev/ttyUSB2:230400"
+```
+
+For u-blox and Septentrio the decoder never sends receiver commands, so the
+receiver port must be set up **once beforehand** to accept RTCMv3 input
+alongside its binary output:
+
+| Receiver | One-time input setup | Note |
+|---|---|---|
+| u-blox | u-center: include RTCM3 in the port's `inProtoMask` | F9P default already includes RTCM3 |
+| Septentrio | `setDataInOut, COM1, RTCMv3, SBF` (WebUI or RxTools/terminal) | Input and output types are independent per port |
+| NovAtel | none (decoder sends `INTERFACEMODE` over `rtcm_relay_output`) | Requires the dedicated port above; single-UART-only wiring cannot receive corrections (receiver limitation) |
+
+Alternatives when a spare receiver port is available (multi-port USB
+connections): point `rtcm_decoder_node`'s `rtcm_relay` directly at it, e.g.
+`-p rtcm_relay:="serial:///dev/ttyUSB2:230400"` — no decoder-side relay needed.
+The drivers offer the same relay for configured operation
+(`rtcm_relay.enabled` + `rtcm_relay.listen`, with `configure_on_startup:=false`
+for pre-configured receivers); see [`../drivers/`](../drivers/) and
+`config/*_driver.yaml`.
 
 ---
 

@@ -2,8 +2,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <deque>
-#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -11,8 +9,10 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "gnss_ros_standardization/ephemeris_store.hpp"
+#include "gnss_ros_standardization/epoch_matcher.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
+#include "gnss_ros_standardization/obs_converter.hpp"
 #include "gnss_ros_standardization/tcp_nmea_server.hpp"
 
 extern "C" {
@@ -23,9 +23,7 @@ namespace grs = gnss_ros_standardization::msg;
 
 namespace {
 constexpr std::size_t kNmeaBufBytes = 256;
-constexpr std::size_t kObsQueueLimit = 50;
 constexpr int kPositionLogThrottleMs = 1000;
-constexpr double kEpochMatchTolSec = 0.001;
 }  // namespace
 
 class RtkPositionNode : public rclcpp::Node {
@@ -47,6 +45,10 @@ class RtkPositionNode : public rclcpp::Node {
 
     initializeRtk();
     cacheFixedOriginParam();
+
+    gnss_utils::RoverBaseEpochMatcher::Options match_opt;
+    match_opt.max_tdiff_s = rtk_.opt.maxtdiff;
+    matcher_ = gnss_utils::RoverBaseEpochMatcher(match_opt);
 
     gnss_sol_pub_ = create_publisher<grs::GnssSolution>(
         get_parameter("topics.solution").as_string(), 10);
@@ -154,14 +156,14 @@ class RtkPositionNode : public rclcpp::Node {
     opt.tropopt = get_parameter("pos1.tropopt").as_int();
     opt.sateph = get_parameter("pos1.sateph").as_int();
 
-    enable_l1_ = get_parameter("frequencies.enable_l1").as_bool();
-    enable_l2_ = get_parameter("frequencies.enable_l2").as_bool();
-    enable_l5_ = get_parameter("frequencies.enable_l5").as_bool();
-    if (enable_l5_) opt.nf = 3;
-    else if (enable_l2_) opt.nf = 2;
+    freq_mask_.l1 = get_parameter("frequencies.enable_l1").as_bool();
+    freq_mask_.l2 = get_parameter("frequencies.enable_l2").as_bool();
+    freq_mask_.l5 = get_parameter("frequencies.enable_l5").as_bool();
+    if (freq_mask_.l5) opt.nf = 3;
+    else if (freq_mask_.l2) opt.nf = 2;
     else opt.nf = 1;
     RCLCPP_INFO(get_logger(), "Frequency config: L1=%d L2=%d L5=%d -> nf=%d",
-                enable_l1_, enable_l2_, enable_l5_, opt.nf);
+                freq_mask_.l1, freq_mask_.l2, freq_mask_.l5, opt.nf);
 
     opt.navsys = 0;
     if (get_parameter("pos1.navsys.gps").as_bool()) opt.navsys |= SYS_GPS;
@@ -285,140 +287,34 @@ class RtkPositionNode : public rclcpp::Node {
 
   void onBaseObs(const grs::GnssObservations::SharedPtr msg) {
     std::lock_guard<std::mutex> lk(obs_mtx_);
-    if (!base_obs_queue_.empty()) {
-      const double interval = msg->tow - base_obs_queue_.back()->tow;
-      if (interval > 0.01) {
-        if (estimated_base_interval_ <= 0.0) {
-          estimated_base_interval_ = interval;
-        } else {
-          estimated_base_interval_ = std::min(estimated_base_interval_, interval);
-        }
-      }
-    }
-    base_obs_queue_.push_back(msg);
-    if (base_obs_queue_.size() > kObsQueueLimit) base_obs_queue_.pop_front();
-    matchAndProcess();
+    matcher_.pushBase(msg);
+    processMatches();
   }
 
   void onRoverObs(const grs::GnssObservations::SharedPtr msg) {
     std::lock_guard<std::mutex> lk(obs_mtx_);
-    rover_obs_queue_.push_back(msg);
-    if (rover_obs_queue_.size() > kObsQueueLimit) rover_obs_queue_.pop_front();
-    matchAndProcess();
+    matcher_.pushRover(msg);
+    processMatches();
   }
 
-  void matchAndProcess() {
-    if (!rover_obs_queue_.empty() && !base_obs_queue_.empty()) {
-      const double newest_rover_tow = rover_obs_queue_.back()->tow;
-      while (base_obs_queue_.size() > 1 &&
-             newest_rover_tow - base_obs_queue_.front()->tow > rtk_.opt.maxtdiff) {
-        base_obs_queue_.pop_front();
-      }
+  void processMatches() {
+    for (const auto& pair : matcher_.drainMatches()) {
+      processRtk(pair.rover, pair.base);
     }
-
-    auto it_rover = rover_obs_queue_.begin();
-    while (it_rover != rover_obs_queue_.end()) {
-      auto rover_msg = *it_rover;
-
-      grs::GnssObservations::SharedPtr exact_base = nullptr;
-      for (const auto& base_msg : base_obs_queue_) {
-        if (std::abs(base_msg->tow - rover_msg->tow) < kEpochMatchTolSec) {
-          exact_base = base_msg;
-          break;
-        }
-      }
-      if (exact_base) {
-        processRtk(rover_msg, exact_base);
-        it_rover = rover_obs_queue_.erase(it_rover);
-        continue;
-      }
-
-      grs::GnssObservations::SharedPtr best_base = nullptr;
-      double best_age = 1e9;
-      for (const auto& base_msg : base_obs_queue_) {
-        const double age = rover_msg->tow - base_msg->tow;
-        if (age >= -kEpochMatchTolSec && age < best_age) {
-          best_age = age;
-          best_base = base_msg;
-        }
-      }
-
-      const bool is_newest_rover = (std::next(it_rover) == rover_obs_queue_.end());
-
-      if (best_base && best_age <= rtk_.opt.maxtdiff) {
-        bool should_wait = is_newest_rover;
-        if (!should_wait && estimated_base_interval_ > 0.0) {
-          if (best_age >= estimated_base_interval_ - 0.01) {
-            const double queue_span = rover_obs_queue_.back()->tow - rover_msg->tow;
-            if (queue_span <= estimated_base_interval_ + 0.1) should_wait = true;
-          }
-        }
-        if (should_wait) {
-          ++it_rover;
-        } else {
-          processRtk(rover_msg, best_base);
-          it_rover = rover_obs_queue_.erase(it_rover);
-        }
-        continue;
-      }
-
-      if (!base_obs_queue_.empty()) {
-        const double newest_base_tow = base_obs_queue_.back()->tow;
-        if (newest_base_tow > rover_msg->tow + 2.0) {
-          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-              "Dropped rover obs (tow %.3f) - no base within maxtdiff (newest base %.3f)",
-              rover_msg->tow, newest_base_tow);
-          it_rover = rover_obs_queue_.erase(it_rover);
-          continue;
-        }
-      }
-
-      ++it_rover;
+    for (const auto& d : matcher_.takeDropped()) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+          "Dropped rover obs (tow %.3f) - no base within maxtdiff (newest base %.3f)",
+          d.rover_tow, d.newest_base_tow);
     }
   }
 
-  void processRtk(const grs::GnssObservations::SharedPtr rover,
-                  const grs::GnssObservations::SharedPtr base) {
+  void processRtk(const grs::GnssObservations::ConstSharedPtr& rover,
+                  const grs::GnssObservations::ConstSharedPtr& base) {
     std::lock_guard<std::mutex> lk_nav(nav_mtx_);
     if (nav_.n == 0 && nav_.ng == 0) return;
 
-    std::vector<obsd_t> obs;
-    obs.reserve(rover->observations.size() + base->observations.size());
-
-    const gtime_t tr = gpst2time(rover->week, rover->tow);
-    const gtime_t tb = gpst2time(base->week, base->tow);
-
-    std::map<int, obsd_t> obs_map;
-    auto merge_obs = [&](const grs::GnssObservation& m, gtime_t t, int rcv) {
-      const obsd_t o = convertObs(m, t, rcv);
-      if (o.sat == 0) return;
-      const int key = (rcv << 16) | o.sat;
-      auto it = obs_map.find(key);
-      if (it == obs_map.end()) {
-        obs_map[key] = o;
-      } else {
-        obsd_t& existing = it->second;
-        for (int i = 0; i < NFREQ; ++i) {
-          if (o.P[i] != 0.0) existing.P[i] = o.P[i];
-          if (o.L[i] != 0.0) existing.L[i] = o.L[i];
-          if (o.D[i] != 0.0) existing.D[i] = o.D[i];
-          if (o.SNR[i] != 0) existing.SNR[i] = o.SNR[i];
-          if (o.LLI[i] != 0) existing.LLI[i] = o.LLI[i];
-          if (o.code[i] != 0) existing.code[i] = o.code[i];
-        }
-      }
-    };
-    for (const auto& m : rover->observations) merge_obs(m, tr, 1);
-    for (const auto& m : base->observations)  merge_obs(m, tb, 2);
-
-    for (const auto& kv : obs_map) obs.push_back(kv.second);
+    std::vector<obsd_t> obs = gnss_utils::buildObsEpoch(*rover, base.get(), freq_mask_);
     if (obs.empty()) return;
-
-    std::sort(obs.begin(), obs.end(),
-              [](const obsd_t& a, const obsd_t& b) {
-                if (a.rcv != b.rcv) return a.rcv < b.rcv;
-                return a.sat < b.sat;
-              });
 
     const int stat = rtkpos(&rtk_, obs.data(), static_cast<int>(obs.size()), &nav_);
     if (stat <= 0) return;
@@ -431,12 +327,17 @@ class RtkPositionNode : public rclcpp::Node {
         llh[0] * R2D, llh[1] * R2D, llh[2],
         rtk_.sol.ratio, rtk_.sol.ns, rtk_.sol.age);
 
-    publishSolution(llh);
+    publishSolution(llh, rover->header.stamp);
   }
 
-  void publishSolution(const double llh[3]) {
+  // Stamp the solution with the measurement epoch (the rover observation's
+  // header.stamp), NOT this->now(): the latter is the processing wall-clock time,
+  // which under rosbag replay (without --clock) differs from the recorded IMU /
+  // observation timestamps by the replay-vs-recording offset. A wrong stamp breaks
+  // downstream IMU/GNSS time alignment (e.g. the EKF predictToTime gap guard).
+  void publishSolution(const double llh[3], const builtin_interfaces::msg::Time& stamp) {
     auto sol_msg = std::make_unique<grs::GnssSolution>();
-    sol_msg->header.stamp = this->now();
+    sol_msg->header.stamp = stamp;
     sol_msg->header.frame_id = "gnss_link";
 
     int week = 0;
@@ -557,48 +458,13 @@ class RtkPositionNode : public rclcpp::Node {
     }
   }
 
-  // Guard against frequency collisions in code2idx(). The only true collision
-  // is BDS idx=0 (B1I vs B1C). Other systems can safely accept any code.
-  static bool isPrimaryCode(int sys, uint8_t code, int idx) {
-    if (sys == SYS_CMP && idx == 0 && code != CODE_L2I) return false;
-    return true;
-  }
-
-  obsd_t convertObs(const grs::GnssObservation& m, gtime_t t, int rcv) const {
-    obsd_t o{};
-    const int sat = satid2no(m.satid.c_str());
-    if (sat <= 0 || sat > MAXSAT) return o;
-
-    int prn = 0;
-    const int sys = satsys(sat, &prn);
-    const int idx = code2idx(sys, m.code);
-    if (idx < 0 || idx >= NFREQ) return o;
-    if (!isPrimaryCode(sys, m.code, idx)) return o;
-    if (idx == 0 && !enable_l1_) return o;
-    if (idx == 1 && !enable_l2_) return o;
-    if (idx == 2 && !enable_l5_) return o;
-
-    o.time = t;
-    o.sat = static_cast<uint8_t>(sat);
-    o.rcv = static_cast<uint8_t>(rcv);
-    o.P[idx] = m.p;
-    o.L[idx] = m.l;
-    o.D[idx] = static_cast<float>(m.d);
-    o.SNR[idx] = static_cast<float>(m.snr);
-    o.LLI[idx] = static_cast<uint8_t>(m.lli);
-    o.code[idx] = m.code;
-    return o;
-  }
-
   rtk_t rtk_{};
   nav_t nav_{};
   std::mutex nav_mtx_;
   std::mutex obs_mtx_;
   gnss_utils::EphemerisStore eph_store_;
 
-  std::deque<grs::GnssObservations::SharedPtr> base_obs_queue_;
-  std::deque<grs::GnssObservations::SharedPtr> rover_obs_queue_;
-  double estimated_base_interval_{0.0};
+  gnss_utils::RoverBaseEpochMatcher matcher_;
 
   rclcpp::Subscription<grs::GnssObservations>::SharedPtr rover_obs_sub_;
   rclcpp::Subscription<grs::GnssObservations>::SharedPtr base_obs_sub_;
@@ -607,9 +473,7 @@ class RtkPositionNode : public rclcpp::Node {
 
   gnss_utils::TcpNmeaServer tcp_server_;
 
-  bool enable_l1_{true};
-  bool enable_l2_{true};
-  bool enable_l5_{false};
+  gnss_utils::FrequencyMask freq_mask_;
 
   double fixed_origin_ecef_[3]{0.0, 0.0, 0.0};
   bool fixed_origin_valid_{false};

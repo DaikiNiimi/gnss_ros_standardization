@@ -78,6 +78,10 @@ struct SbfConfig {
   std::string solution_topic{"/gnss/nmea_solution"};
   std::string imu_raw_topic{"/gnss/imu/data_raw"};  // ExtSensorMeas (uncalibrated)
 
+  // RTCM relay (PC -> receiver) for on-chip RTK — see openRtcmRelay().
+  bool rtcm_relay_enabled{false};
+  std::string rtcm_relay_listen{"tcpsvr://:5557"};
+
   // Ephemeris snapshot behavior
   double ephemeris_snapshot_period_s{30.0};
   double ephemeris_max_age_s{0.0};  // 0 = keep all
@@ -104,6 +108,7 @@ class SbfDriverNode : public rclcpp::Node {
       configureReceiver();
     }
 
+    openRtcmRelay();
     startPolling();
     RCLCPP_INFO(get_logger(), "SBF Driver initialized");
   }
@@ -111,9 +116,9 @@ class SbfDriverNode : public rclcpp::Node {
   ~SbfDriverNode() override {
     try {
       strclose(&stream_);
+      relay_.close();
     } catch (...) {}
     free_raw(&raw_);
-    free_rtcm(&rtcm_);
   }
 
  private:
@@ -158,6 +163,8 @@ class SbfDriverNode : public rclcpp::Node {
     declare_parameter<std::string>("ephemeris_topic",   config_.ephemeris_topic);
     declare_parameter<std::string>("solution_topic",    config_.solution_topic);
     declare_parameter<std::string>("imu_raw_topic",     config_.imu_raw_topic);
+    declare_parameter<bool>("rtcm_relay.enabled",       config_.rtcm_relay_enabled);
+    declare_parameter<std::string>("rtcm_relay.listen", config_.rtcm_relay_listen);
 
     declare_parameter<double>("ephemeris.snapshot_period_s", config_.ephemeris_snapshot_period_s);
     declare_parameter<double>("ephemeris.max_age_s",         config_.ephemeris_max_age_s);
@@ -168,7 +175,10 @@ class SbfDriverNode : public rclcpp::Node {
     config_.stream_path          = get_parameter("stream_path").as_string();
     config_.frame_id             = get_parameter("frame_id").as_string();
     config_.publish_rate         = get_parameter("publish_rate").as_int();
-    gnss_utils::validatePublishRate(config_.publish_rate, /*fallback=*/1, get_logger());
+    // Upper bound 200 Hz: getIntervalString maps 200->msec5, 100->msec10. The
+    // receiver caps GNSS blocks at its licensed measurement rate on its own,
+    // while ExtSensorMeas streams up to the IMU's native sample rate.
+    gnss_utils::validatePublishRate(config_.publish_rate, /*fallback=*/1, /*max_hz=*/200, get_logger());
     config_.receiver_port        = get_parameter("receiver_port").as_string();
     config_.configure_on_startup = get_parameter("configure_on_startup").as_bool();
 
@@ -202,6 +212,8 @@ class SbfDriverNode : public rclcpp::Node {
     config_.ephemeris_topic   = get_parameter("ephemeris_topic").as_string();
     config_.solution_topic    = get_parameter("solution_topic").as_string();
     config_.imu_raw_topic     = get_parameter("imu_raw_topic").as_string();
+    config_.rtcm_relay_enabled = get_parameter("rtcm_relay.enabled").as_bool();
+    config_.rtcm_relay_listen  = get_parameter("rtcm_relay.listen").as_string();
 
     config_.ephemeris_snapshot_period_s = get_parameter("ephemeris.snapshot_period_s").as_double();
     config_.ephemeris_max_age_s         = get_parameter("ephemeris.max_age_s").as_double();
@@ -310,10 +322,6 @@ class SbfDriverNode : public rclcpp::Node {
       RCLCPP_ERROR(get_logger(), "Failed to initialize raw decoder");
       throw std::runtime_error("init_raw failed");
     }
-    if (init_rtcm(&rtcm_) != 1) {
-      RCLCPP_ERROR(get_logger(), "Failed to initialize RTCM decoder");
-      throw std::runtime_error("init_rtcm failed");
-    }
   }
 
   void startPolling() {
@@ -353,6 +361,17 @@ class SbfDriverNode : public rclcpp::Node {
 
     is_serial_connection_ = (stream_type == STR_SERIAL);
     RCLCPP_INFO(get_logger(), "Stream opened: %s", config_.stream_path.c_str());
+  }
+
+  // RTCM relay (RTKLIB STRSVR-style): host a TCP server (or any RTKLIB stream)
+  // for incoming base-station corrections. Bytes received here are written to the
+  // receiver serial in pollStream() — the driver stays the sole owner of the
+  // serial port; corrections arrive over TCP, not via a second serial opener.
+  void openRtcmRelay() {
+    if (!config_.rtcm_relay_enabled) return;
+    if (!relay_.open(get_logger(), config_.rtcm_relay_listen)) {
+      throw std::runtime_error("RTCM relay stropen failed");
+    }
   }
 
   // Receiver Configuration
@@ -416,6 +435,12 @@ class SbfDriverNode : public rclcpp::Node {
     if (config_.enable_pos_cov_cartesian)blocks.push_back(sbf::BLOCK_POSCOVCARTESIAN);
     if (config_.enable_vel_cov_cartesian)blocks.push_back(sbf::BLOCK_VELCOVCARTESIAN);
     if (config_.enable_dop)              blocks.push_back(sbf::BLOCK_DOP);
+    // ExtSensorMeas shares Stream1: configuring it on a separate stream with
+    // OnChange produced no output on real hardware. With a single stream the
+    // receiver caps each block individually — GNSS blocks at the licensed
+    // measurement rate, ExtSensorMeas at the IMU's native sample rate — so
+    // publish_rate: 100 (msec10) yields e.g. GNSS 10 Hz + IMU 100 Hz, matching
+    // the WebUI Interval=10ms behavior.
     if (config_.enable_ext_sensor_meas)  blocks.push_back(sbf::BLOCK_EXTSENSORMEAS);
 
     if (!blocks.empty()) {
@@ -467,6 +492,10 @@ class SbfDriverNode : public rclcpp::Node {
   // Polling
 
   void pollStream() {
+    // RTCM relay (STRSVR-style): drain corrections from the TCP server and write
+    // them to the receiver serial. Same poll thread as the read below, so no lock.
+    relay_.drainTo(get_logger(), *get_clock(), stream_);
+
     uint8_t buffer[sbf::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
 
@@ -476,7 +505,7 @@ class SbfDriverNode : public rclcpp::Node {
       const int result = input_sbf(&raw_, byte);
       handleDecodeResult(result);
 
-      // Parallel SBF mini-framer for AttEuler
+      // Parallel SBF mini-framer (ExtSensorMeas / PVT blocks)
       parseSbfByte(byte);
 
       // NMEA sentences (interleaved with SBF binary).
@@ -522,7 +551,7 @@ class SbfDriverNode : public rclcpp::Node {
     }
   }
 
-  // SBF Mini-Framer (parallel to RTKLIB, for AttEuler)
+  // SBF Mini-Framer (parallel to RTKLIB, for ExtSensorMeas and PVT blocks)
 
   void parseSbfByte(uint8_t byte) {
     switch (sbf_state_) {
@@ -555,9 +584,8 @@ class SbfDriverNode : public rclcpp::Node {
   void handleSbfBlock() {
     switch (sbf_id_) {
       case sbf::ID_EXTSENSORMEAS:    handleExtSensorMeas();    break;
-      // SBF Decoded nav blocks are handled by RTKLIB input_sbf() on the
-      // parallel byte stream. See handleDecodeResult; the mini-framer is kept
-      // here only for AttEuler / ExtSensorMeas.
+      // Decoded *Nav blocks are handled by RTKLIB input_sbf(); decoding them
+      // here too produced duplicate, slightly-different ephemerides.
       case sbf::ID_PVTGEODETIC:      handlePvtGeodetic();      break;
       case sbf::ID_POSCOVGEODETIC:   handlePosCovGeodetic();   break;
       case sbf::ID_VELCOVGEODETIC:   handleVelCovGeodetic();   break;
@@ -569,19 +597,11 @@ class SbfDriverNode : public rclcpp::Node {
     }
   }
 
-  // Binary PVT handlers with per-system TOW aggregation
-
-  // Single pending aggregator: all Geo+Xyz PVT/Cov blocks for one TOW merge into
-  // pending_.buf. Flush triggers when blocks_received == blocks_expected, or when
-  // a new TOW arrives (previous epoch is flushed with whatever was received).
-  //
-  // Policy in flushPending():
-  //   - Position: PVTGeodetic is primary (LLH direct). If only PVTCartesian
-  //     is available, LLH is derived via ecef2pos.
-  //   - Velocity/Cov: receiver-provided ENU values are the truth source;
-  //     ECEF is derived via current-LLH rotation.
-  //   - Cartesian-direct values (pos_ecef, vel_ecef, pos_cov_ecef, vel_cov_ecef)
-  //     override the rotation-derived values when present.
+  // PVT TOW aggregation: Geo+Xyz PVT/Cov blocks for one TOW merge into
+  // pending_.buf; flush when blocks_received == blocks_expected or a new TOW
+  // arrives. Policy in flushPending(): PVTGeodetic is the primary position
+  // (LLH derived from Cartesian only as fallback); ENU values are the truth
+  // source, ECEF derived by rotation; Cartesian-direct values override.
   static constexpr uint8_t BLK_PVT_GEO = 1 << 0;
   static constexpr uint8_t BLK_POS_GEO = 1 << 1;
   static constexpr uint8_t BLK_VEL_GEO = 1 << 2;
@@ -674,10 +694,8 @@ class SbfDriverNode : public rclcpp::Node {
     mergeBlock(BLK_VEL_XYZ, &sbf::pvt::parseVelCovCartesian);
   }
 
-  // DOP block: parsed into the persistent last_dop_ cache, NOT into pending_.
-  // Does NOT participate in completion and does NOT trigger flush. At flush
-  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
-  // enough (within 0..PVT_period after PVT) to populate the published solution.
+  // DOP block: cached in last_dop_; applied at flush by applyDopWithStaleness()
+  // (does not gate epoch completion).
   void handleDop() {
     if (!config_.enable_dop) return;
     const uint8_t* p   = sbf_body_.data();
@@ -779,8 +797,7 @@ class SbfDriverNode : public rclcpp::Node {
     }
     prev_pvt_tow_ms_ = pending_.tow_ms;
 
-    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
-    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    // DOP staleness gate (see gnss_utils::applyDopWithStaleness).
     gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
                                       binary_solution_.time_week,
                                       pending_.tow_ms, pvt_period_ms_);
@@ -875,19 +892,8 @@ class SbfDriverNode : public rclcpp::Node {
     esm_gyro_[0]  = esm_gyro_[1]  = esm_gyro_[2]  = 0.0;
   }
 
-  // Decoded *Nav block handlers — removed.
-  //
-  // SBF Decoded nav blocks (GPSNav / GLONav / GALNav / BDSNav / QZSSNav /
-  // NavICLNav) are handled by RTKLIB's input_sbf() on the parallel byte stream.
-  // Running our own parsers in parallel produced two slightly-different eph_t
-  // per satellite (different angular unit conventions and iode/iodc byte
-  // widths), which surfaced as duplicate RINEX records when converted via
-  // rosbag_to_rinex and an incorrect Galileo SVH value. The mini-framer is
-  // kept solely for AttEuler + ExtSensorMeas.
-  //
-  // config_.enable_{gps,glo,gal,bds,qzs,navic}_nav still gates whether the
-  // receiver is *told* to emit those decoded blocks (in the startup
-  // configuration command path); the runtime decoding is now done by RTKLIB.
+  // The messages.*_nav flags only control which decoded nav blocks the
+  // receiver is told to emit; decoding is done by RTKLIB input_sbf().
 
   // Message Handling
 
@@ -907,12 +913,8 @@ class SbfDriverNode : public rclcpp::Node {
   // Solution Publishing
 
   void publishSolution(msg::GnssSolution& sol) {
-    // BINARY path: SBF PVT blocks carry WNc+TOW, so the parser has already
-    // filled time_week/time_tow with the solution's own epoch — trust them.
-    // raw_.time (RTKLIB observation-decode clock) is only a fallback; using it
-    // unconditionally would timestamp the position with the latest
-    // *observation* epoch instead. NMEA path trusts time_week/time_tow already
-    // filled by NmeaParser from the sentence itself.
+    // BINARY: SBF PVT blocks carry WNc+TOW — trust them; raw_.time is only a
+    // fallback. NMEA: NmeaParser filled week/tow from the sentence.
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
@@ -1010,10 +1012,7 @@ class SbfDriverNode : public rclcpp::Node {
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
 
-    // Use per-observation time (raw_.obs.data[0].time), NOT raw_.time:
-    // RTKLIB returns input_*()==1 when the *next* epoch's first byte arrives,
-    // at which point raw_.time has already advanced by one epoch period
-    // while raw_.obs.data[*] still holds the just-completed (correct) epoch.
+    // obs.data[0].time, not raw_.time (already advanced to the next epoch).
     int week = 0;
     const gtime_t obs_time = raw_.obs.data[0].time;
     const double tow = time2gpst(obs_time, &week);
@@ -1083,8 +1082,10 @@ class SbfDriverNode : public rclcpp::Node {
 
   stream_t stream_{};
   raw_t    raw_{};
-  rtcm_t   rtcm_{};
   bool is_serial_connection_{false};
+
+  // RTCM relay (PC -> receiver): STRSVR-style TCP server -> serial
+  decoder_common::RtcmRelayServer relay_;
 
   // SBF mini-framer state
   int                  sbf_state_{0};

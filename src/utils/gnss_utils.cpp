@@ -449,12 +449,11 @@ void applyDopWithStaleness(gnss_ros_standardization::msg::GnssSolution& sol,
   sol.vdop = cache.vdop;
 }
 
-bool validatePublishRate(int& rate_hz, int fallback, const rclcpp::Logger& logger) {
+bool validatePublishRate(int& rate_hz, int fallback, int max_hz, const rclcpp::Logger& logger) {
   constexpr int kMin = 1;
-  constexpr int kMax = 20;
-  if (rate_hz < kMin || rate_hz > kMax) {
+  if (rate_hz < kMin || rate_hz > max_hz) {
     RCLCPP_WARN(logger, "publish/measurement rate %d Hz out of range [%d, %d] — clamping to %d Hz",
-                rate_hz, kMin, kMax, fallback);
+                rate_hz, kMin, max_hz, fallback);
     rate_hz = fallback;
     return false;
   }

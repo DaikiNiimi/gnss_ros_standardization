@@ -17,7 +17,10 @@ ubx_driver_node:
     #   tcpcli://192.168.1.100:5000
     stream_path: "serial:///dev/ttyACM0:115200"
     
-    # Measurement rate in Hz (1-20)
+    # GNSS measurement rate in Hz (1-20). Applies only to the GNSS epoch
+    # (RAWX / NAV-* / NMEA). ESF-RAW (IMU) is not paced by this: the receiver
+    # streams it at the sensor's native sample rate, so e.g. GNSS 10 Hz +
+    # IMU 100 Hz works.
     rate_hz: 10
     
     # ROS settings
@@ -29,7 +32,18 @@ ubx_driver_node:
     solution_topic: "/gnss/nmea_solution"
     imu_topic:     "/gnss/imu/data"      # ESF-INS (calibrated)
     imu_raw_topic: "/gnss/imu/data_raw"  # ESF-RAW (uncalibrated)
-    
+
+    # RTCM relay (PC -> receiver) for receiver on-chip RTK, RTKLIB STRSVR-style.
+    # When enabled, the driver hosts a TCP server at `listen`; raw RTCM bytes
+    # pushed there are written down the (read-write) serial link, so the receiver
+    # runs RTK internally and reports the fix via NAV-PVT/NAV-HPPOSLLH. The driver
+    # stays the sole owner of the serial port (corrections arrive over TCP).
+    # Feed it from rtcm_decoder_node (-p rtcm_relay:="tcpcli://127.0.0.1:5556"),
+    # or any TCP source (RTKLIB str2str / STRSVR).
+    rtcm_relay:
+      enabled: false           # set true (+ messages.nav_pvt/nav_hpposllh) for on-chip RTK
+      listen: "tcpsvr://:5556" # RTKLIB stream path; ":port" binds all interfaces
+
     # ENU local origin settings
     auto_origin: true              # false: use origin below; true: first valid fix
     origin: [0.0, 0.0, 0.0]       # [lat_deg, lon_deg, alt_m (ellipsoidal)]
@@ -39,9 +53,13 @@ ubx_driver_node:
     # (equivalent to using ubx_decoder_node for decode-only operation)
     configure_on_startup: true
 
-    # Use GPS week/tow for message header stamps instead of system clock
+    # Use GPS week/tow for message header stamps instead of system clock.
+    # Limitation: ESF-RAW (raw IMU) carries no GNSS time — only the
+    # receiver-internal sTtag — so IMU stamps stay host-clock based even when
+    # this is true (batched samples are spaced by sTtag deltas so per-sample
+    # dt is still accurate). Septentrio/NovAtel IMU blocks do carry GPS time.
     use_gps_timestamp: false
-    
+
     # Dynamic platform model
     # Options: portable, stationary, pedestrian, automotive, sea,
     #          airborne_1g, airborne_2g, airborne_4g, watch
@@ -85,7 +103,7 @@ ubx_driver_node:
       nav_hpposecef: false   # NAV-HPPOSECEF (0x01,0x13) → pos_ecef
 
       # NMEA messages (disable to save bandwidth)
-      nmea_gga: true 
+      nmea_gga: true
       nmea_rmc: false
       nmea_gsa: false
       nmea_gst: false
@@ -96,6 +114,8 @@ ubx_driver_node:
 
       # IMU messages (requires F9R or other IMU-enabled receiver)
       # ESF-RAW: uncalibrated raw IMU sensor measurements → /gnss/imu/data_raw
+      #          Streamed at the IMU's native sample rate (independent of
+      #          rate_hz); batched messages are split into one Imu per sample.
       # ESF-INS: receiver-calibrated angular rate + linear acceleration → /gnss/imu/data
       # Both can be enabled simultaneously; they publish to different topics.
       esf_raw: true
@@ -106,9 +126,9 @@ ubx_driver_node:
     # ==========================================================================
     # All supported frequencies for each enabled constellation are configured
     # automatically. No per-frequency selection is needed.
-    # Actual output depends on both hardware and MALIB decoder support.
+    # Actual output depends on both hardware and RTKLIB decoder support.
     #
-    # Frequencies per constellation (MALIB-patched):
+    # Frequencies per constellation:
     #   GPS    : L1C/A, L2C, L5
     #   Galileo: E1, E5a, E5b
     #   BeiDou : B1I, B2I

@@ -163,15 +163,18 @@ void applyDopWithStaleness(gnss_ros_standardization::msg::GnssSolution& sol,
 
 /**
  * Validate a publish/measurement rate in Hz. Logs a WARN via the supplied
- * rclcpp::Logger and clamps to `fallback` when the value is outside [1, 20].
- * Centralized so all GNSS driver nodes use the same range and warning text.
+ * rclcpp::Logger and clamps to `fallback` when the value is outside
+ * [1, max_hz]. Centralized so all GNSS driver nodes use the same warning
+ * text; the upper bound is per-driver (e.g. 100 for Septentrio, 20 for
+ * u-blox/NovAtel).
  *
  * @param rate_hz   the requested rate (mutated in place)
- * @param fallback  the clamp target on out-of-range input (default 5)
+ * @param fallback  the clamp target on out-of-range input
+ * @param max_hz    driver-specific upper bound in Hz
  * @param logger    rclcpp::Logger to emit the warning on
  * @return true if the input was in range; false if it was clamped
  */
-bool validatePublishRate(int& rate_hz, int fallback, const rclcpp::Logger& logger);
+bool validatePublishRate(int& rate_hz, int fallback, int max_hz, const rclcpp::Logger& logger);
 
 // ---- Lightweight NMEA Parser ----
 
