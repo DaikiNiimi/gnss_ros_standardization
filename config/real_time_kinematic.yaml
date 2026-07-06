@@ -37,7 +37,7 @@ real_time_kinematic:
       # Base station position type (ecef, llh, or rtcm)
       postype: "llh"
       # Base position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
-      pos: [35.70494444, 139.72169444, 74.380]
+      pos: [0.0, 0.0, 0.0]
 
     # Fixed Origin for Local Position (ENU)
     # If 'pos' is set to non-zero, this position is used as the origin for 'local_position' and 'local_origin_ecef'.

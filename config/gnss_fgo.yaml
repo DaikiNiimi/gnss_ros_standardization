@@ -12,7 +12,7 @@ gnss_fgo:
     # postype: "llh" (deg, deg, ellipsoidal m) or "ecef" (m)
     base_position:
       postype: "llh"
-      pos: [35.704944440, 139.721694440, 74.3800]
+      pos: [0.0, 0.0, 0.0]
 
     # ENU output origin. Priority: fixed_origin > base_position.
     fixed_origin:

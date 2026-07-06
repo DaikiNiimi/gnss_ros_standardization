@@ -26,7 +26,6 @@ single_point_positioning:
       # Position type (ecef or llh)
       postype: "llh"
       # Position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
-      # pos: [35.134709472, 136.977574273, 104.7180]
       pos: [0.0, 0.0, 0.0]
 
     # ==========================================================================

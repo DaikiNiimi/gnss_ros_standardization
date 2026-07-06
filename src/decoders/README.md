@@ -52,67 +52,32 @@ All decoders accept a `stream_path` parameter specifying the source stream. The 
 
 ## RTCM correction relay (receiver on-chip RTK)
 
-A decoder holds the receiver port exclusively, so nothing else can feed
-RTK corrections to the receiver — on single-port connections (a u-blox USB
-cable, a lone UART to an OEM board) there would be no correction path at all.
-The `rtcm_relay` parameter solves this RTKLIB-STRSVR-style: the decoder hosts a
-TCP server, and raw RTCM bytes pushed there are written back down the stream it
-already owns. The receiver then computes RTK on-chip and its Fix appears in the
-decoded PVT output as usual.
-
-```
-NTRIP caster / base ──> rtcm_decoder_node ──> tcpcli ──> tcpsvr ──> *_decoder ──> receiver port ──> on-chip RTK
-                        -p rtcm_relay:="tcpcli://127.0.0.1:5556"    -p rtcm_relay:="tcpsvr://:5556"
-```
+A decoder owns the receiver port read-only, so on single-port wiring (a u-blox USB
+cable, a lone UART to an OEM board) there is otherwise no path to feed RTK
+corrections. Set `rtcm_relay` to a listen URI and the decoder hosts a TCP server,
+writing any RTCM bytes pushed there down the receiver stream; the receiver then
+computes RTK on-chip and its Fix appears in the decoded PVT.
 
 ```bash
-# Rover decoder (u-blox example) — hosts the correction server
+# Rover decoder hosts the correction server (u-blox example)
 ros2 run gnss_ros_standardization ubx_decoder_node --ros-args \
-  -p stream_path:="serial:///dev/ttyACM0:115200" \
-  -p rtcm_relay:="tcpsvr://:5556"
-
-# Correction source — decodes the base stream to topics AND forwards it
+  -p stream_path:="serial:///dev/ttyACM0:115200" -p rtcm_relay:="tcpsvr://:5556"
+# Correction source: decode a base stream to topics AND forward it
 ros2 run gnss_ros_standardization rtcm_decoder_node --ros-args \
-  -p stream_path:="ntrip://user:pass@caster:2101/MOUNT" \
-  -p rtcm_relay:="tcpcli://127.0.0.1:5556"
+  -p stream_path:="ntrip://user:pass@caster:2101/MOUNT" -p rtcm_relay:="tcpcli://127.0.0.1:5556"
 ```
 
-Recommended ports match the drivers so the `rtcm_decoder_node` command line is
-identical in driver and decoder operation: **ubx = 5556, sbf = 5557,
-novatel = 5558**.
+Recommended ports (match the drivers): **ubx 5556, sbf 5557, novatel 5558**. The
+receiver port must accept RTCMv3 input — set it up once:
 
-**NovAtel needs a dedicated correction port**, same as the driver:
-`INTERFACEMODE` is per-direction and a port receiving RTCMV3 stops interpreting
-NOVATEL input, so corrections cannot share the decoded-log port. A single USB
-cable exposes three `/dev` devices (receiver USB1/2/3) — point
-`rtcm_relay_output` at a spare one and the decoder configures it by sending
-`INTERFACEMODE THISPORT RTCMV3 NONE OFF` over that port itself (the main log
-port is never touched):
+| Receiver | One-time setup |
+|---|---|
+| u-blox | include RTCM3 in the port's `inProtoMask` (F9P default already does) |
+| Septentrio | `setDataInOut, COM1, RTCMv3, +SBF` (WebUI or RxTools) |
+| NovAtel | needs a **dedicated** port (RTCMV3 rx cannot share the NOVATEL log port): point `rtcm_relay_output` at a second `/dev` device — the decoder sets it to RTCMV3 via `INTERFACEMODE THISPORT RTCMV3 NONE OFF`. Single-UART-only wiring cannot receive corrections. |
 
-```bash
-ros2 run gnss_ros_standardization novatel_decoder_node --ros-args \
-  -p stream_path:="serial:///dev/ttyUSB1:230400" \
-  -p rtcm_relay:="tcpsvr://:5558" \
-  -p rtcm_relay_output:="serial:///dev/ttyUSB2:230400"
-```
-
-For u-blox and Septentrio the decoder never sends receiver commands, so the
-receiver port must be set up **once beforehand** to accept RTCMv3 input
-alongside its binary output:
-
-| Receiver | One-time input setup | Note |
-|---|---|---|
-| u-blox | u-center: include RTCM3 in the port's `inProtoMask` | F9P default already includes RTCM3 |
-| Septentrio | `setDataInOut, COM1, RTCMv3, SBF` (WebUI or RxTools/terminal) | Input and output types are independent per port |
-| NovAtel | none (decoder sends `INTERFACEMODE` over `rtcm_relay_output`) | Requires the dedicated port above; single-UART-only wiring cannot receive corrections (receiver limitation) |
-
-Alternatives when a spare receiver port is available (multi-port USB
-connections): point `rtcm_decoder_node`'s `rtcm_relay` directly at it, e.g.
-`-p rtcm_relay:="serial:///dev/ttyUSB2:230400"` — no decoder-side relay needed.
-The drivers offer the same relay for configured operation
-(`rtcm_relay.enabled` + `rtcm_relay.listen`, with `configure_on_startup:=false`
-for pre-configured receivers); see [`../drivers/`](../drivers/) and
-`config/*_driver.yaml`.
+The drivers offer the same relay for configured operation; see
+[`../drivers/`](../drivers/).
 
 ---
 
