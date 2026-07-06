@@ -95,8 +95,8 @@ If you cloned the repository without `--recursive`, make sure to run `git submod
 
 ### Optional: tightly-coupled FGO examples (GTSAM)
 
-The [`tightly_coupled_gnss`](examples/tightly_coupled_gnss/) and
-[`tightly_coupled_gnss_imu`](examples/tightly_coupled_gnss_imu/) examples need
+The [tightly-coupled FGO examples](examples/tightly_coupled_fgo/) (`gnss_fgo`
+and `gnss_imu_fgo`) need
 [GTSAM](https://github.com/borglab/gtsam) built from its `develop` branch (the
 GNSS double-difference factors are not in a release tag yet). Build and install
 it once — `rosdep`/`colcon` do **not** fetch it:
@@ -116,7 +116,7 @@ cd ..
 `-DGTSAM_USE_SYSTEM_EIGEN=ON` and `-DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF` are
 **required** (this package uses the system Eigen; mixing GTSAM's bundled Eigen or
 native alignment corrupts memory at the ABI boundary) — see
-[examples/tightly_coupled_gnss/README.md](examples/tightly_coupled_gnss/README.md).
+[examples/tightly_coupled_fgo/README.md](examples/tightly_coupled_fgo/README.md).
 For a system-wide install use `sudo cmake --install build` (no prefix) instead —
 that path is on the default loader path, so nothing else is needed.
 

@@ -380,7 +380,7 @@ endif()
 
 # Tightly-coupled FGO examples (opt-in: they need GTSAM with the GNSS DD
 # factors, which are only on GTSAM's develop branch as of June 2026 - see
-# examples/tightly_coupled_gnss/README.md for build instructions).
+# examples/tightly_coupled_fgo/README.md for build instructions).
 option(BUILD_GTSAM_FGO_EXAMPLES "Build tightly-coupled FGO examples (requires GTSAM develop)" OFF)
 if(BUILD_GTSAM_FGO_EXAMPLES)
   find_package(GTSAM REQUIRED)
@@ -391,11 +391,11 @@ if(BUILD_GTSAM_FGO_EXAMPLES)
     message(FATAL_ERROR
       "GTSAM was found but lacks the GNSS DD factors "
       "(gtsam/navigation/PseudorangeFactor.h). Build GTSAM from the develop "
-      "branch - see examples/tightly_coupled_gnss/README.md.")
+      "branch - see examples/tightly_coupled_fgo/README.md.")
   endif()
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/tightly_coupled_gnss/gnss_fgo.cpp")
-    add_executable(gnss_fgo examples/tightly_coupled_gnss/gnss_fgo.cpp)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/tightly_coupled_fgo/gnss_fgo.cpp")
+    add_executable(gnss_fgo examples/tightly_coupled_fgo/gnss_fgo.cpp)
     target_include_directories(gnss_fgo PUBLIC ${_gen_include})
     ament_target_dependencies(gnss_fgo rclcpp std_msgs builtin_interfaces)
     target_link_libraries(gnss_fgo gnss_utils gtsam Threads::Threads)
@@ -403,8 +403,8 @@ if(BUILD_GTSAM_FGO_EXAMPLES)
     install(TARGETS gnss_fgo DESTINATION lib/${PROJECT_NAME})
   endif()
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/tightly_coupled_gnss_imu/gnss_imu_fgo.cpp")
-    add_executable(gnss_imu_fgo examples/tightly_coupled_gnss_imu/gnss_imu_fgo.cpp)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/tightly_coupled_fgo/gnss_imu_fgo.cpp")
+    add_executable(gnss_imu_fgo examples/tightly_coupled_fgo/gnss_imu_fgo.cpp)
     target_include_directories(gnss_imu_fgo PUBLIC ${_gen_include})
     ament_target_dependencies(gnss_imu_fgo rclcpp std_msgs sensor_msgs nav_msgs builtin_interfaces)
     target_link_libraries(gnss_imu_fgo gnss_utils gtsam Threads::Threads)
@@ -480,7 +480,7 @@ if(BUILD_TESTING)
       endif()
       if(TARGET ${_fgo_test})
         target_include_directories(${_fgo_test} PUBLIC ${_gen_include}
-          "${CMAKE_CURRENT_SOURCE_DIR}/examples/fgo_common")
+          "${CMAKE_CURRENT_SOURCE_DIR}/examples/tightly_coupled_fgo")
         target_link_libraries(${_fgo_test} gnss_utils gtsam)
         ament_target_dependencies(${_fgo_test} rclcpp std_msgs builtin_interfaces)
         add_dependencies(${_fgo_test} ${_rosidl_deps})

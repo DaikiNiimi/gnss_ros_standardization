@@ -7,7 +7,7 @@ gnss_imu_fgo:
       imu: "/gnss/imu/data_raw"
       solution: "/gnss/fgo/solution"
 
-    # Base station antenna position. REQUIRED (see tightly_coupled_gnss).
+    # Base station antenna position. REQUIRED (see tightly_coupled_fgo README).
     base_position:
       postype: "llh"
       pos: [35.704944440, 139.721694440, 74.3800]
