@@ -17,10 +17,8 @@ ubx_driver_node:
     #   tcpcli://192.168.1.100:5000
     stream_path: "serial:///dev/ttyACM0:115200"
     
-    # GNSS measurement rate in Hz (1-20). Applies only to the GNSS epoch
-    # (RAWX / NAV-* / NMEA). ESF-RAW (IMU) is not paced by this: the receiver
-    # streams it at the sensor's native sample rate, so e.g. GNSS 10 Hz +
-    # IMU 100 Hz works.
+    # GNSS measurement rate in Hz (1-20). ESF-RAW (IMU) is not paced by this —
+    # it streams at the sensor's native sample rate regardless.
     rate_hz: 10
     
     # ROS settings
@@ -33,13 +31,7 @@ ubx_driver_node:
     imu_topic:     "/gnss/imu/data"      # ESF-INS (calibrated)
     imu_raw_topic: "/gnss/imu/data_raw"  # ESF-RAW (uncalibrated)
 
-    # RTCM relay (PC -> receiver) for receiver on-chip RTK, RTKLIB STRSVR-style.
-    # When enabled, the driver hosts a TCP server at `listen`; raw RTCM bytes
-    # pushed there are written down the (read-write) serial link, so the receiver
-    # runs RTK internally and reports the fix via NAV-PVT/NAV-HPPOSLLH. The driver
-    # stays the sole owner of the serial port (corrections arrive over TCP).
-    # Feed it from rtcm_decoder_node (-p rtcm_relay:="tcpcli://127.0.0.1:5556"),
-    # or any TCP source (RTKLIB str2str / STRSVR).
+    # RTCM relay (PC -> receiver) for receiver on-chip RTK. See src/drivers/README.md.
     rtcm_relay:
       enabled: false           # set true (+ messages.nav_pvt/nav_hpposllh) for on-chip RTK
       listen: "tcpsvr://:5556" # RTKLIB stream path; ":port" binds all interfaces
@@ -48,16 +40,13 @@ ubx_driver_node:
     auto_origin: true              # false: use origin below; true: first valid fix
     origin: [0.0, 0.0, 0.0]       # [lat_deg, lon_deg, alt_m (ellipsoidal)]
     
-    # Send configuration commands on startup
-    # Set to false to use the receiver's current configuration as-is
-    # (equivalent to using ubx_decoder_node for decode-only operation)
+    # Send configuration commands on startup. false uses the receiver's
+    # current config as-is (equivalent to ubx_decoder_node decode-only).
     configure_on_startup: true
 
     # Use GPS week/tow for message header stamps instead of system clock.
-    # Limitation: ESF-RAW (raw IMU) carries no GNSS time — only the
-    # receiver-internal sTtag — so IMU stamps stay host-clock based even when
-    # this is true (batched samples are spaced by sTtag deltas so per-sample
-    # dt is still accurate). Septentrio/NovAtel IMU blocks do carry GPS time.
+    # ESF-RAW (raw IMU) carries no GNSS time, so IMU stamps stay host-clock
+    # based even when this is true (unlike Septentrio/NovAtel).
     use_gps_timestamp: false
 
     # Dynamic platform model
@@ -81,24 +70,18 @@ ubx_driver_node:
       sfrbx: true
       
       # Position/Velocity/Time solution — Binary PVT, preferred over NMEA.
-      # When nav_pvt=true, the solution source is locked to BINARY at startup;
-      # /gnss/nmea_solution carries NAV-PVT-derived fix (hAcc/vAcc → covariance,
-      # carrSoln → STATUS_FIX/FLOAT/DGPS/SINGLE classification).
       nav_pvt: true
 
-      # DOP values (NAV-DOP) and full 3x3 position/velocity covariance (NAV-COV, NED→ENU).
-      # NAV-COV overwrites the diagonal-only covariance from NAV-PVT when enabled.
+      # NAV-COV (full 3x3 covariance) overwrites the diagonal-only NAV-PVT covariance.
       nav_dop: false       # NAV-DOP (0x01,0x04) → gdop/pdop/hdop/vdop
       nav_cov: false       # NAV-COV (0x01,0x36) → pos_enu_cov 3x3 + vel_enu_cov 3x3
 
-      # Optional native ECEF position/velocity. Enable only when receiver-provided
-      # ECEF is preferred over LLH-derived values (most users can leave both false).
+      # Optional native ECEF position/velocity (most users can leave both false).
       nav_posecef: false   # NAV-POSECEF (0x01,0x01) → pos_ecef
       nav_velecef: false   # NAV-VELECEF (0x01,0x11) → vel_ecef
 
-      # High-precision position (mm-level resolution). Highest-priority position
-      # source: HPPOSLLH/HPPOSECEF > NAV-PVT > NMEA. Requires nav_pvt: true
-      # (HPPOS carries position only; status/velocity/sats come from NAV-PVT).
+      # High-precision position (mm-level). Highest priority: HPPOS > NAV-PVT >
+      # NMEA. Requires nav_pvt: true (HPPOS carries position only).
       nav_hpposllh: true    # NAV-HPPOSLLH (0x01,0x14) → latitude/longitude/altitude
       nav_hpposecef: false   # NAV-HPPOSECEF (0x01,0x13) → pos_ecef
 
@@ -112,28 +95,16 @@ ubx_driver_node:
       # Enables extra decimal places in lat/lon for GGA, RMC, GLL
       nmea_high_precision: false
 
-      # IMU messages (requires F9R or other IMU-enabled receiver)
-      # ESF-RAW: uncalibrated raw IMU sensor measurements → /gnss/imu/data_raw
-      #          Streamed at the IMU's native sample rate (independent of
-      #          rate_hz); batched messages are split into one Imu per sample.
-      # ESF-INS: receiver-calibrated angular rate + linear acceleration → /gnss/imu/data
-      # Both can be enabled simultaneously; they publish to different topics.
-      esf_raw: false
-      esf_ins: false
+      # IMU messages (requires F9R or other IMU-enabled receiver). Both can be
+      # enabled simultaneously; they publish to different topics.
+      esf_raw: false   # ESF-RAW: uncalibrated, native IMU sample rate → /gnss/imu/data_raw
+      esf_ins: false   # ESF-INS: receiver-calibrated angular rate + accel → /gnss/imu/data
 
     # ==========================================================================
     # GNSS Constellation Settings
     # ==========================================================================
     # All supported frequencies for each enabled constellation are configured
-    # automatically. No per-frequency selection is needed.
-    # Actual output depends on both hardware and RTKLIB decoder support.
-    #
-    # Frequencies per constellation:
-    #   GPS    : L1C/A, L2C, L5
-    #   Galileo: E1, E5a, E5b
-    #   BeiDou : B1I, B2I
-    #   QZSS   : L1C/A, L2C, L5
-    #   GLONASS: L1, L2 (X20P does NOT support GLONASS hardware)
+    # automatically (depends on hardware + RTKLIB decoder support).
     gnss:
       gps: true       # GPS (L1C/A, L2C, L5)
       glonass: true   # GLONASS (L1C, L2C)
@@ -143,17 +114,10 @@ ubx_driver_node:
       navic: false    # NavIC (IRNSS)
       sbas: false     # SBAS (L1C/A)
 
-    # Solution source policy (locked at startup):
-    #   If messages.nav_pvt is true → BINARY source (NMEA parsed but not published)
-    #   Otherwise → NMEA source
-    # No mid-session switching.
-    # Position priority within the BINARY source (per epoch):
-    #   LLH      : NAV-HPPOSLLH > NAV-PVT
-    #   pos_ecef : NAV-HPPOSECEF > NAV-POSECEF > derived from LLH
+    # Solution source (locked at startup): BINARY if nav_pvt is true, else NMEA.
+    # Within BINARY, position priority per epoch: HPPOSLLH > NAV-PVT (LLH),
+    # HPPOSECEF > NAV-POSECEF > derived from LLH (ECEF).
 
-    # Ephemeris publishing — snapshot-on-change + heartbeat
-    # Topic always carries the full current state; logging this one topic is
-    # sufficient for both RINEX conversion and downstream positioning.
     ephemeris:
       snapshot_period_s: 30.0    # heartbeat interval when no new ephemeris arrives
       max_age_s:         7200.0  # drop entries older than this from snapshots (2 h)

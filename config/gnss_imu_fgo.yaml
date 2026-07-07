@@ -26,9 +26,7 @@ gnss_imu_fgo:
     masks:
       elevation_deg: 15.0
       snr_dbhz: 35.0          # flat SNR mask [dBHz]; 0 disables it
-      # Elevation-dependent SNR mask (RTKLIB testsnr), same model as gnss_fgo:
-      # nine thresholds [dBHz] at 5,15,...,85 deg per band. When enabled it takes
-      # precedence over the flat snr_dbhz above.
+      # Elevation-dependent SNR mask (RTKLIB testsnr), same model as gnss_fgo.
       snrmask:
         enable: true
         l1: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
@@ -43,8 +41,7 @@ gnss_imu_fgo:
       qzs: true
     glonass_carrier_dd: false
 
-    # Per-epoch ambiguities: dual-frequency (L1+L2) makes instantaneous AR
-    # much more reliable (the IMU helps too, but the carrier is per-epoch).
+    # Dual-frequency (L1+L2) makes instantaneous AR much more reliable.
     frequencies:
       enable_l1: true
       enable_l2: true
@@ -52,9 +49,7 @@ gnss_imu_fgo:
 
     max_age_s: 5.0
 
-    # Rover-base cycle-slip detection (see gnss_fgo.yaml for details). Essential
-    # for continuous / fix_and_hold. LLI + half-cycle transition + code change
-    # (both receivers) always on; SD-GF / SD-CMC / Doppler configurable.
+    # Rover-base cycle-slip detection (see gnss_fgo.yaml for details).
     cycle_slip:
       gf_enable: true
       gf_threshold_m: 0.05
@@ -65,7 +60,7 @@ gnss_imu_fgo:
       max_gap_s: 2.0
 
     # Undifferenced (zenith) measurement sigmas; DD noise is derived by error
-    # propagation (Var(DD)=Var(SD_ref)+Var(SD_tar), Var(SD)=2*sigma_und^2).
+    # propagation.
     noise:
       pr_sigma_m: 0.5
       cp_sigma_m: 0.005
@@ -77,36 +72,19 @@ gnss_imu_fgo:
       huber_k: 1.345
 
     ambiguity:
-      # How carrier ambiguities are treated over time (RTKLIB armode):
-      #   instantaneous - fresh ambiguities every epoch (conservative default;
-      #     FLOAT is pseudorange-DD quality). continuous - carry one SD ambiguity
-      #     per (sat,band) across epochs so carrier phase accumulates (FLOAT to
-      #     decimetre/cm). fix_and_hold - continuous + inject accepted integer DDs
-      #     as tight gauge-free RELATIVE constraints (BetweenFactor on
-      #     N_ref-N_tar, not an absolute per-ambiguity prior) so a fix stays cm
-      #     until the next slip.
       mode: "instantaneous"        # instantaneous | continuous | fix_and_hold
-      # Loose prior on every (fresh, per-epoch) ambiguity for gauge fixing.
-      prior_sigma_cycles: 100.0    # target ambiguities (loose)
-      # instantaneous only: per-group reference ambiguity prior, tight, fixes the
-      # DD gauge. NOT used in continuous / fix_and_hold.
-      ref_prior_sigma_cycles: 0.001
-      # continuous / fix_and_hold: loose prior on a carried ambiguity at its first
-      # appearance / after a re-key.
-      init_sigma_cycles: 20.0
-      # fix_and_hold: std dev [cycle] of the held integer DD constraint
-      # (RTKLIB varholdamb is a variance 0.001 cycle^2 -> std ~0.032 cycle).
-      hold_sigma_cycles: 0.03
-      # continuous / fix_and_hold: re-key an ambiguity not seen within this gap [s].
-      max_outage_s: 5.0
+      prior_sigma_cycles: 100.0    # loose prior on every (fresh) ambiguity
+      ref_prior_sigma_cycles: 0.001  # instantaneous only: tight per-group reference prior
+      init_sigma_cycles: 20.0        # continuous/fix_and_hold: prior on a new/re-keyed ambiguity
+      hold_sigma_cycles: 0.03        # fix_and_hold: held integer DD std dev [cycle]
+      max_outage_s: 5.0              # continuous/fix_and_hold: re-key gap [s]
 
     ambiguity_resolution:
       enable: true
       ratio_threshold: 3.0
       el_mask_deg: 15.0
       min_fix: 5
-      # Fault detection & exclusion on post-fix carrier residuals (see gnss_fgo).
-      fde_enable: true
+      fde_enable: true          # fault detection & exclusion on post-fix residuals
       fde_threshold_m: 0.05
       fde_max_exclude: 2
 
@@ -115,11 +93,9 @@ gnss_imu_fgo:
       postype: "llh"
       pos: [0.0, 0.0, 0.0]
 
-    # GNSS Doppler velocity factor on V(k). vel_sigma_mps is a floor on the
-    # Doppler velocity sigma; low-speed degradation is handled by the Huber
-    # kernel (robust.enable / robust.huber_k above).
+    # GNSS Doppler velocity factor on V(k).
     motion:
-      vel_sigma_mps: 0.1
+      vel_sigma_mps: 0.1      # floor on the Doppler velocity sigma
 
     # IMU noise densities (defaults follow gnss_imu_kalman_filter.yaml).
     imu:
@@ -127,16 +103,12 @@ gnss_imu_fgo:
       sigma_gyr: 0.01         # [rad/s/sqrt(Hz)]
       sigma_acc_bias: 1.0e-4  # [m/s^2/sqrt(s)]
       sigma_gyr_bias: 1.0e-5  # [rad/s/sqrt(s)]
-      # One-epoch process-noise rate [m/s] used only as a fallback when the
-      # IMU-stage ISAM2 marginal is unavailable (e.g. yaw unobservable while
-      # static): inflates the previous antenna covariance by
-      # (pred_sigma_mps * dt)^2 to form the pre-GNSS AR prior.
+      # Fallback process-noise rate [m/s] used only when the IMU-stage ISAM2
+      # marginal is unavailable.
       pred_sigma_mps: 1.0
 
-    # Static initialization: the platform must be stationary for imu_duration
-    # seconds. Roll/pitch come from gravity, gyro bias from the gyro mean;
-    # yaw is unknown (prior = att_std_yaw) and converges once the platform
-    # accelerates/turns. A permanently static platform never observes yaw.
+    # Static initialization: platform must be stationary for imu_duration
+    # seconds. Yaw is unknown until the platform accelerates/turns.
     init:
       imu_duration: 1.0       # [s]
       pos_std: 10.0           # [m]

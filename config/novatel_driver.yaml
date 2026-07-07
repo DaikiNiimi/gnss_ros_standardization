@@ -15,10 +15,8 @@ novatel_driver_node:
     # Frame ID for checking TF
     frame_id: "gnss_link"
 
-    # GNSS log rate in Hz, 1-20 (effective max dependent on receiver model and
-    # baud rate). Applies only to the ONTIME GNSS logs (RANGE, BESTPOS, ...).
-    # IMU logs (RAWIMUSX / CORRIMUDATA) are requested ONNEW and arrive at the
-    # IMU's native sample rate, independent of this setting.
+    # GNSS log rate in Hz, 1-20. IMU logs (RAWIMUSX / CORRIMUDATA) are
+    # independent of this, requested ONNEW at the IMU's native sample rate.
     publish_rate: 10
 
     # Receiver port to configure data output on (e.g., USB1, COM1, COM2)
@@ -40,15 +38,9 @@ novatel_driver_node:
     imu_topic:     "/gnss/imu/data"      # CORRIMUDATA (calibrated)
     imu_raw_topic: "/gnss/imu/data_raw"  # RAWIMUSX (uncalibrated)
 
-    # RTCM relay (PC -> receiver) for receiver on-chip RTK, RTKLIB STRSVR-style.
-    # The driver hosts a TCP server at `listen`; RTCM bytes pushed there (e.g. by
-    # rtcm_decoder_node -p rtcm_relay:="tcpcli://127.0.0.1:5558") are forwarded
-    # to the receiver.
-    # NovAtel cannot mix RTCM input with NOVATEL commands/logs on one logical
-    # port, so `output` must be a SECOND /dev device (one USB cable exposes
-    # /dev/ttyUSB0/1/2). The driver puts that port into RTCMV3 by sending
-    # `INTERFACEMODE THISPORT RTCMV3 NONE OFF` over it; `stream_path` stays
-    # NOVATEL. See src/drivers/README.md.
+    # RTCM relay (PC -> receiver) for receiver on-chip RTK. See src/drivers/README.md.
+    # NovAtel requires `output` to be a SECOND /dev device (cannot mix RTCM
+    # input with NOVATEL commands/logs on one logical port).
     rtcm_relay:
       enabled: false
       listen: "tcpsvr://:5558"    # corrections come in here (TCP server)
@@ -65,16 +57,9 @@ novatel_driver_node:
       range: false          # RANGEB (Uncompressed Range)
 
       # Position / Velocity — Binary PVT, preferred over NMEA when enabled.
-      # When bestpos=true, the solution source is locked to BINARY at startup;
-      # /gnss/nmea_solution carries BESTPOS-derived fix with full sigma values.
       bestpos: true         # BESTPOSB → LLH + sigma → pos_enu_cov diagonal
       bestvel: false         # BESTVELB → vel_enu (refresh between BESTPOS messages)
       psrdop: false          # PSRDOPB  (ID 174) → gdop/pdop/hdop/vdop
-      # Enable only when velocity covariance (vel_cov_ecef / vel_enu_cov) is
-      # needed downstream. Position/velocity values are not changed by BESTXYZ
-      # (BESTPOS/BESTVEL remain the source); BESTXYZ contributes native ECEF
-      # covariance diagonals for both position and velocity, which are rotated
-      # to ENU at the current point.
       bestxyz: false        # BESTXYZB (ID 241) → pos_cov_ecef / vel_cov_ecef diag (+ ENU rotation)
 
       # Navigation Data (Ephemeris)
@@ -94,24 +79,14 @@ novatel_driver_node:
       nmea_gpgst: false      # GPGST: position standard deviations (for covariance)
 
       # IMU output (requires NovAtel receiver with IMU connection)
-      # RAWIMUSX:    uncalibrated counts × IMU-type-specific scale → /gnss/imu/data_raw
-      # CORRIMUDATA: SPAN-corrected delta-velocity / delta-angle    → /gnss/imu/data
-      # CORRIMUDATA additionally requires SPAN (Synchronized Position Attitude Navigation).
-      rawimusx: false
-      corrimudata: false
+      rawimusx: false    # RAWIMUSXB: uncalibrated counts → /gnss/imu/data_raw
+      corrimudata: false # CORRIMUDATAB: SPAN-corrected → /gnss/imu/data (requires SPAN)
 
-    # IMU scale override (applies when IMU type is unknown to novatel_imu_scales.hpp).
-    # Both fields must be non-zero to take effect; otherwise the built-in table is used.
-    # Units: counts → SI per IMU sample (delta-velocity in m/s, delta-angle in rad).
-    # See README "Supported NovAtel IMUs" for the type → scale mapping.
+    # IMU scale override, for IMU types unknown to novatel_imu_scales.hpp. Both
+    # fields must be non-zero to take effect. See README "Supported NovAtel IMUs".
     imu_scale_override:
       accel: 0.0
       gyro:  0.0
-
-    # Solution source policy (locked at startup):
-    #   If messages.bestpos is true → BINARY source (NMEA parsed but not published)
-    #   Otherwise → NMEA source
-    # No mid-session switching.
 
     # ENU local origin settings
     auto_origin: true              # false: use origin below; true: first valid fix

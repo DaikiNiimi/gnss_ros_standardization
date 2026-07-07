@@ -7,8 +7,6 @@ gnss_fgo:
       solution: "/gnss/fgo/solution"
 
     # Base station antenna position. REQUIRED.
-    # An error here translates the whole estimated trajectory by roughly the
-    # same amount (the DD model anchors the rover to this point).
     # postype: "llh" (deg, deg, ellipsoidal m) or "ecef" (m)
     base_position:
       postype: "llh"
@@ -22,17 +20,16 @@ gnss_fgo:
     masks:
       elevation_deg: 15.0
       snr_dbhz: 35.0          # flat SNR mask [dBHz]; 0 disables it
-      # Elevation-dependent SNR mask (RTKLIB testsnr), same model as the RTK
-      # example: nine thresholds [dBHz] at 5,15,...,85 deg per band. When enabled
-      # it takes precedence over the flat snr_dbhz above.
+      # Elevation-dependent SNR mask (RTKLIB testsnr); takes precedence over
+      # snr_dbhz when enabled. Nine thresholds [dBHz] at 5,15,...,85 deg per band.
       snrmask:
         enable: true
         l1: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
         l2: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
         l5: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
 
-    # GLONASS is off by default: inter-frequency biases do not cancel in DD
-    # across heterogeneous receivers, and FDMA wavelengths differ per pair.
+    # GLONASS off by default (FDMA inter-frequency biases don't cancel in DD
+    # across heterogeneous receivers).
     navsys:
       gps: true
       glo: false
@@ -41,9 +38,7 @@ gnss_fgo:
       qzs: true
     glonass_carrier_dd: false
 
-    # Ambiguities are resolved per epoch (the epochs are independent). Reliable
-    # instantaneous AR needs strong geometry or multiple frequencies, so dual-
-    # frequency (L1+L2) is recommended; L1-only fixes only with good geometry.
+    # Dual-frequency (L1+L2) is recommended for reliable instantaneous AR.
     frequencies:
       enable_l1: true
       enable_l2: true
@@ -52,23 +47,19 @@ gnss_fgo:
     # Maximum rover-base age for forming DD pairs [s].
     max_age_s: 5.0
 
-    # Rover-base cycle-slip detection. Essential for continuous / fix_and_hold
-    # (an undetected slip corrupts a carried ambiguity). LLI cycle-slip bit,
-    # half-cycle-bit transition, and observed-code change (both receivers) are
-    # always on; the rest are configurable:
+    # Rover-base cycle-slip detection. LLI bit, half-cycle-bit transition, and
+    # observed-code change (both receivers) are always on; the rest are configurable.
     cycle_slip:
-      gf_enable: true           # SD geometry-free (dual-freq) - sensitive
-      gf_threshold_m: 0.05      # jump in (Lrov1-Lbas1)*lam1-(Lrov2-Lbas2)*lam2
+      gf_enable: true           # SD geometry-free (dual-freq)
+      gf_threshold_m: 0.05
       cmc_enable: true          # SD code-minus-carrier gross error
-      cmc_threshold_m: 3.0      # >> code noise: catches big slips; drops the
-                                # corrupt carrier from this epoch's DD
+      cmc_threshold_m: 3.0
       dop_enable: true          # Doppler-phase (single-freq safeguard)
-      dop_threshold_cyc: 1.0    # |dL + D*dt - common_clock| [cycles]
+      dop_threshold_cyc: 1.0
       max_gap_s: 2.0            # carrier outage [s]
 
-    # UNDIFFERENCED (zenith) measurement sigmas. The double-difference noise is
-    # derived from these by error propagation, so the same sigma feeds both the
-    # float DD factors and the correlated AR covariance (RTKLIB ddcov).
+    # Undifferenced (zenith) measurement sigmas; DD noise is derived from these
+    # by error propagation.
     noise:
       pr_sigma_m: 0.5        # undifferenced pseudorange sigma [m]
       cp_sigma_m: 0.005      # undifferenced carrier phase sigma [m]
@@ -80,69 +71,28 @@ gnss_fgo:
       huber_k: 1.345
 
     ambiguity:
-      # How carrier ambiguities are treated over time (RTKLIB armode):
-      #   instantaneous - fresh ambiguities every epoch (epochs independent).
-      #     Conservative default; the FLOAT position is essentially
-      #     pseudorange-DD quality (the per-epoch ambiguity absorbs the carrier).
-      #   continuous - one SD ambiguity per (sat,band) carried across epochs
-      #     (re-keyed only on cycle slip / outage). Carrier phase then accumulates,
-      #     so the FLOAT reaches decimetre/cm and AR fixes far more reliably.
-      #   fix_and_hold - continuous, plus accepted integer DDs are injected as
-      #     tight gauge-free RELATIVE constraints (BetweenFactor on N_ref-N_tar,
-      #     not an absolute per-ambiguity prior) so a fix stays cm until the next
-      #     slip (highest accuracy; a wrong fix corrupts the graph until
-      #     re-keyed, gated by the ratio test).
       mode: "instantaneous"        # instantaneous | continuous | fix_and_hold
-      # Loose prior on every (fresh, per-epoch) ambiguity. The GTSAM DD carrier
-      # factor uses (N_ref, N_tar) keys, so each (system,band) group keeps a
-      # 1-D gauge freedom that this prior fixes.
-      prior_sigma_cycles: 100.0    # target ambiguities (loose)
-      # instantaneous only: per-group reference ambiguity prior, tight, fixes the
-      # DD gauge. NOT used in continuous / fix_and_hold (a persistent reference
-      # whose satellite changes would bias the DD; the gauge is fixed softly by
-      # init_sigma_cycles on every ambiguity instead).
-      ref_prior_sigma_cycles: 0.001
-      # continuous / fix_and_hold: loose prior on a carried ambiguity at its first
-      # appearance / after a re-key (the reference's sig_n0).
-      init_sigma_cycles: 20.0
-      # fix_and_hold: standard deviation [cycle] of the held integer DD
-      # constraint (N_ref - N_tar = fixed integer). RTKLIB's varholdamb is a
-      # VARIANCE (0.001 cycle^2 -> std ~0.032 cycle); this is that std.
-      hold_sigma_cycles: 0.03
-      # continuous / fix_and_hold: re-key an ambiguity not seen within this gap
-      # (its carrier can no longer be assumed continuous) [s].
-      max_outage_s: 5.0
+      prior_sigma_cycles: 100.0    # loose prior on every (fresh) ambiguity
+      ref_prior_sigma_cycles: 0.001  # instantaneous only: tight per-group reference prior
+      init_sigma_cycles: 20.0        # continuous/fix_and_hold: prior on a new/re-keyed ambiguity
+      hold_sigma_cycles: 0.03        # fix_and_hold: held integer DD std dev [cycle]
+      max_outage_s: 5.0              # continuous/fix_and_hold: re-key gap [s]
 
     ambiguity_resolution:
       enable: true
       ratio_threshold: 3.0
-      # AR satellite selection: cycle-slipped/half-cycle carriers and pairs below
-      # el_mask_deg are excluded, then a single LAMBDA + ratio test on at least
-      # min_fix DDs (canonical RTKLIB resamb_LAMBDA). The correlated DD covariance
-      # keeps the ratio test valid.
       el_mask_deg: 15.0
       min_fix: 5
-      # Fault detection & exclusion (FDE): after fixing, check the post-fix
-      # carrier residuals; if the largest exceeds fde_threshold_m (an undetected
-      # multipath / half-cycle outlier), drop that satellite and re-fix, up to
-      # fde_max_exclude times. A fix is published only with clean residuals AND a
-      # passing ratio - so an outlier can be removed to salvage a float, and a
-      # wrong fix that slipped past the ratio is rejected.
-      fde_enable: true
+      fde_enable: true          # fault detection & exclusion on post-fix residuals
       fde_threshold_m: 0.05
       fde_max_exclude: 2
 
-    # Loose prior on the rover position, used only on the first epoch and after a
-    # motion gap. Otherwise the position is carried across epochs by the motion
-    # factor below.
+    # Loose prior on the rover position; used only on the first epoch and after
+    # a motion gap (otherwise carried across epochs by the motion factor below).
     position_prior:
       std_m: 100.0
 
-    # Inter-epoch motion model: a BetweenFactor<Point3> ties X(k) to X(k-1) by
-    # the Doppler-derived displacement (0.5*(v_{k-1}+v_k)*dt). This is what
-    # RTKLIB's EKF does in every armode (dynamics on); it smooths the float
-    # position so per-epoch (instantaneous) AR can actually fix. Ambiguities
-    # stay per-epoch - only the position is carried.
+    # Inter-epoch motion factor (Doppler-derived displacement).
     motion:
       vel_sigma_mps: 0.1      # floor on the Doppler velocity sigma
       accel_sigma_mps2: 3.0   # unmodelled acceleration (process noise)

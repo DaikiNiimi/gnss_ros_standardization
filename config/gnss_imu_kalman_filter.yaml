@@ -3,13 +3,9 @@ gnss_imu_kalman_filter:
     # ==========================================================================
     # Local ENU Origin
     # ==========================================================================
-    # The filter's navigation frame is local ENU (East-North-Up) about this origin.
     local_origin:
-      # "gnss_fix" : First valid GNSS Fix solution as origin
-      # "manual"   : Use manually specified position below
-      mode: "gnss_fix"
-      # Manual position [lat_deg, lon_deg, alt_m] (used when mode="manual")
-      pos: [0.0, 0.0, 0.0]
+      mode: "gnss_fix"          # "gnss_fix": first valid GNSS fix | "manual": use pos below
+      pos: [0.0, 0.0, 0.0]      # [lat_deg, lon_deg, alt_m] (used when mode="manual")
 
     # ==========================================================================
     # Topic Names
@@ -25,39 +21,34 @@ gnss_imu_kalman_filter:
     # ==========================================================================
     ekf:
       # Process noise spectral densities [x, y, z]
-      sigma_acc:      [0.3, 0.3, 0.3]               # [m/s²/√Hz] generic MEMS + vibration margin
-      sigma_gyr:      [0.01, 0.01, 0.01]            # [rad/s/√Hz] generic MEMS (~0.6 °/s/√Hz)
+      sigma_acc:      [0.3, 0.3, 0.3]               # [m/s²/√Hz]
+      sigma_gyr:      [0.01, 0.01, 0.01]            # [rad/s/√Hz]
       sigma_acc_bias: [1.0e-4, 1.0e-4, 1.0e-4]     # [m/s²/√s]
       sigma_gyr_bias: [1.0e-5, 1.0e-5, 1.0e-5]     # [rad/s/√s]
 
       # Initial state covariance (1σ standard deviations) [x, y, z]
-      init_pos_std:      [5.0, 5.0, 10.0]           # [m] horiz ~5 m, vert ~10 m (GNSS SPP)
-      init_vel_std:      [0.3, 0.3, 0.3]            # [m/s] stationary start assumed
-      init_att_std:      [0.1, 0.1, 3.14159]        # [rad] roll/pitch ~6°, yaw = π (fully unknown)
-      init_acc_bias_std: [0.1, 0.1, 0.1]            # [m/s²] ~10 mg
-      init_gyr_bias_std: [0.01, 0.01, 0.01]         # [rad/s] ~0.6°/s
+      init_pos_std:      [5.0, 5.0, 10.0]           # [m]
+      init_vel_std:      [0.3, 0.3, 0.3]            # [m/s]
+      init_att_std:      [0.1, 0.1, 3.14159]        # [rad] (yaw = π: fully unknown)
+      init_acc_bias_std: [0.1, 0.1, 0.1]            # [m/s²]
+      init_gyr_bias_std: [0.01, 0.01, 0.01]         # [rad/s]
 
-      # Store-and-rewind time alignment for late GNSS/wheel measurements: the EKF
-      # rewinds to the observation epoch, updates there, and re-propagates the IMU
-      # forward, avoiding the position "kick" from applying a latent fix at the
-      # current state. false = legacy immediate update. imu_buffer_duration must
-      # exceed the worst-case GNSS latency.
+      # Store-and-rewind time alignment for late GNSS/wheel measurements.
+      # false = legacy immediate update. imu_buffer_duration must exceed the
+      # worst-case GNSS latency.
       time_align_to_gnss: true
       imu_buffer_duration: 2.0                      # [s] IMU/state snapshot retention
 
     # ==========================================================================
     # GNSS Observation Update Mode
     # ==========================================================================
-    # "fix_only"  : Use only Fix solutions for position update
-    # "fix_float" : Use Fix + Float solutions
-    # "all"       : Use all solution types (including Single, SBAS, DGPS, PPP)
+    # "fix_only" | "fix_float" | "all" (all solution types incl. Single/SBAS/DGPS/PPP)
     gnss_update_mode: "all"
 
-    # Fallback measurement noise when the received covariance is degenerate (e.g.
-    # all-zero = "unknown"). Below cov_min_var the position covariance is replaced
-    # by pos_sigma_default_*^2, chosen by solution status so an RTK fix (cm) and a
-    # SINGLE/DGPS fix (m) are not trusted equally. vel_sigma_default does the same
-    # for a zero velocity covariance (<= 0 disables it, skipping velocity aiding).
+    # Fallback measurement noise when the received covariance is degenerate
+    # (e.g. all-zero). Below cov_min_var the position covariance is replaced by
+    # pos_sigma_default_* (chosen by solution status). vel_sigma_default does
+    # the same for velocity (<= 0 disables velocity aiding).
     gnss:
       pos_sigma_default_fix:   [0.05, 0.05, 0.10]  # [m] RTK FIX
       pos_sigma_default_float: [1.0, 1.0, 3.0]     # [m] RTK FLOAT
@@ -69,60 +60,45 @@ gnss_imu_kalman_filter:
     # CSV Log Output
     # ==========================================================================
     csv:
-      dir: ""                                    # output directory ("" = current working directory)
+      dir: ""                                    # output directory ("" = cwd)
       sensors_log_enabled: true                  # raw sensor data log (IMU/GNSS/wheel speed) at IMU rate
       sensors_log_filename: "ekf_sensors_log.csv"
       state_log_enabled: true                   # EKF estimated state + diagonal covariance log
       state_log_filename: "ekf_state_log.csv"
-    
+
     # ==========================================================================
     # Wheel Speed (Optional)
     # ==========================================================================
     use_wheel_speed: false
-    
-    # Topic type: "twist_with_covariance" or "twist"
-    wheel_speed_topic_type: "twist_with_covariance"
-    
-    # Mode: "longitudinal_only" (only X-axis forward velocity) or "3d" (all 3 axes)
-    wheel_speed_mode: "longitudinal_only"
+    wheel_speed_topic_type: "twist_with_covariance"   # "twist_with_covariance" | "twist"
+    wheel_speed_mode: "longitudinal_only"             # "longitudinal_only" | "3d"
+    wheel_speed_sigma: 0.1      # default velocity noise [m/s]
 
-    wheel_speed_sigma: 0.1      # Default velocity noise [m/s]
-
-    # Optional non-holonomic constraint (NHC): also constrain body lateral/vertical
-    # velocity ≈ 0 (standard for ground vehicles), bounding cross-track drift during
-    # GNSS outages. Off by default to stay platform-agnostic; the lateral/vertical
-    # sigmas set how much slip is allowed.
+    # Optional non-holonomic constraint (NHC): also constrain body
+    # lateral/vertical velocity ≈ 0. Off by default to stay platform-agnostic.
     wheel_nhc_enable: false
     wheel_nhc_sigma_lateral: 0.3   # [m/s]
     wheel_nhc_sigma_vertical: 0.3  # [m/s]
-    
+
     # ==========================================================================
     # Continuous Accelerometer Leveling (gravity-reference roll/pitch update)
     # ==========================================================================
-    # The specific-force direction observes roll/pitch, keeping the gravity
-    # projection bounded so a sub-degree tilt error does not leak into a spurious
-    # horizontal acceleration between GNSS fixes. Runs every IMU sample with a
-    # measurement noise that inflates with the kinematic acceleration
-    # a_lin = ||C_bn*f + g|| and angular rate (strong near-static, skipped under
-    # manoeuvre). Yaw is unaffected (gravity carries no yaw information).
+    # Runs every IMU sample with noise that inflates with kinematic acceleration
+    # and angular rate (strong near-static, skipped under manoeuvre).
     leveling:
       enable: true
-      window: 0.3          # [s] specific-force averaging window (rejects IMU noise)
+      window: 0.3          # [s] specific-force averaging window
       sigma_min_deg: 1.0   # [deg] 1-sigma floor (quasi-static)
-      # a_lin biases the gravity direction ~5.85 deg per m/s^2, so acc_gain must
-      # exceed that to avoid absorbing acceleration as tilt (~2.5x margin).
-      acc_gain: 15.0       # [deg per m/s^2] sigma inflation vs a_lin
+      acc_gain: 15.0       # [deg per m/s^2] sigma inflation vs linear accel
       gyr_gain: 30.0       # [deg per rad/s] sigma inflation vs ||omega||
-      max_acc: 0.5         # [m/s^2] skip the update above this a_lin (systematic accel bias)
+      max_acc: 0.5         # [m/s^2] skip the update above this (systematic accel bias)
 
     # ==========================================================================
     # Zero-Velocity Update (ZUPT)
     # ==========================================================================
-    # While stationary (acc/gyro std-dev below thresholds over a sliding window) a
-    # v=0 pseudo-observation bounds velocity/position drift. Since IMU variance
-    # cannot tell rest from constant-velocity cruise, ZUPT is suppressed whenever a
-    # fresh measured speed (GNSS or wheel) exceeds speed_thresh; during a GNSS
-    # outage the IMU-variance test stands alone.
+    # While stationary (acc/gyro std-dev below thresholds over a sliding window)
+    # a v=0 pseudo-observation bounds velocity/position drift. Suppressed
+    # whenever a fresh measured speed (GNSS or wheel) exceeds speed_thresh.
     zupt:
       enable: true
       window: 0.5          # [s] detection window
@@ -136,36 +112,28 @@ gnss_imu_kalman_filter:
     # ==========================================================================
     # Initial IMU Averaging
     # ==========================================================================
-    init_imu_duration: 1.0  # Duration to average initial IMU data for Roll/Pitch estimation [s]
+    init_imu_duration: 1.0  # duration to average initial IMU data for roll/pitch [s]
 
-    # Initial yaw configuration
-    # use_init_yaw: true  → init_yaw_deg is used immediately (stationary start; default)
-    # use_init_yaw: false → wait for Doppler velocity heading before EKF initializes
+    # use_init_yaw: true  -> init_yaw_deg used immediately (stationary start)
+    # use_init_yaw: false -> wait for Doppler velocity heading before init
     use_init_yaw: false
     init_yaw_deg: 0.0   # [deg] initial yaw estimate when use_init_yaw is true
 
     # ==========================================================================
     # State Update Thresholds
     # ==========================================================================
-    # Minimum horizontal speed (from Doppler) to initialize or update yaw. Keep it
-    # low: below this the Doppler heading is noisier, but its error-propagated
-    # variance (~1/speed², 5-deg floor) already de-weights it.
+    # Minimum horizontal speed (from Doppler) to initialize or update yaw.
     gnss_heading_speed_threshold: 0.5   # [m/s]
 
     # ==========================================================================
     # IMU Installation & Lever-Arm
     # ==========================================================================
-    # EKF Output Reference Frame:
-    #   "imu"  : EKF estimates and outputs the position of the IMU
-    #   "gnss" : EKF estimates and outputs the position of the GNSS antenna
+    # "imu": EKF estimates/outputs the IMU position. "gnss": the GNSS antenna position.
     output_reference_frame: "imu"
 
-    # Lever-arm vector [x, y, z] in body frame [m]
-    # This vector MUST point from the 'output_reference_frame' to the other sensor.
-    # - If output_reference_frame is "imu", this points from IMU to GNSS antenna.
-    # - If output_reference_frame is "gnss", this points from GNSS antenna to IMU.
+    # Lever-arm vector [x, y, z] in body frame [m], from output_reference_frame
+    # to the other sensor.
     lever_arm: [0.0, 0.0, 0.0]
 
-    # IMU axis orientation relative to body frame [roll, pitch, yaw] in radians
-    # This rotation transforms IMU measurements to body frame
+    # IMU axis orientation relative to body frame [roll, pitch, yaw] [rad]
     imu_orientation: [0.0, 0.0, 0.0]
