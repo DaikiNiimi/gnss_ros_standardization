@@ -52,6 +52,18 @@ gnss_imu_fgo:
 
     max_age_s: 5.0
 
+    # Rover-base cycle-slip detection (see gnss_fgo.yaml for details). Essential
+    # for continuous / fix_and_hold. LLI + half-cycle transition + code change
+    # (both receivers) always on; SD-GF / SD-CMC / Doppler configurable.
+    cycle_slip:
+      gf_enable: true
+      gf_threshold_m: 0.05
+      cmc_enable: true
+      cmc_threshold_m: 3.0
+      dop_enable: true
+      dop_threshold_cyc: 1.0
+      max_gap_s: 2.0
+
     # Undifferenced (zenith) measurement sigmas; DD noise is derived by error
     # propagation (Var(DD)=Var(SD_ref)+Var(SD_tar), Var(SD)=2*sigma_und^2).
     noise:
@@ -65,10 +77,28 @@ gnss_imu_fgo:
       huber_k: 1.345
 
     ambiguity:
+      # How carrier ambiguities are treated over time (RTKLIB armode):
+      #   instantaneous - fresh ambiguities every epoch (conservative default;
+      #     FLOAT is pseudorange-DD quality). continuous - carry one SD ambiguity
+      #     per (sat,band) across epochs so carrier phase accumulates (FLOAT to
+      #     decimetre/cm). fix_and_hold - continuous + inject accepted integer DDs
+      #     as tight gauge-free RELATIVE constraints (BetweenFactor on
+      #     N_ref-N_tar, not an absolute per-ambiguity prior) so a fix stays cm
+      #     until the next slip.
+      mode: "instantaneous"        # instantaneous | continuous | fix_and_hold
       # Loose prior on every (fresh, per-epoch) ambiguity for gauge fixing.
       prior_sigma_cycles: 100.0    # target ambiguities (loose)
-      # Per-group reference ambiguity prior: tight, fixes the DD gauge.
+      # instantaneous only: per-group reference ambiguity prior, tight, fixes the
+      # DD gauge. NOT used in continuous / fix_and_hold.
       ref_prior_sigma_cycles: 0.001
+      # continuous / fix_and_hold: loose prior on a carried ambiguity at its first
+      # appearance / after a re-key.
+      init_sigma_cycles: 20.0
+      # fix_and_hold: std dev [cycle] of the held integer DD constraint
+      # (RTKLIB varholdamb is a variance 0.001 cycle^2 -> std ~0.032 cycle).
+      hold_sigma_cycles: 0.03
+      # continuous / fix_and_hold: re-key an ambiguity not seen within this gap [s].
+      max_outage_s: 5.0
 
     ambiguity_resolution:
       enable: true
@@ -97,6 +127,11 @@ gnss_imu_fgo:
       sigma_gyr: 0.01         # [rad/s/sqrt(Hz)]
       sigma_acc_bias: 1.0e-4  # [m/s^2/sqrt(s)]
       sigma_gyr_bias: 1.0e-5  # [rad/s/sqrt(s)]
+      # One-epoch process-noise rate [m/s] used only as a fallback when the
+      # IMU-stage ISAM2 marginal is unavailable (e.g. yaw unobservable while
+      # static): inflates the previous antenna covariance by
+      # (pred_sigma_mps * dt)^2 to form the pre-GNSS AR prior.
+      pred_sigma_mps: 1.0
 
     # Static initialization: the platform must be stationary for imu_duration
     # seconds. Roll/pitch come from gravity, gyro bias from the gyro mean;

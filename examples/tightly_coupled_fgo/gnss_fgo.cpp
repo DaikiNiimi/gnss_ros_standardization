@@ -10,12 +10,14 @@
 // official GNSS factors (DoubleDifferencePseudorange/CarrierPhaseFactor, added
 // to GTSAM in June 2026), optimized incrementally with ISAM2.
 //
-// Structure: the rover position/velocity are continuous across epochs (a
-// constant-velocity motion model), while carrier ambiguities are per-epoch /
-// instantaneous - exactly like RTKLIB, whose EKF always propagates position
-// (dynamics) and only resolves ambiguities per-epoch in instantaneous mode.
+// Structure: the rover position is continuous across epochs (a
+// constant-velocity motion model), exactly like RTKLIB, whose EKF always
+// propagates position (dynamics on). Carrier ambiguities follow
+// ambiguity.mode (RTKLIB armode): fresh per epoch (instantaneous, default),
+// or carried across epochs and re-keyed on slip/outage (continuous /
+// fix_and_hold; see gnss_fgo::AmbMode in factor_adapters.hpp).
 //   State per epoch k:  X(k) rover ECEF position (gtsam::Point3)
-//   Per (sat, band):    B(k) carrier ambiguity in cycles, FRESH each epoch.
+//   Per (sat, band):    N(k) carrier ambiguity in cycles.
 //   Inter-epoch:        BetweenFactor<Point3> = Doppler-derived displacement.
 // Ambiguity resolution uses the correctly-correlated DD covariance (RTKLIB
 // ddcov) solved analytically + RTKLIB's lambda() and the ratio test (canonical
@@ -27,7 +29,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -68,6 +69,8 @@ class GnssFgoNode : public rclcpp::Node {
 
     preprocessor_ = std::make_unique<gnss_utils::GnssPreprocessor>(makePreprocessorConfig());
     adapter_cfg_ = makeAdapterConfig();
+    amb_mgr_ = std::make_unique<gnss_fgo::PersistentAmbiguities>(next_amb_id_);
+    amb_max_outage_ = get_parameter("ambiguity.max_outage_s").as_double();
 
     gtsam::ISAM2Params isam_params;
     isam_params.relinearizeThreshold =
@@ -90,9 +93,14 @@ class GnssFgoNode : public rclcpp::Node {
     sol_pub_ = create_publisher<grs::GnssSolution>(
         get_parameter("topics.solution").as_string(), 10);
 
-    RCLCPP_INFO(get_logger(),
-                "Tightly-coupled GNSS FGO started (AR %s, ratio threshold %.1f).",
-                ar_enable_ ? "on" : "off", ar_ratio_threshold_);
+    const char* mode_str =
+        adapter_cfg_.mode == gnss_fgo::AmbMode::FixAndHold  ? "fix_and_hold"
+        : adapter_cfg_.mode == gnss_fgo::AmbMode::Continuous ? "continuous"
+                                                             : "instantaneous";
+    RCLCPP_INFO(
+        get_logger(),
+        "Tightly-coupled GNSS FGO started (ambiguity mode %s, AR %s, ratio %.1f).",
+        mode_str, ar_enable_ ? "on" : "off", ar_ratio_threshold_);
   }
 
  private:
@@ -133,12 +141,36 @@ class GnssFgoNode : public rclcpp::Node {
 
     declare_parameter("max_age_s", 1.0);
 
+    // Rover-base cycle-slip detection (LLI cycle-slip + half-cycle-bit
+    // transition + observed-code change are always on). Important for the
+    // continuous / fix_and_hold modes (an undetected slip corrupts a carried
+    // ambiguity). SD geometry-free (dual-freq), SD code-minus-carrier gross
+    // error (excludes the corrupt carrier this epoch), Doppler-phase
+    // (single-freq safeguard, common-clock removed), and a carrier-outage gap.
+    declare_parameter("cycle_slip.gf_enable", true);
+    declare_parameter("cycle_slip.gf_threshold_m", 0.05);
+    declare_parameter("cycle_slip.cmc_enable", true);
+    declare_parameter("cycle_slip.cmc_threshold_m", 3.0);
+    declare_parameter("cycle_slip.dop_enable", true);
+    declare_parameter("cycle_slip.dop_threshold_cyc", 1.0);
+    declare_parameter("cycle_slip.max_gap_s", 2.0);
+
     declare_parameter("noise.pr_sigma_m", 1.0);
     declare_parameter("noise.cp_sigma_m", 0.01);
     declare_parameter("noise.elevation_weighting", true);
 
     declare_parameter("ambiguity.prior_sigma_cycles", 100.0);
     declare_parameter("ambiguity.ref_prior_sigma_cycles", 1.0e-3);
+
+    // Ambiguity handling over time (RTKLIB armode): "instantaneous" (default,
+    // fresh per epoch), "continuous" (carry ambiguities across epochs), or
+    // "fix_and_hold" (continuous + inject accepted integers as tight priors).
+    declare_parameter("ambiguity.mode", std::string("instantaneous"));
+    declare_parameter("ambiguity.init_sigma_cycles", 20.0);
+    // std dev [cycle] of the held integer DD constraint (RTKLIB
+    // varholdamb=0.001 cycle^2 -> std ~0.03 cycle).
+    declare_parameter("ambiguity.hold_sigma_cycles", 0.03);
+    declare_parameter("ambiguity.max_outage_s", 5.0);
 
     // Robust (Huber) measurement noise on the DD factors, as in the reference.
     declare_parameter("robust.enable", true);
@@ -162,9 +194,11 @@ class GnssFgoNode : public rclcpp::Node {
     declare_parameter("ambiguity_resolution.fde_enable", false);
     declare_parameter("ambiguity_resolution.fde_threshold_m", 0.05);
     declare_parameter("ambiguity_resolution.fde_max_exclude", 2);
-    // The conditioned FIX solution is published while the graph stays float (a
-    // wrong fix can never corrupt it). Ambiguities stay per-epoch (instantaneous
-    // AR): only the position is carried across epochs, by the motion factor.
+    // The conditioned FIX solution (ar.fixed_pos) is published but never fed
+    // into ISAM2 directly, so a wrong fix can never corrupt the graph state.
+    // fix_and_hold DOES feed the accepted integer back (as a gauge-free
+    // relative constraint, see applyHolds below) once it passes the same
+    // ratio test; that is the one exception to "FIX never affects the graph".
 
     // Loose prior on the rover position, used only on the first epoch and after
     // a motion gap (otherwise the position is carried by the motion factor).
@@ -207,8 +241,7 @@ class GnssFgoNode : public rclcpp::Node {
     // takes precedence over the flat snr_mask_dbhz; same model as the RTK example.
     cfg.snr_mask = snrmask_t{};
     if (get_parameter("masks.snrmask.enable").as_bool()) {
-      cfg.snr_mask.ena[0] = 1;  // rover
-      cfg.snr_mask.ena[1] = 1;  // base (DD uses the base obs too)
+      cfg.snr_mask.ena[0] = 1;  // rover only (the base stream has no SNR mask)
       const auto l1 = get_parameter("masks.snrmask.l1").as_double_array();
       const auto l2 = get_parameter("masks.snrmask.l2").as_double_array();
       const auto l5 = get_parameter("masks.snrmask.l5").as_double_array();
@@ -231,6 +264,14 @@ class GnssFgoNode : public rclcpp::Node {
     if (get_parameter("frequencies.enable_l5").as_bool()) cfg.bands.push_back(2);
     if (cfg.bands.empty()) cfg.bands.push_back(0);
     cfg.max_age_s = get_parameter("max_age_s").as_double();
+    cfg.detect_slip_gf = get_parameter("cycle_slip.gf_enable").as_bool();
+    cfg.slip_gf_threshold_m = get_parameter("cycle_slip.gf_threshold_m").as_double();
+    cfg.detect_slip_cmc = get_parameter("cycle_slip.cmc_enable").as_bool();
+    cfg.slip_cmc_threshold_m = get_parameter("cycle_slip.cmc_threshold_m").as_double();
+    cfg.detect_slip_dop = get_parameter("cycle_slip.dop_enable").as_bool();
+    cfg.slip_dop_threshold_cyc =
+        get_parameter("cycle_slip.dop_threshold_cyc").as_double();
+    cfg.slip_max_gap_s = get_parameter("cycle_slip.max_gap_s").as_double();
 
     const std::string postype = get_parameter("base_position.postype").as_string();
     const auto pos = get_parameter("base_position.pos").as_double_array();
@@ -263,6 +304,16 @@ class GnssFgoNode : public rclcpp::Node {
         get_parameter("ambiguity.ref_prior_sigma_cycles").as_double();
     cfg.robust = get_parameter("robust.enable").as_bool();
     cfg.huber_k = get_parameter("robust.huber_k").as_double();
+    const std::string mode = get_parameter("ambiguity.mode").as_string();
+    if (mode == "continuous") {
+      cfg.mode = gnss_fgo::AmbMode::Continuous;
+    } else if (mode == "fix_and_hold") {
+      cfg.mode = gnss_fgo::AmbMode::FixAndHold;
+    } else {
+      cfg.mode = gnss_fgo::AmbMode::Instantaneous;
+    }
+    cfg.init_sigma_cycles = get_parameter("ambiguity.init_sigma_cycles").as_double();
+    cfg.hold_sigma_cycles = get_parameter("ambiguity.hold_sigma_cycles").as_double();
     return cfg;
   }
 
@@ -325,7 +376,10 @@ class GnssFgoNode : public rclcpp::Node {
     // float position so per-epoch (instantaneous) AR can fix. The predicted
     // prior (x_pred, P_pred) summarises all past + motion information - the
     // Markov blanket of {X(k), N} - so the AR subgraph below stays small.
-    const double dt = last_float_valid_ ? (ep.tow - prev_tow_) : 0.0;
+    // Continuous GPST seconds (week rollover safe) for all time differencing;
+    // the message time_tow stays the raw tow.
+    const double t_gnss = ep.week * 604800.0 + ep.tow;
+    const double dt = last_float_valid_ ? (t_gnss - prev_tow_) : 0.0;
     const bool continuous = last_float_valid_ && dt > 1e-3 && dt <= motion_max_dt_;
 
     Eigen::Vector3d x_pred = apriori;
@@ -351,13 +405,18 @@ class GnssFgoNode : public rclcpp::Node {
                Eigen::Matrix3d::Identity() * (motion_sigma * motion_sigma);
     }
 
-    // DD factors (per-epoch fresh ambiguities), shared by the ISAM2 update and
-    // the AR subgraph.
+    // DD factors. Instantaneous: fresh per-epoch ambiguities. Continuous /
+    // FixAndHold: carried ambiguities (amb_mgr_), re-keyed on cycle slip or an
+    // outage longer than amb_max_outage_.
+    const bool carry = adapter_cfg_.mode != gnss_fgo::AmbMode::Instantaneous;
+    gnss_fgo::PersistentAmbiguities* amb_ptr = carry ? amb_mgr_.get() : nullptr;
+    if (carry) amb_mgr_->retireStale(t_gnss, amb_max_outage_);
+
     gtsam::NonlinearFactorGraph epoch_graph;
     gtsam::Values values;
     values.insert(xk, gtsam::Point3(x_pred));
     const auto pairs = gnss_fgo::addDdFactors(ep, xk, next_amb_id_, adapter_cfg_,
-                                              epoch_graph, values);
+                                              epoch_graph, values, amb_ptr);
 
     // Continuous trajectory in ISAM2: tie X(k) to X(k-1) with the Doppler
     // motion (BetweenFactor), or anchor with the loose prior on the first epoch
@@ -404,22 +463,58 @@ class GnssFgoNode : public rclcpp::Node {
     uint8_t status = grs::GnssSolution::STATUS_FLOAT;
     double ratio = 0.0;
 
+    gnss_fgo::ArResult ar;
     if (ar_enable_ && static_cast<int>(pairs.size()) >= kMinDdForAr) {
-      // Ambiguity resolution with the correctly-correlated DD covariance
-      // (RTKLIB ddcov), solved analytically from this epoch's DD observations
-      // and anchored by the motion-predicted prior (x_pred, P_pred). The GTSAM
-      // graph's per-pair-independent noise gives a wrongly-shaped Qa and an
-      // uncalibrated ratio test, so the AR (not the float trajectory) uses this
-      // textbook stochastic model instead.
-      const auto ar = gnss_fgo::resolveAmbiguitiesDd(
+      // Analytical AR with the correctly-correlated DD covariance (RTKLIB ddcov)
+      // + FDE, anchored by the motion-predicted prior (x_pred, P_pred). Used in
+      // every mode - the well-calibrated ratio test and FDE the GTSAM per-pair
+      // covariance cannot give. In continuous / fix_and_hold the carried
+      // ambiguities tighten the float trajectory, so P_pred is tighter and this
+      // same AR fixes more reliably; the graph merely supplies the better float.
+      ar = gnss_fgo::resolveAmbiguitiesDd(
           ep, x_pred, P_pred, adapter_cfg_, ar_ratio_threshold_, ar_el_mask_,
-          ar_min_fix_, ar_fde_enable_, ar_fde_threshold_m_,
-          ar_fde_max_exclude_);
+          ar_min_fix_, ar_fde_enable_, ar_fde_threshold_m_, ar_fde_max_exclude_);
       ratio = ar.ratio;
       if (ar.fixed) {
         pub_pos = ar.fixed_pos;
         pub_cov = ar.state_cov;
         status = grs::GnssSolution::STATUS_FIX;
+      }
+    }
+    if (adapter_cfg_.mode == gnss_fgo::AmbMode::FixAndHold) {
+      // Hold accepted integers as two-variable DD constraints on the carried
+      // keys (added once, removed on re-key). Runs every epoch so stale holds
+      // are cleaned even when this epoch produced no fix. The published FIX
+      // stays the analytical ar.fixed_pos; carry the now-tightened float forward.
+      const auto specs = gnss_fgo::collectHoldSpecs(*amb_mgr_, ep, ar);
+      const auto hr = gnss_fgo::applyHolds(*isam_, *amb_mgr_, held_dd_, specs,
+                                           adapter_cfg_.hold_sigma_cycles);
+      if (hr == gnss_fgo::HoldResult::Failure) {
+        // ISAM2 may be inconsistent after a thrown hold update; reset and skip.
+        RCLCPP_WARN(get_logger(), "Hold update failed - resetting graph.");
+        resetGraph();
+        return;
+      }
+      if (hr == gnss_fgo::HoldResult::Success) {
+        try {
+          float_pos = isam_->calculateEstimate<gtsam::Point3>(xk);
+          float_cov = isam_->marginalCovariance(xk);
+          // Publish the now-tightened FLOAT this epoch too (a new FIX keeps the
+          // analytical ar.fixed_pos); otherwise the held cm-level constraint
+          // would not reach the current output.
+          if (status != grs::GnssSolution::STATUS_FIX) {
+            pub_pos = float_pos;
+            pub_cov = float_cov;
+          }
+        } catch (const std::exception& e) {
+          // The estimate/marginal is degenerate after the hold update; do not
+          // carry a possibly-broken ISAM2 into the next epoch.
+          RCLCPP_WARN(get_logger(),
+                      "Post-hold estimate failed (%s) - resetting graph.",
+                      e.what());
+          resetGraph();
+          return;
+        }
       }
     }
 
@@ -433,12 +528,13 @@ class GnssFgoNode : public rclcpp::Node {
         status == grs::GnssSolution::STATUS_FIX ? "FIX" : "FLOAT",
         llh[0] * R2D, llh[1] * R2D, llh[2], ratio, ep.dd.size(), ep.age_s);
 
-    // Carry the FLOAT estimate forward (the graph stays float; a FIX is only
-    // published, never fed back, so a wrong fix cannot corrupt the filter).
+    // Carry the FLOAT estimate forward (in fix_and_hold this is the
+    // hold-tightened float, above; the published FIX position itself is never
+    // fed back, see the ambiguity_resolution.fde_* comment above).
     prev_float_pos_ = float_pos;
     prev_float_cov_ = float_cov;
     last_float_valid_ = true;
-    prev_tow_ = ep.tow;
+    prev_tow_ = t_gnss;  // continuous GPST seconds
     if (ep.rover_vel_valid) {
       prev_vel_ = ep.rover_vel_ecef;
       prev_vel_valid_ = true;
@@ -459,6 +555,8 @@ class GnssFgoNode : public rclcpp::Node {
     last_estimate_valid_ = false;
     last_float_valid_ = false;
     prev_vel_valid_ = false;
+    if (amb_mgr_) amb_mgr_->resetAll();
+    held_dd_.clear();
   }
 
   void publishSolution(const gnss_utils::PreprocessedEpoch& ep,
@@ -563,7 +661,11 @@ class GnssFgoNode : public rclcpp::Node {
   gnss_fgo::AdapterConfig adapter_cfg_;
 
   int epoch_index_{0};
-  std::uint64_t next_amb_id_{0};  // globally-unique per-epoch ambiguity keys
+  std::uint64_t next_amb_id_{0};  // globally-unique ambiguity keys
+  // Carried-across-epochs ambiguities (Continuous / FixAndHold modes only).
+  std::unique_ptr<gnss_fgo::PersistentAmbiguities> amb_mgr_;
+  double amb_max_outage_{5.0};
+  gnss_fgo::HeldDdMap held_dd_;  // FixAndHold: held DD constraints (by sat pair)
   Eigen::Vector3d last_estimate_{Eigen::Vector3d::Zero()};
   bool last_estimate_valid_{false};
 

@@ -122,6 +122,49 @@ Eigen::Vector3d GnssImuKalmanFilter::enuToLlh(const Eigen::Vector3d& pos) const 
   return Eigen::Vector3d(llh[0] * 180.0 / M_PI, llh[1] * 180.0 / M_PI, llh[2]);
 }
 
+OriginVelocity GnssImuKalmanFilter::computeOriginFrameVelocity(const GnssSnapshot& snap) const {
+  OriginVelocity out;
+  double pos_ref[3] = {origin_llh_(0), origin_llh_(1), origin_llh_(2)};
+
+  if (snap.vel_ecef.allFinite()) {
+    double v_ecef[3] = {snap.vel_ecef(0), snap.vel_ecef(1), snap.vel_ecef(2)};
+    double v_enu[3];
+    ecef2enu(pos_ref, v_ecef, v_enu);
+    out.vel_enu = Eigen::Vector3d(v_enu[0], v_enu[1], v_enu[2]);
+
+    double cov_enu[9];
+    gnss_utils::rotateCovariance(snap.vel_cov_ecef.data(), origin_llh_(0), origin_llh_(1), cov_enu);
+    out.cov_enu = Eigen::Map<Eigen::Matrix<double,3,3,Eigen::RowMajor>>(cov_enu);
+    out.valid = true;
+  } else if (snap.vel_enu.allFinite() && std::isfinite(snap.lat) && std::isfinite(snap.lon)) {
+    // Fallback: rotate the current-position ENU velocity through ECEF.
+    double pos_cur[3] = {snap.lat * D2R, snap.lon * D2R, snap.alt};
+    double v_enu_cur[3] = {snap.vel_enu(0), snap.vel_enu(1), snap.vel_enu(2)};
+    double v_ecef[3];
+    enu2ecef(pos_cur, v_enu_cur, v_ecef);
+    double v_enu[3];
+    ecef2enu(pos_ref, v_ecef, v_enu);
+    out.vel_enu = Eigen::Vector3d(v_enu[0], v_enu[1], v_enu[2]);
+
+    double cov_ecef[9];
+    gnss_utils::rotateCovarianceEnuToEcef(snap.vel_cov_enu.data(), pos_cur[0], pos_cur[1], cov_ecef);
+    double cov_enu[9];
+    gnss_utils::rotateCovariance(cov_ecef, origin_llh_(0), origin_llh_(1), cov_enu);
+    out.cov_enu = Eigen::Map<Eigen::Matrix<double,3,3,Eigen::RowMajor>>(cov_enu);
+    out.valid = true;
+  }
+  return out;  // both unusable: out.valid stays false, caller skips the update
+}
+
+double GnssImuKalmanFilter::dopplerHeadingFromOriginVelocity(const OriginVelocity& vel) const {
+  if (!vel.valid) return std::numeric_limits<double>::quiet_NaN();
+  const double horiz = std::hypot(vel.vel_enu(0), vel.vel_enu(1));
+  if (horiz <= config_.gnss_heading_speed_threshold) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return std::atan2(vel.vel_enu(1), vel.vel_enu(0));  // ENU yaw: from East, CCW
+}
+
 // Constructor / Destructor
 GnssImuKalmanFilter::GnssImuKalmanFilter(const rclcpp::NodeOptions& options)
     : Node("gnss_imu_kalman_filter", options) {
@@ -1110,13 +1153,6 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
   snap.pos_is_nan = pos_nan;
   snap.valid = true;
 
-  // Doppler heading from ENU velocity
-  double ve = snap.vel_enu(0), vn = snap.vel_enu(1);
-  double horiz_speed = std::sqrt(ve*ve + vn*vn);
-  if (horiz_speed > config_.gnss_heading_speed_threshold) {
-    snap.doppler_heading = std::atan2(vn, ve);  // ENU yaw: from East, CCW (matches EKF internal convention)
-  }
-
   latest_gnss_ = snap;
 
   // A solution is usable iff its quality matches the configured gnss_update_mode.
@@ -1158,29 +1194,38 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
     RCLCPP_INFO(get_logger(), "Initial GNSS position acquired");
 
     // Use configured initial yaw if use_init_yaw is true, otherwise try Doppler heading
+    // (from the origin-frame velocity — origin_llh_ is now valid, set just above).
     if (!has_initial_yaw_ && config_.use_init_yaw) {
       init_yaw_ = config_.init_yaw_deg * M_PI / 180.0;
       has_initial_yaw_ = true;
       RCLCPP_INFO(get_logger(), "Initial yaw from config: %.2f [deg]", config_.init_yaw_deg);
-    } else if (!has_initial_yaw_ && !std::isnan(snap.doppler_heading)) {
-      init_yaw_ = snap.doppler_heading;
-      has_initial_yaw_ = true;
-      RCLCPP_INFO(get_logger(), "Initial yaw from GNSS Doppler: %.2f [deg]",
-                  init_yaw_ * 180.0/M_PI);
+    } else if (!has_initial_yaw_) {
+      const double origin_doppler_heading =
+          dopplerHeadingFromOriginVelocity(computeOriginFrameVelocity(snap));
+      if (!std::isnan(origin_doppler_heading)) {
+        init_yaw_ = origin_doppler_heading;
+        has_initial_yaw_ = true;
+        RCLCPP_INFO(get_logger(), "Initial yaw from GNSS Doppler: %.2f [deg]",
+                    init_yaw_ * 180.0/M_PI);
+      }
     }
 
     tryInitialize();
     return;
   }
 
-  // Try initial yaw if not yet set
-  if (has_initial_gnss_ && !has_initial_yaw_ && !std::isnan(snap.doppler_heading)) {
-    init_yaw_ = snap.doppler_heading;
-    has_initial_yaw_ = true;
-    RCLCPP_INFO(get_logger(), "Initial yaw from GNSS Doppler: %.2f [deg]",
-                init_yaw_ * 180.0/M_PI);
-    tryInitialize();
-    return;
+  // Try initial yaw if not yet set (origin-frame Doppler heading)
+  if (has_initial_gnss_ && !has_initial_yaw_) {
+    const double origin_doppler_heading =
+        dopplerHeadingFromOriginVelocity(computeOriginFrameVelocity(snap));
+    if (!std::isnan(origin_doppler_heading)) {
+      init_yaw_ = origin_doppler_heading;
+      has_initial_yaw_ = true;
+      RCLCPP_INFO(get_logger(), "Initial yaw from GNSS Doppler: %.2f [deg]",
+                  init_yaw_ * 180.0/M_PI);
+      tryInitialize();
+      return;
+    }
   }
 
   if (!initialized_) return;
@@ -1223,12 +1268,14 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
     // Ensure R_pos is positive definite (add small diagonal if needed)
     R_pos += Eigen::Matrix3d::Identity() * 1e-6;
 
-    // Velocity observation (nav-frame Doppler velocity). Independent of and
-    // complementary to the wheel-speed update; applied whenever the solution
-    // carries a usable velocity covariance.
-    Eigen::Vector3d z_vel = snap.vel_enu;
-    Eigen::Matrix3d R_vel =
-        Eigen::Map<const Eigen::Matrix<double,3,3,Eigen::RowMajor>>(snap.vel_cov_enu.data());
+    // Velocity observation (nav-frame Doppler velocity), rotated into the
+    // FIXED origin ENU frame — the same frame as the EKF velocity state (see
+    // computeOriginFrameVelocity()). Independent of and complementary to the
+    // wheel-speed update; applied whenever the solution carries a usable
+    // velocity covariance.
+    const OriginVelocity origin_vel = computeOriginFrameVelocity(snap);
+    Eigen::Vector3d z_vel = origin_vel.vel_enu;
+    Eigen::Matrix3d R_vel = origin_vel.cov_enu;
     // Note: RTKLIB defines a `trace(...)` macro, so avoid Eigen's .trace().
     double r_diag = R_vel(0,0) + R_vel(1,1) + R_vel(2,2);
     // Degenerate (zero) velocity covariance: substitute a conservative default so
@@ -1236,14 +1283,14 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
     // guard). Skip when the reported velocity is exactly zero: a receiver emitting
     // neither velocity nor covariance sends all-zeros, indistinguishable from a
     // true standstill, so substituting there would inject a false v=0 observation.
-    if (r_diag <= 1e-12 && config_.gnss_vel_sigma_default > 0.0 &&
+    if (origin_vel.valid && r_diag <= 1e-12 && config_.gnss_vel_sigma_default > 0.0 &&
         z_vel.allFinite() && z_vel.squaredNorm() > 0.0) {
       const double s2 =
           config_.gnss_vel_sigma_default * config_.gnss_vel_sigma_default;
       R_vel = Eigen::Matrix3d::Identity() * s2;
       r_diag = R_vel(0,0) + R_vel(1,1) + R_vel(2,2);
     }
-    const bool vel_usable = z_vel.allFinite() && r_diag > 1e-12;
+    const bool vel_usable = origin_vel.valid && z_vel.allFinite() && r_diag > 1e-12;
     if (vel_usable) R_vel += Eigen::Matrix3d::Identity() * 1e-6;
 
     // Cache the measured horizontal speed for the ZUPT gate (generic, not the
@@ -1253,20 +1300,26 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
       last_meas_speed_stamp_ = msg->header.stamp;
     }
 
-    // Doppler heading observation. Requires a usable velocity covariance: with
-    // a missing/zero covariance the propagated variance collapses to the floor
-    // and an over-confident yaw update corrupts the attitude — skip instead.
-    // Use the (possibly substituted) R_vel so the heading update also benefits
-    // from the degenerate-covariance fallback above.
+    // Doppler heading observation, derived from the same origin-frame z_vel
+    // so it stays consistent with R_vel and the EKF's fixed-origin ENU
+    // velocity state. Requires a usable velocity covariance: with a missing/
+    // zero covariance the propagated variance collapses to the floor and an
+    // over-confident yaw update corrupts the attitude — skip instead. Use the
+    // (possibly substituted) R_vel so the heading update also benefits from
+    // the degenerate-covariance fallback above.
+    const double ve = z_vel(0), vn = z_vel(1);
+    const double horiz_speed = std::hypot(ve, vn);
     const double var_ve = R_vel(0,0);
     const double var_vn = R_vel(1,1);
     const bool vel_cov_ok = std::isfinite(var_ve) && std::isfinite(var_vn) &&
                             (var_ve > 1e-12 || var_vn > 1e-12);
     const bool heading_usable =
-        !std::isnan(snap.doppler_heading) &&
+        vel_usable &&
         horiz_speed > config_.gnss_heading_speed_threshold && vel_cov_ok;
     double heading_var = 0.0;
+    double doppler_heading = 0.0;
     if (heading_usable) {
+      doppler_heading = std::atan2(vn, ve);  // ENU yaw: from East, CCW
       // Error propagation of atan2(vn, ve) through the velocity covariance,
       // floored at (5 deg)^2: the course-over-ground is only an approximate
       // yaw observation (sideslip, antenna sway), never trust it below that.
@@ -1279,7 +1332,7 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
     applyTimeAlignedUpdate(msg->header.stamp, [&]() {
       updateGnssPosition(z_pos, R_pos);
       if (vel_usable) updateGnssVelocity(z_vel, R_vel);
-      if (heading_usable) updateGnssHeading(snap.doppler_heading, heading_var);
+      if (heading_usable) updateGnssHeading(doppler_heading, heading_var);
     });
     latest_gnss_.used_for_update = true;
   }

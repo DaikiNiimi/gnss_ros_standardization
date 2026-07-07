@@ -52,6 +52,20 @@ gnss_fgo:
     # Maximum rover-base age for forming DD pairs [s].
     max_age_s: 5.0
 
+    # Rover-base cycle-slip detection. Essential for continuous / fix_and_hold
+    # (an undetected slip corrupts a carried ambiguity). LLI cycle-slip bit,
+    # half-cycle-bit transition, and observed-code change (both receivers) are
+    # always on; the rest are configurable:
+    cycle_slip:
+      gf_enable: true           # SD geometry-free (dual-freq) - sensitive
+      gf_threshold_m: 0.05      # jump in (Lrov1-Lbas1)*lam1-(Lrov2-Lbas2)*lam2
+      cmc_enable: true          # SD code-minus-carrier gross error
+      cmc_threshold_m: 3.0      # >> code noise: catches big slips; drops the
+                                # corrupt carrier from this epoch's DD
+      dop_enable: true          # Doppler-phase (single-freq safeguard)
+      dop_threshold_cyc: 1.0    # |dL + D*dt - common_clock| [cycles]
+      max_gap_s: 2.0            # carrier outage [s]
+
     # UNDIFFERENCED (zenith) measurement sigmas. The double-difference noise is
     # derived from these by error propagation, so the same sigma feeds both the
     # float DD factors and the correlated AR covariance (RTKLIB ddcov).
@@ -66,12 +80,38 @@ gnss_fgo:
       huber_k: 1.345
 
     ambiguity:
+      # How carrier ambiguities are treated over time (RTKLIB armode):
+      #   instantaneous - fresh ambiguities every epoch (epochs independent).
+      #     Conservative default; the FLOAT position is essentially
+      #     pseudorange-DD quality (the per-epoch ambiguity absorbs the carrier).
+      #   continuous - one SD ambiguity per (sat,band) carried across epochs
+      #     (re-keyed only on cycle slip / outage). Carrier phase then accumulates,
+      #     so the FLOAT reaches decimetre/cm and AR fixes far more reliably.
+      #   fix_and_hold - continuous, plus accepted integer DDs are injected as
+      #     tight gauge-free RELATIVE constraints (BetweenFactor on N_ref-N_tar,
+      #     not an absolute per-ambiguity prior) so a fix stays cm until the next
+      #     slip (highest accuracy; a wrong fix corrupts the graph until
+      #     re-keyed, gated by the ratio test).
+      mode: "instantaneous"        # instantaneous | continuous | fix_and_hold
       # Loose prior on every (fresh, per-epoch) ambiguity. The GTSAM DD carrier
       # factor uses (N_ref, N_tar) keys, so each (system,band) group keeps a
       # 1-D gauge freedom that this prior fixes.
       prior_sigma_cycles: 100.0    # target ambiguities (loose)
-      # Per-group reference ambiguity prior: tight, fixes the DD gauge.
+      # instantaneous only: per-group reference ambiguity prior, tight, fixes the
+      # DD gauge. NOT used in continuous / fix_and_hold (a persistent reference
+      # whose satellite changes would bias the DD; the gauge is fixed softly by
+      # init_sigma_cycles on every ambiguity instead).
       ref_prior_sigma_cycles: 0.001
+      # continuous / fix_and_hold: loose prior on a carried ambiguity at its first
+      # appearance / after a re-key (the reference's sig_n0).
+      init_sigma_cycles: 20.0
+      # fix_and_hold: standard deviation [cycle] of the held integer DD
+      # constraint (N_ref - N_tar = fixed integer). RTKLIB's varholdamb is a
+      # VARIANCE (0.001 cycle^2 -> std ~0.032 cycle); this is that std.
+      hold_sigma_cycles: 0.03
+      # continuous / fix_and_hold: re-key an ambiguity not seen within this gap
+      # (its carrier can no longer be assumed continuous) [s].
+      max_outage_s: 5.0
 
     ambiguity_resolution:
       enable: true

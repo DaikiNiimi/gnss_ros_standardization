@@ -9,28 +9,51 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <map>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
-#include <gtsam/inference/Ordering.h>
 #include <gtsam/inference/Symbol.h>
 #include <gtsam/linear/NoiseModel.h>
 #include <gtsam/navigation/CarrierPhaseFactor.h>
 #include <gtsam/navigation/PseudorangeFactor.h>
-#include <gtsam/nonlinear/Marginals.h>
+#include <gtsam/nonlinear/ISAM2.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/PriorFactor.h>
 #include <gtsam/nonlinear/Values.h>
+#include <gtsam/slam/BetweenFactor.h>
 
 #include "gnss_ros_standardization/gnss_preprocessor.hpp"
 
 namespace gnss_fgo {
 
+// How carrier-phase ambiguities are treated over time (mirrors RTKLIB armode).
+// All three modes use the same single-epoch analytical AR (resolveAmbiguitiesDd:
+// RTKLIB-style correlated DD covariance + LAMBDA + ratio test + FDE); what
+// differs is whether the ambiguity KEYS (and thus the carrier phase they
+// absorb) persist across epochs.
+//   Instantaneous - fresh ambiguities every epoch (the epochs are independent).
+//     Conservative default; float position is essentially pseudorange-DD
+//     quality.
+//   Continuous - one SD ambiguity per (sat,band) carried across epochs (re-keyed
+//     only on cycle slip / outage). Carrier phase then accumulates, so the graph
+//     float reaches decimetre/cm and AR fixes far more reliably. Fixes are
+//     published only, never fed back into the graph.
+//   FixAndHold - Continuous plus: accepted integer DDs are injected back into
+//     the graph as tight GAUGE-FREE relative constraints (a two-key
+//     BetweenFactor on N_ref-N_tar, not an absolute per-ambiguity prior), so a
+//     held fix keeps the solution at cm level until the next slip. Highest
+//     accuracy, but a wrong fix corrupts the graph until re-keyed (gated by the
+//     ratio test).
+enum class AmbMode { Instantaneous, Continuous, FixAndHold };
+
 struct AdapterConfig {
+  AmbMode mode{AmbMode::Instantaneous};
   double pr_sigma_m{0.5};    // UNDIFFERENCED (zenith) pseudorange sigma [m]
   double cp_sigma_m{0.005};  // UNDIFFERENCED (zenith) carrier phase sigma [m]
   bool elevation_weighting{true};
@@ -47,6 +70,16 @@ struct AdapterConfig {
   // Robust (Huber M-estimator) measurement noise, as in the reference MATLAB.
   bool robust{true};
   double huber_k{1.345};
+  // Continuous / FixAndHold only: loose prior on a carried ambiguity at its
+  // first appearance / after a re-key (the reference's sig_n0). The DD gauge is
+  // fixed softly by this prior on every ambiguity, so the tight per-epoch
+  // reference gauge (ref_prior_sigma_cycles) is NOT used in these modes - a
+  // persistent reference whose satellite changes over time would otherwise bias
+  // the DD.
+  double init_sigma_cycles{20.0};
+  // FixAndHold only: std dev [cycle] of the held integer DD constraint
+  // (RTKLIB varholdamb=0.001 cycle^2 -> std ~0.03 cycle).
+  double hold_sigma_cycles{0.03};
 };
 
 // One carrier DD pair added to the graph this epoch; input to LAMBDA.
@@ -137,16 +170,114 @@ inline double codeMinusCarrier(double cp_rov, double cp_base, double pr_rov,
 }
 }  // namespace detail
 
+// Carried-across-epochs ambiguity manager for the Continuous / FixAndHold modes.
+// One SD carrier ambiguity key per (sat,band), reused every epoch; re-keyed on a
+// cycle slip or an outage longer than max_outage_s. The value + a loose init
+// prior are inserted only on (re)allocation - an existing key already lives in
+// ISAM2, so it must not be re-inserted. Owned by the node (unlike the per-epoch
+// detail::EpochAmbiguities), so its keys persist across processEpoch calls.
+class PersistentAmbiguities {
+ public:
+  explicit PersistentAmbiguities(std::uint64_t& next_id) : next_id_(next_id) {}
+
+  void resetAll() {
+    entries_.clear();
+    handled_.clear();
+  }
+
+  // Call once at the start of each epoch's DD loop: the re-key decision for a
+  // (sat,band) is then made at most ONCE per epoch. The reference satellite
+  // appears in several DDs of its group (all carrying its slip flag), so without
+  // this guard a slipped reference would allocate a fresh key on every one of
+  // those DDs - breaking the "one (sat,band) = one ambiguity" invariant.
+  void beginEpoch() { handled_.clear(); }
+
+  // Drop ambiguities not seen within max_outage_s of `tow` (their carrier can no
+  // longer be assumed continuous), so they re-key with a fresh loose prior.
+  void retireStale(double tow, double max_outage_s) {
+    for (auto it = entries_.begin(); it != entries_.end();) {
+      if (tow - it->second.last_tow > max_outage_s) {
+        it = entries_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  // Force a re-key of (sat,band) on its next obtain (used when a same-generation
+  // integer mismatch flags the satellite as suspect).
+  void invalidate(int sat, int band) {
+    entries_.erase(std::make_pair(sat, band));
+  }
+
+  // Obtain the key for (sat,band). Reuse the existing key unless it is first-seen
+  // or `slip` is set; on (re)allocation, insert the value + a loose init prior.
+  // The re-key decision is taken only on the FIRST call for this (sat,band) this
+  // epoch (see beginEpoch); later calls return the same key regardless of slip.
+  gtsam::Key obtain(int sat, int band, double n0, bool slip, double tow,
+                    double init_sigma, gtsam::NonlinearFactorGraph& graph,
+                    gtsam::Values& values) {
+    const auto id = std::make_pair(sat, band);
+    if (handled_.count(id)) return entries_[id].key;
+    auto it = entries_.find(id);
+    gtsam::Key key;
+    if (it != entries_.end() && !slip) {
+      it->second.last_tow = tow;
+      key = it->second.key;
+    } else {
+      key = gtsam::symbol_shorthand::N(next_id_++);
+      entries_[id] = Entry{key, tow};
+      values.insert(key, n0);
+      graph.add(gtsam::PriorFactor<double>(
+          key, n0, gtsam::noiseModel::Isotropic::Sigma(1, init_sigma)));
+    }
+    handled_.insert(id);
+    return key;
+  }
+
+  // Current key for (sat,band), if one is live this session.
+  bool tryKey(int sat, int band, gtsam::Key& out) const {
+    const auto it = entries_.find(std::make_pair(sat, band));
+    if (it == entries_.end()) return false;
+    out = it->second.key;
+    return true;
+  }
+
+ private:
+  struct Entry {
+    gtsam::Key key{0};
+    double last_tow{0.0};
+  };
+  std::uint64_t& next_id_;
+  std::map<std::pair<int, int>, Entry> entries_;
+  std::set<std::pair<int, int>> handled_;  // (sat,band) decided this epoch
+};
+
 // Map every DD pair of one preprocessed epoch onto GTSAM factors keyed on a
 // Point3 rover ECEF position. Ambiguities are fresh this epoch (allocated from
 // next_amb_id). Returns the carrier pairs (for ambiguity resolution). This is
 // the entire tight-coupling step.
+// When `persistent` is non-null (Continuous / FixAndHold), ambiguity keys are
+// carried across epochs by that manager (re-keyed on d.slip_*); otherwise a
+// fresh per-epoch detail::EpochAmbiguities is used (Instantaneous).
 inline std::vector<DdAmbiguityPair> addDdFactors(
     const gnss_utils::PreprocessedEpoch& ep, gtsam::Key position_key,
     std::uint64_t& next_amb_id, const AdapterConfig& cfg,
-    gtsam::NonlinearFactorGraph& graph, gtsam::Values& values) {
+    gtsam::NonlinearFactorGraph& graph, gtsam::Values& values,
+    PersistentAmbiguities* persistent = nullptr) {
   std::vector<DdAmbiguityPair> pairs;
-  detail::EpochAmbiguities amb(cfg, next_amb_id, graph, values);
+  detail::EpochAmbiguities local(cfg, next_amb_id, graph, values);
+  if (persistent) persistent->beginEpoch();
+  auto obtain = [&](int sat, int band, double n0, bool is_ref,
+                    bool slip) -> gtsam::Key {
+    if (persistent) {
+      // Continuous GPST seconds (week rollover safe) for the outage timer.
+      return persistent->obtain(sat, band, n0, slip,
+                                ep.week * 604800.0 + ep.tow,
+                                cfg.init_sigma_cycles, graph, values);
+    }
+    return local.obtain(sat, band, n0, is_ref);
+  };
   for (const auto& d : ep.dd) {
     if (d.has_pr) {
       graph.add(gtsam::DoubleDifferencePseudorangeFactor(
@@ -158,16 +289,16 @@ inline std::vector<DdAmbiguityPair> addDdFactors(
           ddNoise(cfg.pr_sigma_m, d.el_ref, d.el_tar, cfg)));
     }
     if (d.has_cp) {
-      const gtsam::Key k_ref = amb.obtain(
+      const gtsam::Key k_ref = obtain(
           d.sat_ref, d.band,
           detail::codeMinusCarrier(d.cp_rov_ref, d.cp_base_ref, d.pr_rov_ref,
                                    d.pr_base_ref, d.lam),
-          true);
-      const gtsam::Key k_tar = amb.obtain(
+          true, d.slip_ref);
+      const gtsam::Key k_tar = obtain(
           d.sat_tar, d.band,
           detail::codeMinusCarrier(d.cp_rov_tar, d.cp_base_tar, d.pr_rov_tar,
                                    d.pr_base_tar, d.lam),
-          false);
+          false, d.slip_tar);
       graph.add(gtsam::DoubleDifferenceCarrierPhaseFactor(
           position_key, k_ref, k_tar,
           d.cp_rov_ref, d.cp_base_ref, d.cp_rov_tar, d.cp_base_tar,
@@ -190,9 +321,21 @@ inline std::vector<DdAmbiguityPair> addDdFactorsArm(
     const gnss_utils::PreprocessedEpoch& ep, gtsam::Key pose_key,
     std::uint64_t& next_amb_id, const gtsam::Point3& lever_arm,
     const gtsam::Pose3& ecef_T_nav, const AdapterConfig& cfg,
-    gtsam::NonlinearFactorGraph& graph, gtsam::Values& values) {
+    gtsam::NonlinearFactorGraph& graph, gtsam::Values& values,
+    PersistentAmbiguities* persistent = nullptr) {
   std::vector<DdAmbiguityPair> pairs;
-  detail::EpochAmbiguities amb(cfg, next_amb_id, graph, values);
+  detail::EpochAmbiguities local(cfg, next_amb_id, graph, values);
+  if (persistent) persistent->beginEpoch();
+  auto obtain = [&](int sat, int band, double n0, bool is_ref,
+                    bool slip) -> gtsam::Key {
+    if (persistent) {
+      // Continuous GPST seconds (week rollover safe) for the outage timer.
+      return persistent->obtain(sat, band, n0, slip,
+                                ep.week * 604800.0 + ep.tow,
+                                cfg.init_sigma_cycles, graph, values);
+    }
+    return local.obtain(sat, band, n0, is_ref);
+  };
   for (const auto& d : ep.dd) {
     if (d.has_pr) {
       graph.add(gtsam::DoubleDifferencePseudorangeFactorArm(
@@ -204,16 +347,16 @@ inline std::vector<DdAmbiguityPair> addDdFactorsArm(
           ddNoise(cfg.pr_sigma_m, d.el_ref, d.el_tar, cfg)));
     }
     if (d.has_cp) {
-      const gtsam::Key k_ref = amb.obtain(
+      const gtsam::Key k_ref = obtain(
           d.sat_ref, d.band,
           detail::codeMinusCarrier(d.cp_rov_ref, d.cp_base_ref, d.pr_rov_ref,
                                    d.pr_base_ref, d.lam),
-          true);
-      const gtsam::Key k_tar = amb.obtain(
+          true, d.slip_ref);
+      const gtsam::Key k_tar = obtain(
           d.sat_tar, d.band,
           detail::codeMinusCarrier(d.cp_rov_tar, d.cp_base_tar, d.pr_rov_tar,
                                    d.pr_base_tar, d.lam),
-          false);
+          false, d.slip_tar);
       graph.add(gtsam::DoubleDifferenceCarrierPhaseFactorArm(
           pose_key, k_ref, k_tar,
           d.cp_rov_ref, d.cp_base_ref, d.cp_rov_tar, d.cp_base_tar,
@@ -240,12 +383,14 @@ struct ArResult {
   Eigen::MatrixXd state_cov;
   Eigen::VectorXd a_fix;    // fixed DD ambiguities [cycles], in `pairs` order
                             // (NaN for pairs dropped by partial AR)
+  // ep.dd index of each a_fix / a_float entry (resolveAmbiguitiesDd only; maps a
+  // fixed DD integer back to its (sat_ref,sat_tar,band) for fix-and-hold).
+  std::vector<int> cp_dd_index;
   Eigen::VectorXd a_float;  // float DD ambiguities [cycles] (always populated)
   Eigen::MatrixXd Qa;       // float DD ambiguity covariance [cycles^2]
   std::vector<int> fixed_idx;  // indices into the DD list that were fixed
-  // Conditioned (fixed) rover ECEF position [m]. Set by resolveAmbiguitiesDd
-  // (which solves its own float internally); the graph-based resolveAmbiguities
-  // leaves it zero and the caller applies state_correction instead.
+  // Conditioned (fixed) rover ECEF position [m], set by resolveAmbiguitiesDd
+  // (which solves its own float internally from x_pred + state_correction).
   Eigen::Vector3d fixed_pos{Eigen::Vector3d::Zero()};
 };
 
@@ -321,113 +466,6 @@ inline void lambdaFix(const Eigen::VectorXd& a, const Eigen::MatrixXd& Qa,
 }
 }  // namespace detail
 
-// Integer ambiguity resolution: form the DD-ambiguity vector a = D n and its
-// covariance from the joint (state, ambiguity) marginal, search the integer
-// candidates with RTKLIB's lambda(), ratio-test them, and return the
-// conditioning update  x_fix = x - Qxa Qa^-1 (a - a_fix).
-//
-// local_subgraph: when true (the GNSS-only example), `factors` is this epoch's
-// SELF-CONTAINED subgraph over {state_key} U akeys, and the joint covariance is
-// the dense inverse of its information matrix. This is exact for the per-epoch
-// independent structure and numerically robust (gtsam::Marginals' incremental
-// elimination returns NaN on the wide dynamic range here - tight reference-
-// ambiguity gauge prior vs loose position prior). When false (the GNSS/IMU
-// example, where the state is linked to past epochs through the IMU chain),
-// `factors` is the full graph and the joint marginal is taken with
-// gtsam::Marginals.
-//
-// AR satellite selection: pairs below ar_el_mask_rad are excluded, then one
-// LAMBDA + ratio test (no data-adaptive subset search). NOTE: this graph-based
-// path uses the GTSAM factors' independent per-pair Qa, so its ratio is only
-// approximately calibrated; the GNSS-only node uses resolveAmbiguitiesDd (the
-// correctly-correlated covariance) instead. Kept for the GNSS/IMU example.
-inline ArResult resolveAmbiguities(const std::vector<DdAmbiguityPair>& pairs,
-                                   gtsam::Key state_key,
-                                   const gtsam::NonlinearFactorGraph& factors,
-                                   const gtsam::Values& estimate,
-                                   double ratio_threshold,
-                                   bool local_subgraph = true,
-                                   double ar_el_mask_rad = 0.0,
-                                   int min_fix = 4) {
-  ArResult res;
-  if (pairs.empty()) return res;
-
-  // Unique ambiguity keys involved.
-  std::vector<gtsam::Key> akeys;
-  std::map<gtsam::Key, int> kidx;
-  for (const auto& p : pairs) {
-    for (const gtsam::Key k : {p.ref, p.tar}) {
-      if (kidx.emplace(k, static_cast<int>(akeys.size())).second) {
-        akeys.push_back(k);
-      }
-    }
-  }
-  const int m = static_cast<int>(akeys.size());
-  const int n_dd = static_cast<int>(pairs.size());
-
-  Eigen::MatrixXd Qxx, Qxn, Qnn;
-  Eigen::VectorXd n_hat(m);
-  for (int i = 0; i < m; ++i) n_hat(i) = estimate.at<double>(akeys[i]);
-
-  try {
-    if (local_subgraph) {
-      gtsam::Ordering ordering;
-      ordering.push_back(state_key);
-      for (const gtsam::Key k : akeys) ordering.push_back(k);
-      const Eigen::MatrixXd H =
-          factors.linearize(estimate)->hessian(ordering).first;
-      const int total = static_cast<int>(H.rows());
-      const int sdim = total - m;
-      if (sdim <= 0 || !H.allFinite()) return res;
-      // Require a positive-definite information matrix (signed pivots): a
-      // negative pivot is an indefinite/degenerate epoch, not a valid marginal.
-      const Eigen::LDLT<Eigen::MatrixXd> h_ldlt(H);
-      if (h_ldlt.info() != Eigen::Success || h_ldlt.vectorD().minCoeff() <= 0.0)
-        return res;
-      const Eigen::MatrixXd Cov =
-          h_ldlt.solve(Eigen::MatrixXd::Identity(total, total));
-      if (!Cov.allFinite()) return res;
-      Qxx = Cov.topLeftCorner(sdim, sdim);
-      Qxn = Cov.block(0, sdim, sdim, m);
-      Qnn = Cov.block(sdim, sdim, m, m);
-    } else {
-      gtsam::KeyVector keys;
-      keys.push_back(state_key);
-      keys.insert(keys.end(), akeys.begin(), akeys.end());
-      const gtsam::Marginals marginals(factors, estimate);
-      const gtsam::JointMarginal jm = marginals.jointMarginalCovariance(keys);
-      Qxx = jm(state_key, state_key);
-      Qxn.resize(Qxx.rows(), m);
-      Qnn.resize(m, m);
-      for (int i = 0; i < m; ++i) {
-        Qxn.col(i) = jm(state_key, akeys[i]);
-        for (int j = 0; j < m; ++j) Qnn(i, j) = jm(akeys[i], akeys[j])(0, 0);
-      }
-    }
-    if (!Qxx.allFinite() || !Qxn.allFinite() || !Qnn.allFinite()) return res;
-  } catch (const std::exception&) {
-    return res;
-  }
-
-  // DD differencing matrix: a = D n (reference minus target, cycles).
-  Eigen::MatrixXd D = Eigen::MatrixXd::Zero(n_dd, m);
-  for (int i = 0; i < n_dd; ++i) {
-    D(i, kidx[pairs[i].ref]) = 1.0;
-    D(i, kidx[pairs[i].tar]) = -1.0;
-  }
-  const Eigen::VectorXd a = D * n_hat;
-  res.a_float = a;
-  const Eigen::MatrixXd Qa = D * Qnn * D.transpose();
-  res.Qa = Qa;
-  const Eigen::MatrixXd Qxa = Qxn * D.transpose();
-
-  std::vector<double> el(n_dd);
-  for (int i = 0; i < n_dd; ++i) el[i] = pairs[i].el;
-  detail::lambdaFix(a, Qa, Qxa, Qxx, el, ratio_threshold, ar_el_mask_rad,
-                    min_fix, res);
-  return res;
-}
-
 // Analytical RTK ambiguity resolution with the correctly-correlated DD
 // covariance. The GTSAM DD factors use independent per-pair noise, which gives a
 // wrongly-shaped float ambiguity covariance and an uncalibrated ratio test; here
@@ -449,10 +487,13 @@ inline ArResult resolveAmbiguitiesDd(const gnss_utils::PreprocessedEpoch& ep,
                                      bool fde_enable = false,
                                      double fde_threshold_m = 0.05,
                                      int fde_max_exclude = 2) {
-  // A carrier DD is unusable for integer AR if either satellite has a cycle slip
-  // or half-cycle ambiguity (LLI), the latter making the integer a half-integer.
+  // A carrier DD is unusable for INTEGER AR only if either satellite has a
+  // half-cycle ambiguity (a half-integer). A continuity slip does NOT disqualify
+  // it: the carrier is still a valid measurement this epoch (the first sample of
+  // a new arc, already re-keyed for the carried modes), and excluding it would
+  // only starve the AR and admit false fixes.
   auto slipped = [](const gnss_utils::DdSignal& d) {
-    return d.slip_ref || d.slip_tar;
+    return d.half_cycle_ref || d.half_cycle_tar;
   };
   // Sagnac-corrected geometric range and rcv->sat unit vector (matches
   // gtsam::gnss::geodist so the residual is consistent with the float factors).
@@ -463,10 +504,12 @@ inline ArResult resolveAmbiguitiesDd(const gnss_utils::PreprocessedEpoch& ep,
     if (e) *e = (r > 0.0) ? Eigen::Vector3d(d / r) : Eigen::Vector3d::Zero();
     return r + OMGE * (sat.x() * rcv.y() - sat.y() * rcv.x()) / CLIGHT;
   };
-  // Single-difference (rover+base) measurement variance with RTKLIB-style
-  // elevation weighting (variance proportional to 1/sin^2(el)).
-  auto sd_var = [](double sigma, double el_rad) {
-    const double s = std::max(std::sin(el_rad), 0.1);
+  // Single-difference (rover+base) measurement variance. Uses the same
+  // elevation weighting toggle as the FLOAT factors' ddNoise (RTKLIB-style
+  // 1/sin^2(el)) so the two share one stochastic model in either setting.
+  auto sd_var = [&cfg](double sigma, double el_rad) {
+    const double s =
+        cfg.elevation_weighting ? std::max(std::sin(el_rad), 0.1) : 1.0;
     return 2.0 * (sigma / s) * (sigma / s);
   };
   // DD carrier-phase residual [m] of one DD at rover position x with integer N.
@@ -512,13 +555,18 @@ inline ArResult resolveAmbiguitiesDd(const gnss_utils::PreprocessedEpoch& ep,
     if (p_ldlt.info() != Eigen::Success) return out;
     Info.topLeftCorner(3, 3) = p_ldlt.solve(Eigen::Matrix3d::Identity());
 
-    // Group DDs by (sys,band): the shared reference satellite makes the DD
-    // errors correlated within a group (off-diagonal Var(SD_ref)).
-    std::map<std::pair<int, int>, std::vector<int>> groups;
+    // Group DDs by their shared reference OBSERVATION (satellite, band, code):
+    // the shared reference makes the DD errors correlated within a group
+    // (off-diagonal Var(SD_ref)). Keying on (sys,band) alone would wrongly
+    // merge groups that share a band but not a reference satellite/code (the
+    // preprocessor forms separate DD groups per (sys,band,code) so different
+    // codes on one band can have different reference satellites).
+    std::map<std::tuple<int, int, int>, std::vector<int>> groups;
     for (int i = 0; i < static_cast<int>(ep.dd.size()); ++i) {
       if (excluded.count(i)) continue;
       const auto& d = ep.dd[i];
-      if (d.has_cp || d.has_pr) groups[{d.sys, d.band}].push_back(i);
+      if (d.has_cp || d.has_pr)
+        groups[{d.sat_ref, d.band, d.code_ref}].push_back(i);
     }
     for (const auto& kv : groups) {
       for (int phase = 0; phase < 2; ++phase) {  // 0: carrier, 1: code
@@ -584,6 +632,7 @@ inline ArResult resolveAmbiguitiesDd(const gnss_utils::PreprocessedEpoch& ep,
     const Eigen::MatrixXd Qxa = Cov.block(0, 3, 3, n_cp);
     res.a_float = a;
     res.Qa = Qa;
+    res.cp_dd_index = cp_idx;
 
     std::vector<double> el(n_cp);
     for (int i = 0; i < n_cp; ++i) el[i] = ep.dd[cp_idx[i]].el_tar;
@@ -627,6 +676,161 @@ inline ArResult resolveAmbiguitiesDd(const gnss_utils::PreprocessedEpoch& ep,
     excluded.insert(at.worst_dd);  // drop the outlier and re-fix
   }
   return res;
+}
+
+// FixAndHold: hold each analytically-fixed DD as a TWO-variable constraint
+// N_min - N_max = integer on the carried ambiguity keys (a BetweenFactor,
+// gauge-free and independent of the absolute ambiguity level). Satellites of a
+// pair are normalized to (min,max) so (A,B) and (B,A) map to one hold, and the
+// GTSAM key order and integer sign are normalized together (BetweenFactor<double>
+// measures N_max - N_min, so the measurement is -integer).
+
+// One accepted fix to hold this epoch (normalized).
+struct HoldSpec {
+  int band{0};
+  int sat_min{0}, sat_max{0};
+  gtsam::Key k_min{0}, k_max{0};
+  long integer{0};  // N_min - N_max
+};
+
+// One currently-held DD (its single BetweenFactor's ISAM2 index).
+struct HeldDd {
+  gtsam::Key k_min{0}, k_max{0};
+  long integer{0};
+  std::size_t factor_index{0};
+};
+
+// key: (sat_min, sat_max, band)
+using HeldDdMap = std::map<std::tuple<int, int, int>, HeldDd>;
+
+// Outcome of applyHolds. On Failure the ISAM2 update threw: GTSAM gives no strong
+// rollback guarantee, so its internal graph may be partially modified and no
+// longer matches `held` - the caller MUST reset the graph rather than continue.
+enum class HoldResult { NoChange, Success, Failure };
+
+// Turn the analytical AR result into normalized hold specs on the current keys.
+inline std::vector<HoldSpec> collectHoldSpecs(
+    const PersistentAmbiguities& mgr, const gnss_utils::PreprocessedEpoch& ep,
+    const ArResult& res) {
+  std::vector<HoldSpec> out;
+  if (!res.fixed) return out;
+  for (int i = 0; i < static_cast<int>(res.cp_dd_index.size()); ++i) {
+    if (i >= static_cast<int>(res.a_fix.size()) || !std::isfinite(res.a_fix(i)))
+      continue;
+    const int di = res.cp_dd_index[i];
+    if (di < 0 || di >= static_cast<int>(ep.dd.size())) continue;
+    const gnss_utils::DdSignal& d = ep.dd[di];
+    const long n = std::lround(res.a_fix(i));  // N_ref - N_tar
+    HoldSpec s;
+    s.band = d.band;
+    if (d.sat_ref < d.sat_tar) {
+      s.sat_min = d.sat_ref;
+      s.sat_max = d.sat_tar;
+      s.integer = n;  // N_min - N_max = N_ref - N_tar
+    } else {
+      s.sat_min = d.sat_tar;
+      s.sat_max = d.sat_ref;
+      s.integer = -n;
+    }
+    if (!mgr.tryKey(s.sat_min, s.band, s.k_min) ||
+        !mgr.tryKey(s.sat_max, s.band, s.k_max))
+      continue;
+    out.push_back(s);
+  }
+  return out;
+}
+
+// Incrementally reconcile the held set: remove holds whose satellite was
+// re-keyed (slip/outage), add a factor for each newly-fixed pair ONCE (survivors
+// keep their existing factor - never re-added, so constraints do not stack), and
+// reject a same-generation integer mismatch (an anomaly: drop the hold and
+// re-key both satellites). All map/index state is committed only after a
+// successful ISAM2 update, so a failed update leaves `held` untouched. Runs
+// every epoch (even with no new fix) so stale holds are always cleaned up.
+inline HoldResult applyHolds(gtsam::ISAM2& isam, PersistentAmbiguities& mgr,
+                             HeldDdMap& held, const std::vector<HoldSpec>& specs,
+                             double hold_sigma) {
+  using Id = std::tuple<int, int, int>;
+  const auto tight = gtsam::noiseModel::Isotropic::Sigma(1, hold_sigma);
+  gtsam::FactorIndices remove;
+  std::set<Id> erase_ids;
+  std::set<std::pair<int, int>> suspect;  // (sat,band) flagged by a mismatch
+
+  // Step 1: drop holds whose current keys no longer match (re-keyed / gone).
+  for (const auto& kv : held) {
+    const int smin = std::get<0>(kv.first), smax = std::get<1>(kv.first),
+              band = std::get<2>(kv.first);
+    gtsam::Key cmin, cmax;
+    if (!mgr.tryKey(smin, band, cmin) || !mgr.tryKey(smax, band, cmax) ||
+        cmin != kv.second.k_min || cmax != kv.second.k_max) {
+      remove.push_back(kv.second.factor_index);
+      erase_ids.insert(kv.first);
+    }
+  }
+
+  // Step 2: classify fixes into survivors (keep) / new-adds / mismatches. A
+  // same-generation integer mismatch is an anomaly (false fix / undetected slip):
+  // flag BOTH satellites suspect; do not adopt the new integer.
+  std::vector<HoldSpec> to_add;
+  for (const auto& s : specs) {
+    const Id id{s.sat_min, s.sat_max, s.band};
+    const auto it = held.find(id);
+    if (it != held.end() && erase_ids.count(id) == 0) {
+      if (it->second.integer == s.integer) continue;  // survivor: keep as-is
+      suspect.insert({s.sat_min, s.band});
+      suspect.insert({s.sat_max, s.band});
+      continue;
+    }
+    to_add.push_back(s);
+  }
+
+  // Step 3: on a mismatch, remove EVERY held DD touching a suspect satellite in
+  // this same update (so no suspect constraint survives to the next epoch), and
+  // schedule those satellites for re-key (committed only after success).
+  auto touches = [&](int smin, int smax, int band) {
+    return suspect.count({smin, band}) || suspect.count({smax, band});
+  };
+  if (!suspect.empty()) {
+    for (const auto& kv : held) {
+      if (erase_ids.count(kv.first)) continue;
+      if (touches(std::get<0>(kv.first), std::get<1>(kv.first),
+                  std::get<2>(kv.first))) {
+        remove.push_back(kv.second.factor_index);
+        erase_ids.insert(kv.first);
+      }
+    }
+  }
+
+  // Step 4: build the add graph, skipping any pair touching a suspect satellite.
+  gtsam::NonlinearFactorGraph add_graph;
+  std::vector<std::pair<Id, HeldDd>> pending_add;
+  for (const auto& s : to_add) {
+    if (touches(s.sat_min, s.sat_max, s.band)) continue;
+    add_graph.add(gtsam::BetweenFactor<double>(
+        s.k_min, s.k_max, static_cast<double>(-s.integer), tight));
+    pending_add.push_back(
+        {Id{s.sat_min, s.sat_max, s.band}, HeldDd{s.k_min, s.k_max, s.integer, 0}});
+  }
+
+  if (add_graph.empty() && remove.empty()) return HoldResult::NoChange;
+
+  gtsam::ISAM2Result result;
+  try {
+    result = isam.update(add_graph, gtsam::Values(), remove);
+  } catch (const std::exception&) {
+    // held map and manager are untouched, but ISAM2 itself may be inconsistent
+    // -> signal the caller to reset the graph.
+    return HoldResult::Failure;
+  }
+  // Commit held map, factor indices, and manager re-keys only after success.
+  for (const auto& id : erase_ids) held.erase(id);
+  const gtsam::FactorIndices& new_idx = result.newFactorsIndices;
+  for (std::size_t j = 0; j < pending_add.size() && j < new_idx.size(); ++j) {
+    pending_add[j].second.factor_index = new_idx[j];
+    held[pending_add[j].first] = pending_add[j].second;
+  }
+  for (const auto& sb : suspect) mgr.invalidate(sb.first, sb.second);
+  return HoldResult::Success;
 }
 
 }  // namespace gnss_fgo

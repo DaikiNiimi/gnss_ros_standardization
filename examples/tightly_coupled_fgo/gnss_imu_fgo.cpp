@@ -30,7 +30,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <deque>
 #include <limits>
 #include <memory>
@@ -80,6 +79,8 @@ class GnssImuFgoNode : public rclcpp::Node {
 
     preprocessor_ = std::make_unique<gnss_utils::GnssPreprocessor>(makePreprocessorConfig());
     adapter_cfg_ = makeAdapterConfig();
+    amb_mgr_ = std::make_unique<gnss_fgo::PersistentAmbiguities>(next_amb_id_);
+    amb_max_outage_ = get_parameter("ambiguity.max_outage_s").as_double();
 
     gtsam::ISAM2Params isam_params;
     isam_params.relinearizeThreshold =
@@ -111,9 +112,14 @@ class GnssImuFgoNode : public rclcpp::Node {
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(
         get_parameter("topics.solution").as_string() + "_odom", 10);
 
+    const char* mode_str =
+        adapter_cfg_.mode == gnss_fgo::AmbMode::FixAndHold  ? "fix_and_hold"
+        : adapter_cfg_.mode == gnss_fgo::AmbMode::Continuous ? "continuous"
+                                                             : "instantaneous";
     RCLCPP_INFO(get_logger(),
-                "Tightly-coupled GNSS/IMU FGO started (lever arm %.3f %.3f %.3f).",
-                lever_arm_.x(), lever_arm_.y(), lever_arm_.z());
+                "Tightly-coupled GNSS/IMU FGO started (ambiguity mode %s, lever "
+                "arm %.3f %.3f %.3f).",
+                mode_str, lever_arm_.x(), lever_arm_.y(), lever_arm_.z());
   }
 
  private:
@@ -166,12 +172,31 @@ class GnssImuFgoNode : public rclcpp::Node {
 
     declare_parameter("max_age_s", 1.0);
 
+    // Rover-base cycle-slip detection (see gnss_fgo); important for the
+    // continuous / fix_and_hold ambiguity modes.
+    declare_parameter("cycle_slip.gf_enable", true);
+    declare_parameter("cycle_slip.gf_threshold_m", 0.05);
+    declare_parameter("cycle_slip.cmc_enable", true);
+    declare_parameter("cycle_slip.cmc_threshold_m", 3.0);
+    declare_parameter("cycle_slip.dop_enable", true);
+    declare_parameter("cycle_slip.dop_threshold_cyc", 1.0);
+    declare_parameter("cycle_slip.max_gap_s", 2.0);
+
     declare_parameter("noise.pr_sigma_m", 1.0);
     declare_parameter("noise.cp_sigma_m", 0.01);
     declare_parameter("noise.elevation_weighting", true);
 
     declare_parameter("ambiguity.prior_sigma_cycles", 100.0);
     declare_parameter("ambiguity.ref_prior_sigma_cycles", 1.0e-3);
+
+    // Ambiguity handling over time (RTKLIB armode): "instantaneous" (default),
+    // "continuous" (carry across epochs), or "fix_and_hold".
+    declare_parameter("ambiguity.mode", std::string("instantaneous"));
+    declare_parameter("ambiguity.init_sigma_cycles", 20.0);
+    // std dev [cycle] of the held integer DD constraint (RTKLIB
+    // varholdamb=0.001 cycle^2 -> std ~0.03 cycle).
+    declare_parameter("ambiguity.hold_sigma_cycles", 0.03);
+    declare_parameter("ambiguity.max_outage_s", 5.0);
 
     declare_parameter("robust.enable", true);
     declare_parameter("robust.huber_k", 1.345);
@@ -199,6 +224,8 @@ class GnssImuFgoNode : public rclcpp::Node {
     declare_parameter("imu.sigma_gyr", 0.01);       // [rad/s/sqrt(Hz)]
     declare_parameter("imu.sigma_acc_bias", 1.0e-4);  // [m/s^2/sqrt(s)]
     declare_parameter("imu.sigma_gyr_bias", 1.0e-5);  // [rad/s/sqrt(s)]
+    // One-epoch process-noise rate inflating the pre-GNSS AR position prior.
+    declare_parameter("imu.pred_sigma_mps", 1.0);
 
     declare_parameter("init.imu_duration", 1.0);    // [s] static init window
     declare_parameter("init.pos_std", 10.0);        // [m]
@@ -224,6 +251,7 @@ class GnssImuFgoNode : public rclcpp::Node {
         get_parameter("ambiguity_resolution.fde_max_exclude").as_int());
     motion_vel_sigma_ = get_parameter("motion.vel_sigma_mps").as_double();
     init_imu_duration_ = get_parameter("init.imu_duration").as_double();
+    imu_pred_sigma_mps_ = get_parameter("imu.pred_sigma_mps").as_double();
     cacheFixedOriginParam();
   }
 
@@ -249,8 +277,7 @@ class GnssImuFgoNode : public rclcpp::Node {
     // takes precedence over the flat snr_mask_dbhz; same model as gnss_fgo.
     cfg.snr_mask = snrmask_t{};
     if (get_parameter("masks.snrmask.enable").as_bool()) {
-      cfg.snr_mask.ena[0] = 1;  // rover
-      cfg.snr_mask.ena[1] = 1;  // base (DD uses the base obs too)
+      cfg.snr_mask.ena[0] = 1;  // rover only (the base stream has no SNR mask)
       const auto l1 = get_parameter("masks.snrmask.l1").as_double_array();
       const auto l2 = get_parameter("masks.snrmask.l2").as_double_array();
       const auto l5 = get_parameter("masks.snrmask.l5").as_double_array();
@@ -273,6 +300,14 @@ class GnssImuFgoNode : public rclcpp::Node {
     if (get_parameter("frequencies.enable_l5").as_bool()) cfg.bands.push_back(2);
     if (cfg.bands.empty()) cfg.bands.push_back(0);
     cfg.max_age_s = get_parameter("max_age_s").as_double();
+    cfg.detect_slip_gf = get_parameter("cycle_slip.gf_enable").as_bool();
+    cfg.slip_gf_threshold_m = get_parameter("cycle_slip.gf_threshold_m").as_double();
+    cfg.detect_slip_cmc = get_parameter("cycle_slip.cmc_enable").as_bool();
+    cfg.slip_cmc_threshold_m = get_parameter("cycle_slip.cmc_threshold_m").as_double();
+    cfg.detect_slip_dop = get_parameter("cycle_slip.dop_enable").as_bool();
+    cfg.slip_dop_threshold_cyc =
+        get_parameter("cycle_slip.dop_threshold_cyc").as_double();
+    cfg.slip_max_gap_s = get_parameter("cycle_slip.max_gap_s").as_double();
 
     const std::string postype = get_parameter("base_position.postype").as_string();
     const auto pos = get_parameter("base_position.pos").as_double_array();
@@ -303,6 +338,16 @@ class GnssImuFgoNode : public rclcpp::Node {
         get_parameter("ambiguity.ref_prior_sigma_cycles").as_double();
     cfg.robust = get_parameter("robust.enable").as_bool();
     cfg.huber_k = get_parameter("robust.huber_k").as_double();
+    const std::string mode = get_parameter("ambiguity.mode").as_string();
+    if (mode == "continuous") {
+      cfg.mode = gnss_fgo::AmbMode::Continuous;
+    } else if (mode == "fix_and_hold") {
+      cfg.mode = gnss_fgo::AmbMode::FixAndHold;
+    } else {
+      cfg.mode = gnss_fgo::AmbMode::Instantaneous;
+    }
+    cfg.init_sigma_cycles = get_parameter("ambiguity.init_sigma_cycles").as_double();
+    cfg.hold_sigma_cycles = get_parameter("ambiguity.hold_sigma_cycles").as_double();
     return cfg;
   }
 
@@ -404,44 +449,98 @@ class GnssImuFgoNode : public rclcpp::Node {
     const gtsam::Key vk = V(epoch_index_);
     const gtsam::Key bk = B(epoch_index_);
 
-    gtsam::NonlinearFactorGraph graph;
-    gtsam::Values values;
+    const Eigen::Matrix3d R_e_n = ecef_T_nav_.rotation().matrix();
+    // Antenna ECEF position + 3x3 covariance from a body pose and its 6x6 tangent
+    // covariance, using the FULL antenna-vs-pose Jacobian (exact for any lever
+    // arm; the translation block alone is exact only at zero lever arm).
+    auto antennaFromPose = [&](const gtsam::Pose3& p, const Eigen::MatrixXd& p_cov,
+                               Eigen::Vector3d& pos, Eigen::Matrix3d& cov) {
+      gtsam::Matrix36 H_pose;
+      const gtsam::Point3 ant_nav = p.transformFrom(lever_arm_, H_pose);
+      const gtsam::Point3 ant_ecef = ecef_T_nav_.transformFrom(ant_nav);
+      pos = Eigen::Vector3d(ant_ecef.x(), ant_ecef.y(), ant_ecef.z());
+      const Eigen::Matrix<double, 3, 6> J = R_e_n * H_pose;
+      cov = J * p_cov * J.transpose();
+    };
 
+    // Two-stage ISAM2 update. Stage 1 adds ONLY the IMU factor (or gap fallback),
+    // so the X(k) marginal is the IMU PREDICTION (pre-GNSS) - the correct AR prior,
+    // free of this epoch's DD (no double-count). GTSAM propagates the covariance,
+    // pose/velocity/bias correlations and tangent-space transforms internally
+    // (which a manual predicted covariance would get wrong).
+    gtsam::NonlinearFactorGraph imu_graph;
+    gtsam::Values imu_values;
     if (pim.deltaTij() > 0.0) {
-      graph.add(gtsam::CombinedImuFactor(X(epoch_index_ - 1), V(epoch_index_ - 1),
-                                         xk, vk, B(epoch_index_ - 1), bk, pim));
+      imu_graph.add(gtsam::CombinedImuFactor(X(epoch_index_ - 1),
+                                             V(epoch_index_ - 1), xk, vk,
+                                             B(epoch_index_ - 1), bk, pim));
     } else {
       // IMU gap: keep the chain connected with loose constant-state factors.
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
           "No IMU samples in (%.3f, %.3f] - falling back to constant-state link.",
           prev_t_ros_, t_ros);
       const double dt = std::max(t_ros - prev_t_ros_, 0.1);
-      graph.add(gtsam::BetweenFactor<gtsam::Pose3>(
+      imu_graph.add(gtsam::BetweenFactor<gtsam::Pose3>(
           X(epoch_index_ - 1), xk, gtsam::Pose3(),
           gtsam::noiseModel::Isotropic::Sigma(6, 10.0 * dt)));
-      graph.add(gtsam::BetweenFactor<gtsam::Vector3>(
+      imu_graph.add(gtsam::BetweenFactor<gtsam::Vector3>(
           V(epoch_index_ - 1), vk, gtsam::Vector3::Zero(),
           gtsam::noiseModel::Isotropic::Sigma(3, 1.0 * dt)));
-      graph.add(gtsam::BetweenFactor<gtsam::imuBias::ConstantBias>(
+      imu_graph.add(gtsam::BetweenFactor<gtsam::imuBias::ConstantBias>(
           B(epoch_index_ - 1), bk, gtsam::imuBias::ConstantBias(),
           gtsam::noiseModel::Isotropic::Sigma(6, 1e-3)));
     }
-
     const gtsam::NavState predicted =
         pim.deltaTij() > 0.0 ? pim.predict(prev_state_, prev_bias_) : prev_state_;
-    values.insert(xk, predicted.pose());
-    values.insert(vk, predicted.velocity());
-    values.insert(bk, prev_bias_);
+    imu_values.insert(xk, predicted.pose());
+    imu_values.insert(vk, predicted.velocity());
+    imu_values.insert(bk, prev_bias_);
+    try {
+      isam_->update(imu_graph, imu_values);
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(get_logger(), "IMU-stage update failed (%s) - reinitializing.",
+                   e.what());
+      initialized_ = false;
+      resetGraph();
+      return;
+    }
 
+    // Pre-GNSS AR prior: the X(k) marginal (GTSAM-propagated) -> antenna ECEF 3x3
+    // via the full lever-arm Jacobian. If the marginal is under-constrained (e.g.
+    // yaw unobservable while static), fall back to the inflated previous antenna
+    // covariance instead of reinitializing.
+    Eigen::Vector3d imu_pred_pos;
+    Eigen::Matrix3d imu_pred_cov;
+    try {
+      // Both the estimate and the marginal are guarded (the estimate query can
+      // also throw on a degenerate epoch).
+      const gtsam::Pose3 pose_pred = isam_->calculateEstimate<gtsam::Pose3>(xk);
+      const Eigen::MatrixXd cov_pred = isam_->marginalCovariance(xk);
+      antennaFromPose(pose_pred, cov_pred, imu_pred_pos, imu_pred_cov);
+    } catch (const std::exception&) {
+      // Fall back to the IMU-predicted pose (isam-independent) + inflated prev
+      // antenna covariance instead of reinitializing.
+      const gtsam::Point3 ap =
+          ecef_T_nav_.transformFrom(predicted.pose().transformFrom(lever_arm_));
+      imu_pred_pos = Eigen::Vector3d(ap.x(), ap.y(), ap.z());
+      const double dt_ep = std::clamp(t_ros - prev_t_ros_, 0.05, 2.0);
+      const double infl = imu_pred_sigma_mps_ * dt_ep;
+      imu_pred_cov = prev_ant_cov_ + Eigen::Matrix3d::Identity() * (infl * infl);
+    }
+
+    // Stage 2: add the GNSS DD factors + Doppler velocity factor (the posterior).
+    const bool carry = adapter_cfg_.mode != gnss_fgo::AmbMode::Instantaneous;
+    gnss_fgo::PersistentAmbiguities* amb_ptr = carry ? amb_mgr_.get() : nullptr;
+    // Continuous GPST seconds (week rollover safe) for the ambiguity outage timer.
+    if (carry) amb_mgr_->retireStale(ep.week * 604800.0 + ep.tow, amb_max_outage_);
+
+    gtsam::NonlinearFactorGraph gnss_graph;
+    gtsam::Values gnss_values;
     const auto pairs = gnss_fgo::addDdFactorsArm(
-        ep, xk, next_amb_id_, lever_arm_, ecef_T_nav_, adapter_cfg_, graph,
-        values);
-
-    // GNSS Doppler velocity factor on V(k): an absolute-velocity observation
-    // (the canonical pseudorange + carrier + Doppler tightly-coupled set).
-    // Low-speed Doppler degradation is handled by the robust (Huber) kernel.
+        ep, xk, next_amb_id_, lever_arm_, ecef_T_nav_, adapter_cfg_, gnss_graph,
+        gnss_values, amb_ptr);
     if (ep.rover_vel_valid) {
-      const Eigen::Matrix3d R_e_n = ecef_T_nav_.rotation().matrix();
+      // GNSS Doppler velocity factor on V(k): an absolute-velocity observation.
       const gtsam::Vector3 vel_enu = R_e_n.transpose() * ep.rover_vel_ecef;
       const double sigma =
           std::max(std::sqrt(std::max(ep.rover_vel_var, 0.0)), motion_vel_sigma_);
@@ -451,54 +550,89 @@ class GnssImuFgoNode : public rclcpp::Node {
             gtsam::noiseModel::mEstimator::Huber::Create(adapter_cfg_.huber_k),
             vnoise);
       }
-      graph.add(gtsam::PriorFactor<gtsam::Vector3>(vk, vel_enu, vnoise));
+      gnss_graph.add(gtsam::PriorFactor<gtsam::Vector3>(vk, vel_enu, vnoise));
     }
 
+    // Non-const: FixAndHold re-fetches these after injecting the held integers.
+    // The update AND the estimate/marginal queries are all guarded together, so a
+    // degenerate epoch (marginal failure) resets rather than crashing the node.
     gtsam::Values estimate;
+    gtsam::Pose3 pose;
+    gtsam::Vector3 vel;
+    Eigen::MatrixXd pose_cov;   // 6x6 tangent
+    Eigen::Matrix3d vel_cov;
     try {
-      isam_->update(graph, values);
+      isam_->update(gnss_graph, gnss_values);
       estimate = isam_->calculateEstimate();
+      pose = estimate.at<gtsam::Pose3>(xk);
+      vel = estimate.at<gtsam::Vector3>(vk);
+      pose_cov = isam_->marginalCovariance(xk);
+      vel_cov = isam_->marginalCovariance(vk);
     } catch (const std::exception& e) {
-      RCLCPP_ERROR(get_logger(), "ISAM2 update failed (%s) - reinitializing.",
+      RCLCPP_ERROR(get_logger(),
+                   "GNSS-stage update/marginal failed (%s) - reinitializing.",
                    e.what());
       initialized_ = false;
       resetGraph();
       return;
     }
 
-    const gtsam::Pose3 pose = estimate.at<gtsam::Pose3>(xk);
-    const gtsam::Vector3 vel = estimate.at<gtsam::Vector3>(vk);
-    const Eigen::MatrixXd pose_cov = isam_->marginalCovariance(xk);  // 6x6 tangent
-    const Eigen::Matrix3d vel_cov = isam_->marginalCovariance(vk);
-
-    // Float antenna position (ECEF) and its 3x3 covariance - the inputs the
-    // analytical DD ambiguity resolution expects. The Pose3 tangent translation
-    // block is a body-frame perturbation: rotate it to ENU (body rotation) then
-    // to ECEF (ecef_T_nav rotation).
-    const gtsam::Point3 ant_nav = pose.transformFrom(lever_arm_);
-    const gtsam::Point3 ant_ecef = ecef_T_nav_.transformFrom(ant_nav);
-    Eigen::Vector3d pub_pos(ant_ecef.x(), ant_ecef.y(), ant_ecef.z());
-    const Eigen::Matrix3d R_body = pose.rotation().matrix();
-    const Eigen::Matrix3d cov_enu =
-        R_body * pose_cov.bottomRightCorner<3, 3>() * R_body.transpose();
-    const Eigen::Matrix3d R_e_n = ecef_T_nav_.rotation().matrix();
-    Eigen::Matrix3d pub_cov = R_e_n * cov_enu * R_e_n.transpose();
+    Eigen::Vector3d pub_pos;
+    Eigen::Matrix3d pub_cov;
+    antennaFromPose(pose, pose_cov, pub_pos, pub_cov);
+    prev_ant_cov_ = pub_cov;  // float posterior antenna cov -> fallback prior
 
     uint8_t status = grs::GnssSolution::STATUS_FLOAT;
     double ratio = 0.0;
+    gnss_fgo::ArResult ar;
     if (ar_enable_ && static_cast<int>(pairs.size()) >= kMinDdForAr) {
-      // Same analytical AR as gnss_fgo: the correctly-correlated DD covariance
-      // (RTKLIB ddcov) + LAMBDA, anchored by the float antenna position. The
-      // FIX is published only, never fed back, so a wrong fix cannot corrupt
-      // the graph (which stays float, like gnss_fgo).
-      const auto ar = gnss_fgo::resolveAmbiguitiesDd(
-          ep, pub_pos, pub_cov, adapter_cfg_, ar_ratio_threshold_, ar_el_mask_,
-          ar_min_fix_, ar_fde_enable_, ar_fde_threshold_m_, ar_fde_max_exclude_);
+      // Analytical AR (RTKLIB ddcov + LAMBDA + FDE) anchored by the IMU-predicted
+      // (pre-GNSS) prior, so this epoch's DD is not double-counted. In continuous
+      // / fix_and_hold the carried ambiguities tighten the prediction.
+      ar = gnss_fgo::resolveAmbiguitiesDd(
+          ep, imu_pred_pos, imu_pred_cov, adapter_cfg_, ar_ratio_threshold_,
+          ar_el_mask_, ar_min_fix_, ar_fde_enable_, ar_fde_threshold_m_,
+          ar_fde_max_exclude_);
       ratio = ar.ratio;
       if (ar.fixed) {
         pub_pos = ar.fixed_pos;
         pub_cov = ar.state_cov;
         status = grs::GnssSolution::STATUS_FIX;
+      }
+    }
+    if (adapter_cfg_.mode == gnss_fgo::AmbMode::FixAndHold) {
+      // Hold accepted integers as two-variable DD constraints (added once,
+      // removed on re-key); runs every epoch to clean stale holds. Re-fetch the
+      // now-tightened state to carry forward and to refresh a FLOAT publish.
+      const auto specs = gnss_fgo::collectHoldSpecs(*amb_mgr_, ep, ar);
+      const auto hr = gnss_fgo::applyHolds(*isam_, *amb_mgr_, held_dd_, specs,
+                                           adapter_cfg_.hold_sigma_cycles);
+      if (hr == gnss_fgo::HoldResult::Failure) {
+        RCLCPP_WARN(get_logger(), "Hold update failed - reinitializing.");
+        initialized_ = false;
+        resetGraph();
+        return;
+      }
+      if (hr == gnss_fgo::HoldResult::Success) {
+        try {
+          estimate = isam_->calculateEstimate();
+          pose = estimate.at<gtsam::Pose3>(xk);
+          vel = estimate.at<gtsam::Vector3>(vk);
+          pose_cov = isam_->marginalCovariance(xk);
+          vel_cov = isam_->marginalCovariance(vk);
+          if (status != grs::GnssSolution::STATUS_FIX) {
+            antennaFromPose(pose, pose_cov, pub_pos, pub_cov);
+          }
+        } catch (const std::exception& e) {
+          // The estimate/marginal is degenerate after the hold update; do not
+          // carry a possibly-broken ISAM2 into the next epoch.
+          RCLCPP_WARN(get_logger(),
+                      "Post-hold estimate failed (%s) - reinitializing.",
+                      e.what());
+          initialized_ = false;
+          resetGraph();
+          return;
+        }
       }
     }
 
@@ -614,10 +748,11 @@ class GnssImuFgoNode : public rclcpp::Node {
             (gtsam::Vector(6) << ab_std, ab_std, ab_std,
              gb_std, gb_std, gb_std).finished())));
 
-    const auto pairs = gnss_fgo::addDdFactorsArm(
-        ep, X(0), next_amb_id_, lever_arm_, ecef_T_nav_, adapter_cfg_, graph,
-        values);
-    (void)pairs;
+    gnss_fgo::PersistentAmbiguities* amb_ptr =
+        adapter_cfg_.mode != gnss_fgo::AmbMode::Instantaneous ? amb_mgr_.get()
+                                                              : nullptr;
+    gnss_fgo::addDdFactorsArm(ep, X(0), next_amb_id_, lever_arm_, ecef_T_nav_,
+                              adapter_cfg_, graph, values, amb_ptr);
 
     try {
       isam_->update(graph, values);
@@ -630,6 +765,7 @@ class GnssImuFgoNode : public rclcpp::Node {
     prev_state_ = gtsam::NavState(pose0, gtsam::Vector3::Zero());
     prev_bias_ = bias0;
     prev_t_ros_ = t_ros;
+    prev_ant_cov_ = Eigen::Matrix3d::Identity() * (pos_std * pos_std);
     last_antenna_ecef_ = anchor;
     last_antenna_ecef_valid_ = true;
     epoch_index_ = 1;
@@ -660,6 +796,8 @@ class GnssImuFgoNode : public rclcpp::Node {
     next_amb_id_ = 0;
     last_antenna_ecef_valid_ = false;
     initialized_ = false;
+    if (amb_mgr_) amb_mgr_->resetAll();
+    held_dd_.clear();
   }
 
   void publishSolution(const gnss_utils::PreprocessedEpoch& ep,
@@ -832,7 +970,15 @@ class GnssImuFgoNode : public rclcpp::Node {
 
   bool initialized_{false};
   int epoch_index_{0};
-  std::uint64_t next_amb_id_{0};  // globally-unique per-epoch ambiguity keys
+  std::uint64_t next_amb_id_{0};  // globally-unique ambiguity keys
+  // Carried-across-epochs ambiguities (Continuous / FixAndHold modes only).
+  std::unique_ptr<gnss_fgo::PersistentAmbiguities> amb_mgr_;
+  double amb_max_outage_{5.0};
+  gnss_fgo::HeldDdMap held_dd_;  // FixAndHold: held DD constraints (by sat pair)
+  // Previous-epoch float antenna covariance [m^2], inflated into the pre-GNSS AR
+  // prior (imu_pred_cov). imu_pred_sigma_mps_ is the one-epoch process-noise rate.
+  Eigen::Matrix3d prev_ant_cov_{Eigen::Matrix3d::Identity() * 100.0};
+  double imu_pred_sigma_mps_{1.0};
   double prev_t_ros_{0.0};
   gtsam::NavState prev_state_;
   gtsam::imuBias::ConstantBias prev_bias_;

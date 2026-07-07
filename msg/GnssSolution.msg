@@ -14,7 +14,7 @@ uint8 solution_source
 uint8 SOLUTION_SOURCE_UNKNOWN=0   # unset / not determined
 uint8 SOLUTION_SOURCE_BINARY=1    # receiver binary PVT message (BESTPOS / NAV-PVT / PVTGeodetic ...)
 uint8 SOLUTION_SOURCE_NMEA=2      # receiver NMEA sentence (GGA / RMC ...)
-uint8 SOLUTION_SOURCE_COMPUTED=3  # locally computed from RAW obs + ephemerides (SPP / RTK)
+uint8 SOLUTION_SOURCE_COMPUTED=3  # locally computed from RAW obs + ephemerides (SPP / RTK / GNSS FGO / GNSS-IMU FGO)
 
 # Solution Status
 uint8 status

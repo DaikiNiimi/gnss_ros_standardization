@@ -3,6 +3,7 @@
 #define GNSS_ROS_STANDARDIZATION_GNSS_PREPROCESSOR_HPP
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -48,7 +49,14 @@ struct SatObs {
   double lam{0.0};       // carrier wavelength [m]
   double el{0.0};        // elevation at the rover a-priori position [rad]
   double az{0.0};        // azimuth [rad]
-  bool slip{false};      // LLI & 0x3 on this band -> re-key the ambiguity
+  bool slip{false};      // continuity break on this band -> re-key the carried
+                         // ambiguity (Continuous / FixAndHold). Does NOT remove
+                         // the carrier from this epoch's DD or AR: it is still a
+                         // valid measurement (the first sample of the new arc).
+  bool half_cycle{false};  // half-cycle-ambiguity present -> a half-integer, so
+                           // exclude from integer AR (but keep in the float DD)
+  bool cp_excluded{false};  // carrier corrupt this epoch (CMC gross error) ->
+                            // drop it from the DD entirely, and re-key
 };
 
 // One double-difference pair (reference satellite minus target satellite,
@@ -69,18 +77,23 @@ struct DdSignal {
   bool has_pr{false};    // all four pseudoranges present
   bool has_cp{false};    // all four carrier phases present
 
-  // Raw observables [m]. Carrier phase already converted to meters.
+  // Observables [m], with satellite clock (+c*dts) applied at each receiver's
+  // own reception epoch (see sat_ref_rov below). Carrier phase already
+  // converted to meters.
   double pr_rov_ref{0}, pr_base_ref{0}, pr_rov_tar{0}, pr_base_tar{0};
   double cp_rov_ref{0}, cp_base_ref{0}, cp_rov_tar{0}, cp_base_tar{0};
 
   // Satellite ECEF positions [m] at signal transmission time, per receiver
-  // epoch. No Sagnac pre-rotation, no clock correction applied (cancels in DD).
+  // epoch. No Sagnac pre-rotation applied (cancels in DD). The pr/cp_* above
+  // DO have satellite clock (+c*dts) applied, since it does NOT cancel across
+  // asynchronous rover/base epochs.
   Eigen::Vector3d sat_ref_rov{0, 0, 0}, sat_tar_rov{0, 0, 0};
   Eigen::Vector3d sat_ref_base{0, 0, 0}, sat_tar_base{0, 0, 0};
 
   double el_ref{0.0}, el_tar{0.0};   // rover elevation [rad]
   double snr_ref{0.0}, snr_tar{0.0}; // rover SNR [dBHz]
-  bool slip_ref{false}, slip_tar{false};  // LLI on either receiver
+  bool slip_ref{false}, slip_tar{false};        // continuity break -> re-key
+  bool half_cycle_ref{false}, half_cycle_tar{false};  // half-integer -> AR-exclude
 };
 
 // One matched rover/base epoch after preprocessing. Emitted epochs always
@@ -143,6 +156,28 @@ class GnssPreprocessor {
     double max_tdiff_s{30.0};         // epoch matcher window
     double match_tol_s{0.001};
     Eigen::Vector3d base_ecef{0, 0, 0};  // required for DD output
+    // Cycle-slip detection for the carried ambiguities of the FGO continuous /
+    // fix_and_hold modes (an undetected slip corrupts a carried ambiguity). All
+    // checks are on the rover-base pair (both receivers), complementing the LLI
+    // cycle-slip bit and half-cycle-bit transition and observed-code change that
+    // are always monitored:
+    //   - SD geometry-free (dual-freq): jump in (Lrov1-Lbas1)*lam1 -
+    //     (Lrov2-Lbas2)*lam2 beyond slip_gf_threshold_m -> slip on both bands.
+    //   - SD code-minus-carrier: a large jump in (Prov-Pbas) - (Lrov-Lbas)*lam
+    //     (gross carrier error / big slip) -> slip AND drop the corrupt carrier
+    //     from this epoch's DD (cp_excluded); threshold well above code noise.
+    //   - Doppler-phase (RTKLIB detslp_dop, single-frequency safeguard): the
+    //     per-sat residual dL + D*dt with the common receiver-clock component
+    //     (median) removed, beyond slip_dop_threshold_cyc -> slip.
+    //   - Carrier outage: a carrier gap longer than slip_max_gap_s [s] -> slip
+    //     on resume (unit matches the FGO's PersistentAmbiguities max_outage_s).
+    bool detect_slip_gf{true};
+    double slip_gf_threshold_m{0.05};
+    bool detect_slip_cmc{true};
+    double slip_cmc_threshold_m{3.0};
+    bool detect_slip_dop{true};
+    double slip_dop_threshold_cyc{1.0};
+    double slip_max_gap_s{2.0};
   };
 
   explicit GnssPreprocessor(const Config& config);
@@ -174,6 +209,16 @@ class GnssPreprocessor {
   bool buildEpoch(const ObsMsg& rover, const ObsMsg& base, double age_s,
                   const Eigen::Vector3d* approx_rover, PreprocessedEpoch& out);
 
+  // Rover-base cycle-slip detection: sets slip / cp_excluded on out.rover_sats
+  // (see Config::detect_slip_*). obs holds rover (rcv=1) then base (rcv=2)
+  // entries; rover_idx/base_idx map satellite -> obs index for each receiver.
+  // `tow` is CONTINUOUS GPST seconds (week*604800+tow), so outage/Doppler time
+  // differences stay valid across the week rollover.
+  void detectSlips(const std::vector<obsd_t>& obs,
+                   const std::map<int, int>& rover_idx,
+                   const std::map<int, int>& base_idx, double tow,
+                   PreprocessedEpoch& out);
+
   Config config_;
   FrequencyMask freq_mask_;
   prcopt_t spp_opt_;
@@ -184,6 +229,22 @@ class GnssPreprocessor {
 
   Eigen::Vector3d last_apriori_{0, 0, 0};
   bool last_apriori_valid_{false};
+
+  // Previous-epoch carrier-tracking state per satellite, for cycle-slip
+  // detection (detectSlips). Arrays indexed by RTKLIB band (0=L1,1=L2,2=L5).
+  struct SlipTrack {
+    double lrov[NFREQ]{};           // rover carrier phase [cycles]
+    double cmc[NFREQ]{};            // SD code-minus-carrier [m]
+    double last_seen[NFREQ]{};      // last time the ROVER carrier was present [s]
+    double last_seen_base[NFREQ]{}; // last time the BASE carrier was present [s]
+    std::uint8_t code_rov[NFREQ]{}, code_base[NFREQ]{}, lli_rov[NFREQ]{},
+        lli_base[NFREQ]{};
+    bool lval[NFREQ]{}, cval[NFREQ]{}, codeval[NFREQ]{};
+    bool lval_base[NFREQ]{};        // a base carrier has been seen before
+    double sdgf{0.0};
+    bool sdgf_val{false};
+  };
+  std::map<int, SlipTrack> slip_track_;
 };
 
 }  // namespace gnss_utils

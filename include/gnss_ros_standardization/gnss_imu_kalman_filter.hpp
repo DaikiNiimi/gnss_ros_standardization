@@ -277,11 +277,19 @@ struct GnssSnapshot {
   Eigen::Vector3d vel_enu = Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
   std::array<double, 9> vel_cov_enu = {};
 
-  // Derived heading from Doppler velocity
-  double doppler_heading = std::numeric_limits<double>::quiet_NaN();  // [rad]
-
   // Position is NaN (not obtained)
   bool pos_is_nan = true;
+};
+
+/**
+ * @brief GNSS velocity rotated into the FIXED origin ENU frame (origin_llh_)
+ *        — the same frame as the EKF velocity state. See
+ *        computeOriginFrameVelocity().
+ */
+struct OriginVelocity {
+  bool valid = false;
+  Eigen::Vector3d vel_enu = Eigen::Vector3d::Zero();
+  Eigen::Matrix3d cov_enu = Eigen::Matrix3d::Zero();
 };
 
 /**
@@ -527,6 +535,24 @@ class GnssImuKalmanFilter : public rclcpp::Node {
    * @brief Convert local ENU position to LLH (lat[deg], lon[deg], alt[m])
    */
   Eigen::Vector3d enuToLlh(const Eigen::Vector3d& pos) const;
+
+  /**
+   * @brief Rotate a GNSS velocity (and covariance) into the FIXED origin ENU
+   *        frame (origin_llh_), the frame of the EKF velocity state.
+   *        GnssSolution.vel_enu is defined at the CURRENT receiver position, so
+   *        it disagrees with the origin frame for a manual origin or long
+   *        travel. Prefers vel_ecef (rotated directly at origin_llh_) and falls
+   *        back to a two-stage rotation via the current position; returns
+   *        invalid if neither is usable.
+   */
+  OriginVelocity computeOriginFrameVelocity(const GnssSnapshot& snap) const;
+
+  /**
+   * @brief Derive a Doppler heading [rad] from an origin-frame GNSS velocity,
+   *        gated on gnss_heading_speed_threshold. Returns NaN when the
+   *        velocity is invalid or below the speed gate.
+   */
+  double dopplerHeadingFromOriginVelocity(const OriginVelocity& vel) const;
 
   // ---- Members ----
 

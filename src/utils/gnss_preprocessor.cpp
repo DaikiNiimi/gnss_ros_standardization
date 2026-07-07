@@ -6,6 +6,7 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -260,11 +261,26 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg& base,
       s.snr = o.SNR[b];
       s.el = azel_i[1];
       s.az = azel_i[0];
-      s.slip = (o.LLI[b] & 0x3) != 0;
+      // 0x1 = loss-of-lock / cycle slip (continuity break -> re-key carried amb);
+      // 0x2 = half-cycle-ambiguity present (a half-integer -> exclude from integer
+      // AR, but DO NOT re-key every epoch). detectSlips adds the rover-base
+      // checks and the 0x2 *transition* (which IS a continuity slip).
+      s.slip = (o.LLI[b] & 0x1) != 0;
+      s.half_cycle = (o.LLI[b] & 0x2) != 0;
       out.rover_sats.push_back(std::move(s));
     }
   }
   if (out.rover_sats.empty()) return false;
+
+  // Rover-base cycle-slip detection (sets slip / cp_excluded on out.rover_sats).
+  {
+    std::map<int, int> rover_idx, base_idx;
+    for (int i = 0; i < n_rover; ++i) rover_idx.emplace(obs[i].sat, i);
+    for (int i = n_rover; i < n; ++i) base_idx.emplace(obs[i].sat, i);
+    // Continuous GPST seconds (not tow alone) so time differences stay positive
+    // across the GPS week rollover (tow wraps 604800 -> 0).
+    detectSlips(obs, rover_idx, base_idx, out.week * 604800.0 + out.tow, out);
+  }
 
   // Undifferenced Doppler rover velocity (loosely-coupled motion aiding for the
   // FGO; harmless to others - just an extra field).
@@ -293,7 +309,10 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg& base,
     bool pr_ok;
     bool cp_ok;
   };
-  std::map<std::pair<int, int>, std::vector<PairCand>> groups;
+  // Group by (system, band, observed code): the DD reference and target must
+  // share the same code, else per-receiver inter-code biases (e.g. 1C vs 1W)
+  // do not cancel in the DD. s.code equals the base code here (enforced below).
+  std::map<std::tuple<int, int, int>, std::vector<PairCand>> groups;
 
   for (int ri = 0; ri < static_cast<int>(out.rover_sats.size()); ++ri) {
     const SatObs& s = out.rover_sats[ri];
@@ -310,8 +329,10 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg& base,
     const bool pr_ok = (s.pr != 0.0) && (ob.P[s.band] != 0.0);
     bool cp_ok = (s.cp_m != 0.0) && (ob.L[s.band] != 0.0);
     if (s.sys == SYS_GLO && !config_.glonass_carrier_dd) cp_ok = false;
+    if (s.cp_excluded) cp_ok = false;  // CMC gross error: drop carrier this epoch
     if (!pr_ok && !cp_ok) continue;
-    groups[{s.sys, s.band}].push_back({ri, bi, pr_ok, cp_ok});
+    groups[{s.sys, s.band, static_cast<int>(s.code)}].push_back(
+        {ri, bi, pr_ok, cp_ok});
   }
 
   for (const auto& kv : groups) {
@@ -357,17 +378,27 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg& base,
                  std::fabs(sref.lam - star.lam) < 1e-9;
       if (!d.has_pr && !d.has_cp) continue;
 
+      // Satellite clock correction (+c*dts, at each receiver's OWN reception
+      // epoch): removes the satellite clock from the observable so it cancels
+      // exactly in the single difference even when rover and base are
+      // asynchronous (satposs() gives each entry its own transmission-time
+      // dts). Matches RTKLIB zdres(), which applies -CLIGHT*dts to rover and
+      // base separately before differencing (rtkpos.c).
+      const double c_dts_ref_rov = CLIGHT * sref.sat_clk;
+      const double c_dts_tar_rov = CLIGHT * star.sat_clk;
+      const double c_dts_ref_base = CLIGHT * dts[2 * ref->base_i];
+      const double c_dts_tar_base = CLIGHT * dts[2 * c.base_i];
       if (d.has_pr) {
-        d.pr_rov_ref = sref.pr;
-        d.pr_base_ref = ob_ref.P[d.band];
-        d.pr_rov_tar = star.pr;
-        d.pr_base_tar = ob_tar.P[d.band];
+        d.pr_rov_ref = sref.pr + c_dts_ref_rov;
+        d.pr_base_ref = ob_ref.P[d.band] + c_dts_ref_base;
+        d.pr_rov_tar = star.pr + c_dts_tar_rov;
+        d.pr_base_tar = ob_tar.P[d.band] + c_dts_tar_base;
       }
       if (d.has_cp) {
-        d.cp_rov_ref = sref.cp_m;
-        d.cp_base_ref = ob_ref.L[d.band] * sref.lam;
-        d.cp_rov_tar = star.cp_m;
-        d.cp_base_tar = ob_tar.L[d.band] * star.lam;
+        d.cp_rov_ref = sref.cp_m + c_dts_ref_rov;
+        d.cp_base_ref = ob_ref.L[d.band] * sref.lam + c_dts_ref_base;
+        d.cp_rov_tar = star.cp_m + c_dts_tar_rov;
+        d.cp_base_tar = ob_tar.L[d.band] * star.lam + c_dts_tar_base;
       }
 
       d.sat_ref_rov = sref.sat_pos;
@@ -383,13 +414,164 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg& base,
       d.el_tar = star.el;
       d.snr_ref = sref.snr;
       d.snr_tar = star.snr;
-      d.slip_ref = sref.slip || (ob_ref.LLI[d.band] & 0x3) != 0;
-      d.slip_tar = star.slip || (ob_tar.LLI[d.band] & 0x3) != 0;
+      // Continuity slip (re-key) and half-cycle (AR-exclude) are computed for
+      // both receivers in detectSlips; keep them distinct here.
+      d.slip_ref = sref.slip;
+      d.slip_tar = star.slip;
+      d.half_cycle_ref = sref.half_cycle;
+      d.half_cycle_tar = star.half_cycle;
 
       out.dd.push_back(std::move(d));
     }
   }
   return true;
+}
+
+void GnssPreprocessor::detectSlips(const std::vector<obsd_t>& obs,
+                                   const std::map<int, int>& rover_idx,
+                                   const std::map<int, int>& base_idx,
+                                   double tow, PreprocessedEpoch& out) {
+  std::set<std::pair<int, int>> slip, cp_excl, half;
+  struct Dop {
+    int sat, band;
+    double r;
+  };
+  std::vector<Dop> dops;
+
+  for (const auto& kv : rover_idx) {
+    const int sat = kv.first;
+    const obsd_t& ro = obs[kv.second];
+    const auto bit = base_idx.find(sat);
+    const obsd_t* bo = (bit != base_idx.end()) ? &obs[bit->second] : nullptr;
+
+    SlipTrack& tr = slip_track_[sat];  // default-constructs (all *val false) if new
+    const SlipTrack pr = tr;           // previous-epoch snapshot
+
+    double lam[NFREQ] = {0.0, 0.0, 0.0};
+    for (int f = 0; f < NFREQ; ++f) {
+      const double freq = sat2freq(sat, ro.code[f], &nav_);
+      lam[f] = (freq > 0.0) ? CLIGHT / freq : 0.0;
+    }
+
+    for (int f = 0; f < NFREQ; ++f) {
+      if (ro.L[f] == 0.0) continue;  // no rover carrier on this band
+      bool band_slip = false;
+
+      // LLI cycle-slip bit (rover / base).
+      if ((ro.LLI[f] & 0x1) || (bo && (bo->LLI[f] & 0x1))) band_slip = true;
+      // Half-cycle-ambiguity bit currently set -> half-integer (exclude from AR).
+      if ((ro.LLI[f] & 0x2) || (bo && (bo->LLI[f] & 0x2))) half.insert({sat, f});
+      if (pr.codeval[f]) {
+        // Half-cycle-ambiguity bit (0x2) transition (rover / base).
+        if (((ro.LLI[f] ^ pr.lli_rov[f]) & 0x2) ||
+            (bo && ((bo->LLI[f] ^ pr.lli_base[f]) & 0x2)))
+          band_slip = true;
+        // Observed-code change (rover / base): the carrier bias changes.
+        if (ro.code[f] != pr.code_rov[f] ||
+            (bo && bo->code[f] != pr.code_base[f]))
+          band_slip = true;
+      }
+      // Carrier outage [s]: a long ROVER gap breaks continuity.
+      if (pr.lval[f] && (tow - pr.last_seen[f]) > config_.slip_max_gap_s)
+        band_slip = true;
+      // Base-side carrier outage (independent of the rover): the base arc of the
+      // rover-base SD ambiguity can break while the rover keeps tracking, so
+      // track base presence separately. Base absent -> last_seen_base is left
+      // stale (the gap grows); on return, a long gap re-keys.
+      if (bo && bo->L[f] != 0.0) {
+        if (pr.lval_base[f] &&
+            (tow - pr.last_seen_base[f]) > config_.slip_max_gap_s)
+          band_slip = true;
+        tr.lval_base[f] = true;
+        tr.last_seen_base[f] = tow;
+      }
+
+      // SD code-minus-carrier gross error (rover-base): drop the corrupt carrier
+      // this epoch (cp_excluded) and re-key.
+      if (config_.detect_slip_cmc && bo && lam[f] > 0.0 && ro.P[f] != 0.0 &&
+          bo->P[f] != 0.0 && bo->L[f] != 0.0) {
+        const double cmc =
+            (ro.P[f] - bo->P[f]) - (ro.L[f] - bo->L[f]) * lam[f];
+        if (pr.cval[f] &&
+            std::fabs(cmc - pr.cmc[f]) > config_.slip_cmc_threshold_m) {
+          band_slip = true;
+          cp_excl.insert({sat, f});
+        }
+        tr.cmc[f] = cmc;
+        tr.cval[f] = true;
+      } else {
+        tr.cval[f] = false;
+      }
+
+      // Doppler-phase residual (common receiver-clock component removed below).
+      if (config_.detect_slip_dop && pr.lval[f] && ro.D[f] != 0.0) {
+        const double dt = tow - pr.last_seen[f];
+        if (dt > 1e-3 && dt <= config_.slip_max_gap_s) {
+          dops.push_back({sat, f, (ro.L[f] - pr.lrov[f]) + ro.D[f] * dt});
+        }
+      }
+
+      if (band_slip) slip.insert({sat, f});
+
+      // Update this band's tracking state.
+      tr.lrov[f] = ro.L[f];
+      tr.lval[f] = true;
+      tr.last_seen[f] = tow;
+      tr.code_rov[f] = ro.code[f];
+      tr.lli_rov[f] = ro.LLI[f];
+      tr.code_base[f] = bo ? bo->code[f] : 0;
+      tr.lli_base[f] = bo ? bo->LLI[f] : 0;
+      tr.codeval[f] = true;
+    }
+
+    // SD geometry-free (dual-frequency, bands 0/1): the sensitive carrier slip
+    // detector; a jump flags both bands.
+    if (config_.detect_slip_gf && bo && lam[0] > 0.0 && lam[1] > 0.0 &&
+        ro.L[0] != 0.0 && ro.L[1] != 0.0 && bo->L[0] != 0.0 && bo->L[1] != 0.0) {
+      const double sdgf =
+          (ro.L[0] - bo->L[0]) * lam[0] - (ro.L[1] - bo->L[1]) * lam[1];
+      if (pr.sdgf_val &&
+          std::fabs(sdgf - pr.sdgf) > config_.slip_gf_threshold_m) {
+        slip.insert({sat, 0});
+        slip.insert({sat, 1});
+      }
+      tr.sdgf = sdgf;
+      tr.sdgf_val = true;
+    } else {
+      tr.sdgf_val = false;
+    }
+  }
+
+  // Doppler common-clock (median) rejection PER (system, band): the receiver
+  // clock term is frequency-dependent in cycles, so mixing bands/systems would
+  // bias the common component and cause false slips. Only per-satellite
+  // deviations from the group's common drift are slips; skip groups with < 4.
+  if (config_.detect_slip_dop) {
+    std::map<std::pair<int, int>, std::vector<std::pair<int, double>>> grp;
+    for (const auto& d : dops) {
+      int prn = 0;
+      grp[{satsys(d.sat, &prn), d.band}].push_back({d.sat, d.r});
+    }
+    for (auto& kv : grp) {
+      auto& v = kv.second;
+      if (static_cast<int>(v.size()) < 4) continue;
+      std::vector<double> rs;
+      rs.reserve(v.size());
+      for (const auto& p : v) rs.push_back(p.second);
+      std::nth_element(rs.begin(), rs.begin() + rs.size() / 2, rs.end());
+      const double common = rs[rs.size() / 2];
+      for (const auto& p : v) {
+        if (std::fabs(p.second - common) > config_.slip_dop_threshold_cyc)
+          slip.insert({p.first, kv.first.second});
+      }
+    }
+  }
+
+  for (auto& s : out.rover_sats) {
+    if (slip.count({s.sat, s.band})) s.slip = true;
+    if (half.count({s.sat, s.band})) s.half_cycle = true;
+    if (cp_excl.count({s.sat, s.band})) s.cp_excluded = true;
+  }
 }
 
 }  // namespace gnss_utils
