@@ -544,18 +544,24 @@ class SbfDecoderNode : public rclcpp::Node {
         : now();
     imu.header.frame_id = frame_id_;
 
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
+    // Orientation is not estimated by this message at all -> "-1" (field not provided).
+    auto orient_unk = ins::makeUnknownCovariance();
+    std::copy(orient_unk.begin(), orient_unk.end(), imu.orientation_covariance.begin());
+
+    // Acceleration/angular-rate VALUES are provided below; only their
+    // covariance is unknown -> all-zero, not "-1" (which would claim the
+    // measurement itself is absent).
+    auto meas_unk = ins::makeZeroCovariance();
 
     imu.linear_acceleration.x = esm_accel_[0];
     imu.linear_acceleration.y = esm_accel_[1];
     imu.linear_acceleration.z = esm_accel_[2];
-    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
+    std::copy(meas_unk.begin(), meas_unk.end(), imu.linear_acceleration_covariance.begin());
 
     imu.angular_velocity.x = esm_gyro_[0] * (M_PI / 180.0);
     imu.angular_velocity.y = esm_gyro_[1] * (M_PI / 180.0);
     imu.angular_velocity.z = esm_gyro_[2] * (M_PI / 180.0);
-    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+    std::copy(meas_unk.begin(), meas_unk.end(), imu.angular_velocity_covariance.begin());
 
     imu_raw_pub_->publish(imu);
 

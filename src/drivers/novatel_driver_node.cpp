@@ -858,7 +858,9 @@ class NovatelDriverNode : public rclcpp::Node {
     imu.linear_acceleration.y = -ny_acc * scale.accel / dt;
     imu.linear_acceleration.z =  z_acc  * scale.accel / dt;
 
-    auto unk = ins::makeUnknownCovariance();
+    // Values above are always provided by RAWIMU; only their covariance is
+    // unknown -> all-zero, not "-1" (which claims the measurement is absent).
+    auto unk = ins::makeZeroCovariance();
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
@@ -909,7 +911,9 @@ class NovatelDriverNode : public rclcpp::Node {
     // orientation: not provided by CORRIMUDATA — leave identity, mark unknown
     imu.orientation_covariance[0] = -1.0;
 
-    auto unk = ins::makeUnknownCovariance();
+    // Values above are always provided by CORRIMUDATA; only their covariance
+    // is unknown -> all-zero, not "-1" (which claims the measurement is absent).
+    auto unk = ins::makeZeroCovariance();
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 

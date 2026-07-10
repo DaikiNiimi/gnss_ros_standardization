@@ -11,6 +11,10 @@
 
 #include <Eigen/Dense>
 
+// NOTE: must come after <Eigen/Dense> - this header pulls in rtklib.h, whose
+// trace() macro would otherwise clobber Eigen's MatrixBase::trace().
+#include "gnss_ros_standardization/gnss_utils.hpp"
+
 #include <fstream>
 #include <string>
 #include <mutex>
@@ -118,64 +122,48 @@ struct EkfConfig {
 
   // GNSS update
   GnssUpdateMode gnss_update_mode = GnssUpdateMode::FIX_ONLY;
-  // Minimum horizontal speed [m/s] to use GNSS Doppler heading update. Below
-  // this the Doppler direction is noisy, but the error-propagated heading
-  // variance (~1/speed^2, 5-deg floor) already de-weights it, so this can be low.
-  double gnss_heading_speed_threshold = 0.5;
-  // Fallback when the GNSS position covariance is degenerate (e.g. all-zero,
-  // which some receivers publish to mean "unknown"). Below gnss_cov_min_var
-  // (max ENU diagonal) the covariance is replaced by a default^2 chosen by the
-  // solution status, so a zero cov is not mistaken for a ~1 mm over-confident fix
-  // and a coarse SINGLE/DGPS solution is not trusted like an RTK fix.
+  // Continuous yaw aiding from GNSS Doppler course. Assumes forward motion with
+  // body X along the travel direction (ground vehicles); independent of the
+  // one-time use_init_yaw. Default false (platform assumption); the demo
+  // config opts in.
+  bool use_doppler_heading = false;
+  double gnss_heading_speed_threshold = 0.5;  // [m/s] min speed for the heading update
+  // GNSS covariance source: "message" = reported covariance, with the sigma
+  // below as the degenerate fallback | "config" = always use the sigma below.
+  std::string gnss_pos_cov_source = "message";  // "message" | "config"
+  std::string gnss_vel_cov_source = "message";  // "message" | "config"
+  // Position 1-sigma [m] by solution status (see *_cov_source above).
   Eigen::Vector3d gnss_pos_sigma_default_fix   = {0.05, 0.05, 0.10};  // [m] RTK FIX
   Eigen::Vector3d gnss_pos_sigma_default_float = {0.5, 0.5, 1.0};     // [m] RTK FLOAT
   Eigen::Vector3d gnss_pos_sigma_default_other = {2.0, 2.0, 4.0};     // [m] DGPS/SBAS/SINGLE/PPP
-  double gnss_cov_min_var = 1e-6;                                     // [m^2]
-  // Fallback GNSS velocity 1-sigma [m/s] when the velocity covariance is
-  // degenerate (zero). <= 0 keeps the legacy behaviour (skip velocity/heading
-  // updates). Only applied when the reported velocity is not exactly zero, so a
-  // receiver emitting neither velocity nor covariance is not read as a v=0 fix.
-  double gnss_vel_sigma_default = 0.2;                                // [m/s]
+  double gnss_cov_min_var = 1e-6;  // [m^2] below this a reported cov counts as degenerate
+  // Velocity 1-sigma [m/s]; <= 0 skips velocity/heading aiding. Never applied
+  // to an all-zero reported velocity (indistinguishable from a true standstill).
+  double gnss_vel_sigma_default = 0.2;
 
-  // Time alignment of out-of-sync GNSS / wheel-speed measurements via IMU buffer
-  bool   time_align_to_gnss   = true;   // false: legacy immediate-update (no time alignment)
-  double imu_buffer_duration  = 2.0;    // [s] retain IMU samples for this duration
+  // Time alignment of late GNSS / wheel measurements via the IMU buffer
+  bool   time_align_to_gnss   = true;   // false: immediate update (no alignment)
+  double imu_buffer_duration  = 2.0;    // [s] IMU/state snapshot retention
+  // GNSS epoch time source: "header" (stamp as-is) or "tow_auto_offset"
+  // (rebuild from week/tow, strip receiver latency). See gnss_utils::GnssEpochAligner.
+  std::string gnss_time_source = "header";
+  double gnss_offset_window_s = 60.0;  // [s] tow_auto_offset sliding window
 
   // Wheel speed
   bool   use_wheel_speed    = false;
   std::string wheel_speed_topic_type = "twist_with_covariance"; // or "twist"
   std::string wheel_speed_mode = "longitudinal_only";           // or "3d"
   double wheel_speed_sigma  = 0.1;  // [m/s]
-  // Optional non-holonomic constraint (NHC): augment the longitudinal wheel update
-  // with body lateral/vertical velocity ~= 0. Standard for ground vehicles; off by
-  // default to keep the example platform-agnostic.
+  // Non-holonomic constraint: body lateral/vertical velocity ~= 0 (ground vehicles).
   bool   wheel_nhc_enable        = false;
   double wheel_nhc_sigma_lateral  = 0.3;  // [m/s]
   double wheel_nhc_sigma_vertical = 0.3;  // [m/s]
 
-  // Continuous accelerometer leveling (gravity-reference roll/pitch aid). The
-  // measured body specific-force direction observes roll/pitch: with a low-grade
-  // IMU the gravity-dominated specific force (~9.8 m/s^2) turns a sub-degree
-  // attitude error into a large spurious horizontal acceleration that dead-
-  // reckons between GNSS fixes ("gravity leak"). Rather than a hard quasi-static
-  // gate, the update runs every IMU sample with an ADAPTIVE measurement noise
-  // driven by the nav-frame kinematic acceleration a_lin = ||C_bn*f + g|| (the
-  // departure from pure gravity — unlike | ||f||-g |, this correctly captures
-  // horizontal/centripetal acceleration): strong when near-static, weak (or
-  // skipped) under manoeuvre. This keeps roll/pitch — and thus the gravity
-  // projection — continuously bounded. (Yaw does not leak gravity, so roll/pitch
-  // is the whole fix.)
-  // A SUSTAINED linear acceleration biases the observed gravity direction
-  // systematically (~a_lin/g rad), and a systematic innovation accumulates
-  // regardless of the measurement noise — so leveling is HARD-SKIPPED whenever
-  // the kinematic acceleration exceeds max_acc, and relies on the many quasi-
-  // static samples for the correction. Within the gate the noise still inflates
-  // with a_lin / angular rate (soft weighting).
-  // Leveling is computed from a short MOVING AVERAGE of the specific force
-  // (window below), not the instantaneous sample: a low-grade IMU has large
-  // per-sample noise (easily >1 m/s^2) that would otherwise trip the a_lin gate
-  // every sample and corrupt the gravity direction. Averaging both cleans the
-  // direction and lets the gate reflect the true kinematic acceleration.
+  // Accelerometer leveling: gravity-direction observation of roll/pitch, which
+  // bounds the "gravity leak" that dead-reckons into position between fixes.
+  // Computed from a moving average over leveling_window; the noise inflates
+  // with kinematic acceleration / angular rate, and the update is skipped above
+  // max_acc (a sustained acceleration would bias the gravity direction).
   bool   leveling_enable        = true;
   double leveling_window        = 0.3;   // [s] specific-force averaging window
   double leveling_sigma_min_deg = 1.0;   // [deg] 1-sigma floor (quasi-static)
@@ -183,23 +171,22 @@ struct EkfConfig {
   double leveling_gyr_gain      = 30.0;  // [deg per rad/s] sigma inflation vs ||omega||
   double leveling_max_acc       = 0.5;   // [m/s^2] skip the update above this a_lin
 
-  // Zero-velocity update (ZUPT): stationarity detected over a sliding window of
-  // IMU samples (acc/gyr variance thresholds) -> pseudo-observation v = 0.
-  // Bounds velocity/position drift while standing still and during GNSS gaps.
+  // Zero-velocity update (ZUPT): v = 0 pseudo-observation, applied only with
+  // positive evidence of a stop — a fresh measured speed (GNSS/wheel) at/below
+  // zupt_speed_thresh plus the std-dev/mean gates. With no fresh reference it
+  // fires only if zupt_allow_imu_only (IMU statistics alone cannot tell rest
+  // from smooth cruise; a false ZUPT silently freezes the position).
   bool   zupt_enable          = true;
   double zupt_window          = 0.5;    // [s] detection window
   double zupt_acc_std_thresh  = 0.15;   // [m/s^2] max acc std-dev in window
   double zupt_gyr_std_thresh  = 0.02;   // [rad/s] max gyro std-dev in window
   double zupt_sigma           = 0.05;   // [m/s] 1-sigma of the v=0 observation
   double zupt_min_interval    = 0.2;    // [s] rate limit between ZUPT updates
-  // IMU variance alone cannot distinguish rest from smooth constant-velocity
-  // motion, so gate on a MEASURED speed reference (GNSS horizontal speed, or
-  // wheel speed) — generic, no self-referential estimate. When a fresh reference
-  // exceeds the threshold, ZUPT is suppressed; when none is fresh (e.g. GNSS
-  // outage — exactly when ZUPT is most valuable) the IMU-variance test stands
-  // alone.
+  bool   zupt_allow_imu_only  = false;  // apply v=0 with no fresh speed reference
   double zupt_speed_thresh    = 0.5;    // [m/s] suppress ZUPT above this measured speed
   double zupt_speed_timeout   = 1.5;    // [s]   max age of the speed reference to trust
+  double zupt_gyr_mean_thresh = 0.05;   // [rad/s] reject if |mean(gyr)-b_g| exceeds (turning)
+  double zupt_acc_mean_thresh = 0.5;    // [m/s^2] reject if | ||mean(acc)-b_a|| - g | exceeds
 
   // IMU initialization
   double init_imu_duration = 1.0;  // [s]
@@ -209,15 +196,18 @@ struct EkfConfig {
   // Output configuration
   std::string output_reference_frame = "imu";  // "gnss" or "imu"
 
+  // Output frame_ids. World defaults to "map": GNSS updates can move the
+  // solution discontinuously, which REP-105 forbids for "odom".
+  std::string frame_world = "map";
+  std::string frame_child = "";  // "" auto-derives from output_reference_frame
+
   // IMU mounting
   Eigen::Vector3d lever_arm = Eigen::Vector3d::Zero();  // [m]
   Eigen::Vector3d imu_orientation_rpy = Eigen::Vector3d::Zero();  // [rad]
 };
 
 /**
- * @brief Single IMU sample retained in the ring buffer for time-aligned propagation
- *        of asynchronous observations (GNSS, wheel speed). Body-frame values are
- *        already corrected for the IMU mounting rotation.
+ * @brief Buffered IMU sample (body frame, mounting rotation already applied).
  */
 struct ImuSample {
   rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
@@ -226,12 +216,19 @@ struct ImuSample {
 };
 
 /**
- * @brief Full EKF state + covariance snapshot at a past IMU epoch.
- *
- * Kept in a ring buffer parallel to the IMU sample buffer so an out-of-sequence
- * observation (a latent GNSS solution stamped at its measurement epoch but
- * delivered tens–hundreds of ms later) can be applied at the correct epoch by
- * rewinding the filter, updating, and re-propagating the buffered IMU forward.
+ * @brief Buffered wheel-speed measurement, replayed when an OOSM rewind
+ *        discards the snapshot that first applied it. @c R is the validated
+ *        covariance already used for the live update.
+ */
+struct WheelMeas {
+  rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
+  Eigen::Vector3d linear = Eigen::Vector3d::Zero();  // body-frame velocity [m/s]
+  Eigen::Matrix3d R = Eigen::Matrix3d::Identity();   // measurement covariance
+};
+
+/**
+ * @brief Full state+covariance snapshot at a past IMU epoch — the rewind
+ *        target for out-of-sequence (late GNSS) observations.
  */
 struct StateSnapshot {
   rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
@@ -331,27 +328,21 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   // ---- EKF operations ----
 
   /**
-   * @brief Predict step using IMU measurement
-   * @param acc  Corrected acceleration in navigation frame [m/s^2]
-   * @param gyr  Corrected angular velocity in body frame [rad/s]
+   * @brief Predict step using one IMU sample.
+   * @param acc  Measured specific force, BODY frame (mounting-rotated, raw —
+   *             the current bias estimate is subtracted inside) [m/s^2]
+   * @param gyr  Measured angular rate, BODY frame (mounting-rotated, raw —
+   *             the current bias estimate is subtracted inside) [rad/s]
    * @param dt   Time step [s]
    */
   void predict(const Eigen::Vector3d& acc, const Eigen::Vector3d& gyr, double dt);
 
   /**
-   * @brief Build the discrete error-state transition matrix F (15x15).
-   *
-   * Pure function of the linearization point — exposed (public, static) so the
-   * Jacobian can be unit-tested against finite differences (see
-   * test/test_gnss_imu_ekf.cpp). Uses the LOCAL (body-frame) attitude-error
-   * convention; in particular the velocity-attitude block is
-   * F(VEL,ATT) = -C_bn*[acc_corrected x]*dt, NOT the global form
-   * -[ (C_bn*acc) x ]*dt. See the convention note in gnss_imu_kalman_filter.cpp.
-   *
-   * @param C_bn           body->nav rotation at the linearization point
-   * @param acc_corrected  bias-corrected specific force, body frame [m/s^2]
-   * @param gyr_corrected  bias-corrected angular rate, body frame [rad/s]
-   * @param dt             time step [s]
+   * @brief Discrete error-state transition matrix F (15x15). Static/pure so it
+   *        can be finite-difference tested. Uses the LOCAL (body-frame)
+   *        attitude-error convention: F(VEL,ATT) = -C_bn*[acc x]*dt (see the
+   *        convention note in the .cpp). Inputs are bias-corrected body-frame
+   *        specific force / angular rate at the linearization point.
    */
  public:
   static Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM>
@@ -359,106 +350,139 @@ class GnssImuKalmanFilter : public rclcpp::Node {
                        const Eigen::Vector3d& acc_corrected,
                        const Eigen::Vector3d& gyr_corrected, double dt);
 
+  /**
+   * @brief Yaw Jacobian d(yaw)/d(delta_theta_body) for the right-local attitude
+   *        error: [0, sin(roll)/cos(pitch), cos(roll)/cos(pitch)]. NOT
+   *        C_bn.row(2) (equal only at zero tilt). Static for FD testing.
+   */
+  static Eigen::Matrix<double, 1, 3> headingJacobian(double roll, double pitch);
+
+  /**
+   * @brief Accelerometer-bias Jacobian for the leveling update,
+   *        H(AB) = (I - u_pred*u_pred^T) / f_norm with
+   *        u_pred = C_bn^T*e_z, f_norm = ||acc_mean - b_a||. Static for FD testing.
+   */
+  static Eigen::Matrix3d levelingBiasJacobian(const Eigen::Vector3d& u_pred, double f_norm);
+
+  /**
+   * @brief Symmetrize and validate a measurement covariance: replaces R with
+   *        `fallback` unless it is finite, has all diagonal entries >= min_var,
+   *        and is positive semi-definite (checked via LDLT). Returns true iff
+   *        the original R (post-symmetrization) was used as-is.
+   */
+  static bool sanitizeCovariance(Eigen::Matrix3d& R, const Eigen::Matrix3d& fallback, double min_var);
+
  private:
 
   /**
-   * @brief GNSS position measurement update
-   * @param z_pos  Observed position (local ENU)
-   * @param R_pos  Measurement noise covariance (3x3)
+   * @brief GNSS position update (local ENU).
+   * @return true iff kalmanUpdate() actually applied a correction.
    */
-  void updateGnssPosition(const Eigen::Vector3d& z_pos,
+  bool updateGnssPosition(const Eigen::Vector3d& z_pos,
                           const Eigen::Matrix3d& R_pos);
 
   /**
-   * @brief GNSS heading (yaw) measurement update from Doppler velocity
-   * @param heading_rad  Observed heading [rad]
-   * @param heading_var  Heading variance [rad^2]
+   * @brief GNSS heading (yaw) update from the Doppler course [rad, rad^2].
+   * @return true iff a correction was actually applied.
    */
-  void updateGnssHeading(double heading_rad, double heading_var);
+  bool updateGnssHeading(double heading_rad, double heading_var);
 
   /**
-   * @brief GNSS velocity measurement update (nav-frame velocity from Doppler)
-   * @param z_vel  Observed velocity in local ENU [m/s]
-   * @param R_vel  Measurement noise covariance (3x3)
-   *
-   * Independent of and complementary to the wheel-speed update: GNSS gives the
-   * absolute 3-axis nav-frame velocity (when GNSS is good), wheel speed gives the
-   * continuous body-frame longitudinal velocity. Both are applied as separate
-   * updates and fused via their covariances.
+   * @brief GNSS velocity update (nav-frame Doppler velocity, local ENU).
+   *        Complementary to the wheel update (absolute nav-frame vs body-frame).
+   * @return true iff a correction was actually applied.
    */
-  void updateGnssVelocity(const Eigen::Vector3d& z_vel,
+  bool updateGnssVelocity(const Eigen::Vector3d& z_vel,
                           const Eigen::Matrix3d& R_vel);
 
   /**
-   * @brief Continuous accelerometer leveling update (gravity-direction obs).
-   *
-   * Called every IMU sample; observes roll/pitch only. Uses a moving average of
-   * the specific force / angular rate over leveling_window (from imu_buffer_) to
-   * reject per-sample IMU noise. The measurement noise self-weights with the
-   * kinematic acceleration and angular rate; the update is skipped when the
-   * (averaged) kinematic acceleration exceeds leveling_max_acc.
+   * @brief Accelerometer leveling update (roll/pitch) from a moving average of
+   *        the specific force up to @p stamp. At most one update per
+   *        leveling_window so successive updates use disjoint data windows;
+   *        samples newer than @p stamp are ignored (causal during OOSM replay).
    */
-  void updateLeveling();
+  void updateLeveling(const rclcpp::Time& stamp);
 
   /**
-   * @brief Zero-velocity update. Called at IMU rate; fires when the sliding-
-   *        window acc/gyr standard deviations are below the zupt_* thresholds.
+   * @brief Zero-velocity update; see the zupt_* config gates. Samples newer
+   *        than @p stamp are ignored (causal during OOSM replay).
    */
   void updateZupt(const rclcpp::Time& stamp);
 
   /**
-   * @brief Inject an error-state correction dx into the nominal state and apply
-   *        the ESKF covariance reset for the attitude block:
-   *        P <- G P G^T with G_att = I - 0.5*[dtheta x] (right-multiplicative
-   *        local error convention). All measurement updates go through this.
+   * @brief Inject dx into the nominal state + ESKF attitude covariance reset
+   *        (P <- G P G^T, right-local convention). All updates go through this.
    */
   void applyErrorState(const Eigen::Matrix<double, ERROR_STATE_DIM, 1>& dx);
 
   /**
-   * @brief Shared EKF measurement update: S = H P H^T + R, K = P H^T S^-1,
-   *        Joseph-form covariance update + symmetrization, then
-   *        applyErrorState(K*innovation) (state injection + ESKF reset).
-   *        Skips (returns false, throttled WARN) on non-finite inputs or a
-   *        non-invertible innovation covariance S.
+   * @brief Shared measurement update: gain, Joseph-form covariance update, then
+   *        applyErrorState(). Returns false (throttled WARN) on non-finite
+   *        inputs or a non-invertible innovation covariance.
    */
   bool kalmanUpdate(const Eigen::VectorXd& innovation,
                     const Eigen::MatrixXd& H,
                     const Eigen::MatrixXd& R);
 
   /**
-   * @brief Wheel speed velocity measurement update (called from onWheelSpeed* callbacks)
-   * @param linear_velocity  Observed velocity in body frame [m/s]
-   * @param covariance       Measurement noise covariance (3x3)
+   * @brief Wheel-speed callback body: buffer the measurement (for OOSM replay)
+   *        and apply it at its epoch via applyTimeAlignedUpdate.
    */
   void processWheelSpeed(const Eigen::Vector3d& linear_velocity,
                          const Eigen::Matrix3d& covariance,
                          const rclcpp::Time& t_obs);
 
   /**
-   * @brief Advance the EKF state from prev_imu_stamp_ to t_obs using buffered IMU samples.
-   *        Used to time-align asynchronous observations (GNSS, wheel speed) before
-   *        applying their measurement update. Forward-only: out-of-sequence
-   *        measurements (t_obs < prev_imu_stamp_) trigger a warning and the state
-   *        is left unchanged (caller may proceed with the legacy immediate-update).
+   * @brief One wheel-speed update at the current state; shared by the live path
+   *        and OOSM replay so both produce identical corrections.
+   * @return true iff a correction was applied.
    */
-  void predictToTime(const rclcpp::Time& t_obs);
+  bool applyWheelUpdate(const Eigen::Vector3d& linear_velocity,
+                        const Eigen::Matrix3d& covariance);
 
   /**
-   * @brief Apply a measurement update at its true observation epoch, handling
-   *        out-of-sequence (latent) observations via store-and-rewind.
-   *
-   * If time alignment is disabled or the filter is not yet initialized, @p doUpdate
-   * runs immediately at the current state (legacy behaviour). Otherwise:
-   *  - t_obs >= state time: forward-integrate to t_obs, then update (no rewind).
-   *  - t_obs <  state time (OOSM): rewind x_/P_ to the snapshot at/just-before
-   *    t_obs, forward-integrate to t_obs, run @p doUpdate, then re-propagate the
-   *    buffered IMU samples back up to the previous state time. Falls back to an
-   *    immediate update if t_obs predates the retained buffer.
-   *
-   * @p doUpdate must read the current state (it is invoked after the rewind).
+   * @brief Re-apply buffered wheel measurements in (from_excl, to_incl],
+   *        skipping @p skip_stamp (applied separately by the current update).
+   */
+  void replayWheelEvents(const rclcpp::Time& from_excl,
+                         const rclcpp::Time& to_incl,
+                         const rclcpp::Time& skip_stamp);
+
+  /**
+   * @brief One IMU epoch: predict, leveling/ZUPT, optional wheel replay,
+   *        snapshot. The single definition shared by the live path and OOSM
+   *        re-propagation, so both produce the same state.
+   */
+  void processImuEpoch(const ImuSample& s, double dt, bool replay_wheel,
+                       const rclcpp::Time& skip_wheel_stamp);
+
+  /**
+   * @brief Advance the state from prev_imu_stamp_ to t_obs using buffered IMU
+   *        samples (via processImuEpoch). Forward-only; the caller handles rewinds.
+   */
+  void predictToTime(const rclcpp::Time& t_obs,
+                     const rclcpp::Time& skip_wheel_stamp = rclcpp::Time(0, 0, RCL_ROS_TIME));
+
+  /**
+   * @brief Most recent buffered IMU sample with stamp <= t (nullptr if none).
+   *        Never returns a sample from the future of the epoch being evaluated
+   *        (which a rewind can otherwise expose).
+   */
+  const ImuSample* lastImuSampleAtOrBefore(const rclcpp::Time& t) const;
+
+  /**
+   * @brief Apply a measurement update at its epoch t_obs.
+   *        t_obs >= state time: forward-integrate, then update. t_obs < state
+   *        time (late GNSS): store-and-rewind — restore the snapshot at/before
+   *        t_obs, update there, re-propagate buffered IMU/wheel forward. Falls
+   *        back to an immediate update when alignment is off, before init, or
+   *        when t_obs predates the buffer.
+   * @param skip_wheel_stamp  wheel stamp excluded from replay (set to t_obs
+   *        when the trigger is itself a wheel update, so it is not applied twice).
    */
   void applyTimeAlignedUpdate(const rclcpp::Time& t_obs,
-                              const std::function<void()>& doUpdate);
+                              const std::function<void()>& doUpdate,
+                              const rclcpp::Time& skip_wheel_stamp = rclcpp::Time(0, 0, RCL_ROS_TIME));
 
   /**
    * @brief Push a {stamp, x_, P_} snapshot for the current state time and drop
@@ -538,12 +562,9 @@ class GnssImuKalmanFilter : public rclcpp::Node {
 
   /**
    * @brief Rotate a GNSS velocity (and covariance) into the FIXED origin ENU
-   *        frame (origin_llh_), the frame of the EKF velocity state.
-   *        GnssSolution.vel_enu is defined at the CURRENT receiver position, so
-   *        it disagrees with the origin frame for a manual origin or long
-   *        travel. Prefers vel_ecef (rotated directly at origin_llh_) and falls
-   *        back to a two-stage rotation via the current position; returns
-   *        invalid if neither is usable.
+   *        frame (origin_llh_) — the frame of the EKF velocity state. Prefers
+   *        vel_ecef, falls back via the current-position ENU; invalid if
+   *        neither is usable.
    */
   OriginVelocity computeOriginFrameVelocity(const GnssSnapshot& snap) const;
 
@@ -572,8 +593,11 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   bool has_initial_imu_  = false;
   bool has_initial_yaw_  = false;
 
-  // Cached initial data for initialization
+  // Initialization anchors; refreshed on every usable fix while waiting for
+  // yaw, so tryInitialize() starts from the freshest fix, not the first one.
   Eigen::Vector3d init_gnss_pos_ecef_ = Eigen::Vector3d::Zero();
+  Eigen::Vector3d init_gnss_vel_enu_ = Eigen::Vector3d::Zero();
+  bool init_gnss_vel_valid_ = false;
   Eigen::Vector3d init_imu_acc_sum_ = Eigen::Vector3d::Zero();
   int init_imu_acc_count_ = 0;
   rclcpp::Time init_imu_start_time_{0, 0, RCL_ROS_TIME};
@@ -599,8 +623,18 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   // sample), used to rewind for out-of-sequence (latent GNSS) observations.
   std::deque<StateSnapshot> state_buffer_;
 
-  // Rate limiting for ZUPT.
+  // Ring buffer of recent wheel-speed measurements, replayed at their epoch
+  // when an OOSM rewind discards the snapshots that first applied them.
+  std::deque<WheelMeas> wheel_buffer_;
+
+  // GNSS epoch time source (config gnss_time_source); holds the sliding
+  // clock-offset window for the tow_auto_offset mode.
+  gnss_utils::GnssEpochAligner gnss_epoch_aligner_;
+
+  // ZUPT/leveling rate-limit bookkeeping. Deliberately NOT snapshotted/rewound:
+  // a replay may re-hit a rate limit; the loss is bounded by the GNSS latency.
   rclcpp::Time last_zupt_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_leveling_stamp_{0, 0, RCL_ROS_TIME};
 
   // Latest MEASURED horizontal speed (GNSS or wheel) and its time, used to gate
   // ZUPT generically (no self-referential estimated-speed test).

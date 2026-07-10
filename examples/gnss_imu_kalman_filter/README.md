@@ -20,8 +20,3 @@ ros2 run gnss_ros_standardization gnss_imu_kalman_filter --ros-args \
 | Sub | `topics.imu_raw` (`/gnss/imu/data_raw`) | `sensor_msgs/Imu` |
 | Sub | `topics.wheel_speed` (`/can_twist`) | `geometry_msgs/TwistWithCovarianceStamped` (when `use_wheel_speed: true`) |
 | Pub | `topics.solution` (`/gnss/fusion/ekf_solution`) | `GnssSolution` |
-
-For best accuracy drive it with a 10 Hz RTK stream from
-[`real_time_kinematic`](../real_time_kinematic/). Update modes (`fix_only` /
-`fix_float` / `all`) and all filter tuning live in
-[the config](../../config/gnss_imu_kalman_filter.yaml).

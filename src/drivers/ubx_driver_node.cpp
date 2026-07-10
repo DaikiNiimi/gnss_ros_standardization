@@ -1096,7 +1096,9 @@ class UbxDriverNode : public rclcpp::Node {
       imu.linear_acceleration.y = s.accel[1];
       imu.linear_acceleration.z = s.accel[2];
 
-      auto unk = ins::makeUnknownCovariance();
+      // Values above are always provided by ESF-RAW; only their covariance is
+      // unknown -> all-zero, not "-1" (which claims the measurement is absent).
+      auto unk = ins::makeZeroCovariance();
       std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
       std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 

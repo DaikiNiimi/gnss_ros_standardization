@@ -93,6 +93,26 @@ Eigen::Matrix3d skew(const Eigen::Vector3d& v) {
 }
 }  // namespace
 
+bool GnssImuKalmanFilter::sanitizeCovariance(Eigen::Matrix3d& R,
+                                              const Eigen::Matrix3d& fallback,
+                                              double min_var) {
+  bool ok = R.allFinite();
+  if (ok) {
+    // .eval() forces a temporary: assigning an expression that contains the
+    // destination's own transpose is an Eigen aliasing violation (entry (i,j)
+    // reads the already-overwritten (j,i)) and silently yields an ASYMMETRIC
+    // result — the opposite of this line's purpose.
+    R = (0.5 * (R + R.transpose())).eval();
+    ok = R.diagonal().minCoeff() >= min_var;
+  }
+  if (ok) {
+    Eigen::LDLT<Eigen::Matrix3d> ldlt(R);
+    ok = (ldlt.info() == Eigen::Success) && ldlt.isPositive();
+  }
+  if (!ok) R = fallback;
+  return ok;
+}
+
 Eigen::Vector3d GnssImuKalmanFilter::ecefToEnu(const Eigen::Vector3d& ecef) const {
   double pos_ref[3] = {origin_llh_(0), origin_llh_(1), origin_llh_(2)};
   double dr[3] = {ecef(0) - origin_ecef_(0),
@@ -316,6 +336,8 @@ void GnssImuKalmanFilter::loadParameters() {
   else if (mode_str == "all") c.gnss_update_mode = GnssUpdateMode::ALL;
   else c.gnss_update_mode = GnssUpdateMode::FIX_ONLY;
 
+  declare_parameter<bool>("use_doppler_heading", c.use_doppler_heading);
+  get_parameter("use_doppler_heading", c.use_doppler_heading);
   declare_parameter<double>("gnss_heading_speed_threshold", c.gnss_heading_speed_threshold);
   get_parameter("gnss_heading_speed_threshold", c.gnss_heading_speed_threshold);
 
@@ -326,11 +348,19 @@ void GnssImuKalmanFilter::loadParameters() {
   get_parameter("gnss.cov_min_var", c.gnss_cov_min_var);
   declare_parameter<double>("gnss.vel_sigma_default", c.gnss_vel_sigma_default);
   get_parameter("gnss.vel_sigma_default", c.gnss_vel_sigma_default);
+  declare_parameter<std::string>("gnss.pos_cov_source", c.gnss_pos_cov_source);
+  get_parameter("gnss.pos_cov_source", c.gnss_pos_cov_source);
+  declare_parameter<std::string>("gnss.vel_cov_source", c.gnss_vel_cov_source);
+  get_parameter("gnss.vel_cov_source", c.gnss_vel_cov_source);
 
   declare_parameter<bool>("ekf.time_align_to_gnss", c.time_align_to_gnss);
   get_parameter("ekf.time_align_to_gnss", c.time_align_to_gnss);
   declare_parameter<double>("ekf.imu_buffer_duration", c.imu_buffer_duration);
   get_parameter("ekf.imu_buffer_duration", c.imu_buffer_duration);
+  declare_parameter<std::string>("ekf.gnss_time_source", c.gnss_time_source);
+  get_parameter("ekf.gnss_time_source", c.gnss_time_source);
+  declare_parameter<double>("ekf.gnss_offset_window_s", c.gnss_offset_window_s);
+  get_parameter("ekf.gnss_offset_window_s", c.gnss_offset_window_s);
 
   declare_parameter<bool>("use_wheel_speed", c.use_wheel_speed);
   declare_parameter<std::string>("wheel_speed_topic_type", c.wheel_speed_topic_type);
@@ -369,6 +399,9 @@ void GnssImuKalmanFilter::loadParameters() {
   declare_parameter<double>("zupt.min_interval", c.zupt_min_interval);
   declare_parameter<double>("zupt.speed_thresh", c.zupt_speed_thresh);
   declare_parameter<double>("zupt.speed_timeout", c.zupt_speed_timeout);
+  declare_parameter<bool>("zupt.allow_imu_only", c.zupt_allow_imu_only);
+  declare_parameter<double>("zupt.gyr_mean_thresh", c.zupt_gyr_mean_thresh);
+  declare_parameter<double>("zupt.acc_mean_thresh", c.zupt_acc_mean_thresh);
   get_parameter("zupt.enable", c.zupt_enable);
   get_parameter("zupt.window", c.zupt_window);
   get_parameter("zupt.acc_std_thresh", c.zupt_acc_std_thresh);
@@ -377,6 +410,9 @@ void GnssImuKalmanFilter::loadParameters() {
   get_parameter("zupt.min_interval", c.zupt_min_interval);
   get_parameter("zupt.speed_thresh", c.zupt_speed_thresh);
   get_parameter("zupt.speed_timeout", c.zupt_speed_timeout);
+  get_parameter("zupt.allow_imu_only", c.zupt_allow_imu_only);
+  get_parameter("zupt.gyr_mean_thresh", c.zupt_gyr_mean_thresh);
+  get_parameter("zupt.acc_mean_thresh", c.zupt_acc_mean_thresh);
 
   declare_parameter<double>("init_imu_duration", c.init_imu_duration);
   get_parameter("init_imu_duration", c.init_imu_duration);
@@ -388,6 +424,11 @@ void GnssImuKalmanFilter::loadParameters() {
   
   declare_parameter<std::string>("output_reference_frame", c.output_reference_frame);
   get_parameter("output_reference_frame", c.output_reference_frame);
+
+  declare_parameter<std::string>("frames.world", c.frame_world);
+  get_parameter("frames.world", c.frame_world);
+  declare_parameter<std::string>("frames.child", c.frame_child);
+  get_parameter("frames.child", c.frame_child);
 
   declare_parameter<std::vector<double>>("lever_arm", {0.0, 0.0, 0.0});
   auto la = get_parameter("lever_arm").as_double_array();
@@ -401,6 +442,22 @@ void GnssImuKalmanFilter::loadParameters() {
   if (c.output_reference_frame != "gnss" && c.output_reference_frame != "imu") {
     throw std::invalid_argument(
       "output_reference_frame must be 'gnss' or 'imu', got: '" + c.output_reference_frame + "'");
+  }
+  gnss_utils::GnssEpochAligner::Config tcfg;
+  if (!gnss_utils::GnssEpochAligner::parseSource(c.gnss_time_source, tcfg.source)) {
+    throw std::invalid_argument(
+      "ekf.gnss_time_source must be 'header' or 'tow_auto_offset', got: '" +
+      c.gnss_time_source + "'");
+  }
+  tcfg.offset_window_s = c.gnss_offset_window_s;
+  gnss_epoch_aligner_ = gnss_utils::GnssEpochAligner(tcfg);
+
+  for (const auto* p : {&c.gnss_pos_cov_source, &c.gnss_vel_cov_source}) {
+    if (*p != "message" && *p != "config") {
+      throw std::invalid_argument(
+        "gnss.pos_cov_source / gnss.vel_cov_source must be 'message' or "
+        "'config', got: '" + *p + "'");
+    }
   }
 }
 
@@ -431,6 +488,13 @@ bool GnssImuKalmanFilter::tryInitialize() {
     x_.segment<3>(IDX_POS) = p_gnss - lever;
   } else {
     x_.segment<3>(IDX_POS) = p_gnss;
+  }
+
+  // Initial velocity from the SAME GNSS epoch as the position/yaw above
+  // (moving-start support); falls back to the legacy v=0 (stationary-start
+  // assumption) when no usable velocity was available at that epoch.
+  if (init_gnss_vel_valid_) {
+    x_.segment<3>(IDX_VEL) = init_gnss_vel_enu_;
   }
 
   // Initial covariance (per-axis)
@@ -472,8 +536,7 @@ GnssImuKalmanFilter::errorStateTransition(const Eigen::Matrix3d& C_bn,
 void GnssImuKalmanFilter::predict(const Eigen::Vector3d& acc_body, const Eigen::Vector3d& gyr_body, double dt) {
   // Pure-math step. dt validity is the caller's responsibility; we silently
   // no-op on non-positive dt (expected after time-aligned ZOH extrapolation
-  // or out-of-order IMU samples) and on a sub-millisecond dt (negligible
-  // state change). Only a clock jump (dt > 1 s) is logged.
+  // or out-of-order IMU samples). Only a clock jump (dt > 1 s) is logged.
   if (dt <= 0.0) return;
   if (dt > 1.0) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
@@ -515,32 +578,83 @@ void GnssImuKalmanFilter::predict(const Eigen::Vector3d& acc_body, const Eigen::
   const Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM> F =
       errorStateTransition(C_bn, acc_corrected, gyr_corrected, dt);
 
-  // Process noise Q (per-axis).
-  // sigma_acc / sigma_gyr are continuous-time noise densities ([m/s^2/sqrt(Hz)],
-  // [rad/s/sqrt(Hz)]) and sigma_*_bias are bias random-walk densities. Discretize
-  // the white-noise-acceleration / -angular-rate model accordingly: velocity and
-  // attitude process noise scale with dt (position with dt^3/3), NOT dt^2/dt^4.
-  // Using the higher dt powers makes Q vanish at high IMU rates, so the filter
-  // becomes overconfident in IMU propagation and diverges between GNSS updates.
+  // Process noise Q, from a continuous-time white-noise-acceleration /
+  // -angular-rate model. sigma_acc / sigma_gyr are per-axis noise densities
+  // ([m/s^2/sqrt(Hz)], [rad/s/sqrt(Hz)]) and sigma_*_bias are bias
+  // random-walk densities.
+  //
+  // sigma_acc is specified in the BODY frame, so its contribution to the
+  // NAV-frame position/velocity block must be rotated: Qa_n = C_bn*Qa_b*C_bn^T
+  // (Qa_b = diag(sigma_acc^2)). With an isotropic sigma_acc this rotation is
+  // a no-op, but the standard block form is used unconditionally so per-axis
+  // (anisotropic) configurations stay correct.
+  //
+  // The position/velocity block also needs the Qpv/Qvp cross-covariance term
+  // (not just the diagonal Qpp, Qvv): under the white-acceleration model,
+  //   Qpp = Qa_n*dt^3/3,  Qpv = Qvp = Qa_n*dt^2/2,  Qvv = Qa_n*dt.
+  // Omitting Qpv/Qvp is a common but incomplete discretization; position and
+  // velocity noise driven by the same acceleration white noise are corr-
+  // elated within a step, not independent.
+  //
+  // Attitude/bias blocks are body-frame states (LOCAL attitude error, biases),
+  // so no C_bn rotation applies there: Q_att = diag(sigma_gyr^2)*dt,
+  // Q_ab = diag(sigma_acc_bias^2)*dt, Q_gb = diag(sigma_gyr_bias^2)*dt.
+  //
+  // All blocks scale with dt (position with dt^3), NOT dt^2/dt^4: the higher
+  // dt powers would make Q vanish at high IMU rates, making the filter
+  // overconfident in IMU propagation and prone to diverge between GNSS updates.
+  const Eigen::Matrix3d Qa_b = config_.sigma_acc.array().square().matrix().asDiagonal();
+  const Eigen::Matrix3d Qa_n = C_bn * Qa_b * C_bn.transpose();
+  const double dt2 = dt * dt, dt3 = dt2 * dt;
+
   Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM> Q;
   Q.setZero();
-  double dt3 = dt * dt * dt;
+  Q.block<3,3>(EIDX_POS, EIDX_POS) = Qa_n * (dt3 / 3.0);
+  Q.block<3,3>(EIDX_POS, EIDX_VEL) = Qa_n * (dt2 / 2.0);
+  Q.block<3,3>(EIDX_VEL, EIDX_POS) = Qa_n * (dt2 / 2.0);
+  Q.block<3,3>(EIDX_VEL, EIDX_VEL) = Qa_n * dt;
   for (int i = 0; i < 3; ++i) {
-    double sa  = config_.sigma_acc(i),      sg  = config_.sigma_gyr(i);
+    double sg  = config_.sigma_gyr(i);
     double sab = config_.sigma_acc_bias(i), sgb = config_.sigma_gyr_bias(i);
-    Q(EIDX_POS+i, EIDX_POS+i) = sa*sa * dt3 / 3.0;
-    Q(EIDX_VEL+i, EIDX_VEL+i) = sa*sa * dt;
     Q(EIDX_ATT+i, EIDX_ATT+i) = sg*sg * dt;
     Q(EIDX_AB+i,  EIDX_AB+i)  = sab*sab * dt;
     Q(EIDX_GB+i,  EIDX_GB+i)  = sgb*sgb * dt;
   }
 
   P_ = F * P_ * F.transpose() + Q;
+  P_ = (0.5 * (P_ + P_.transpose())).eval();  // .eval(): transpose self-assign aliasing (see sanitizeCovariance)
+}
+
+const ImuSample* GnssImuKalmanFilter::lastImuSampleAtOrBefore(const rclcpp::Time& t) const {
+  const ImuSample* best = nullptr;
+  for (const auto& s : imu_buffer_) {
+    if (s.stamp <= t && (best == nullptr || s.stamp > best->stamp)) best = &s;
+  }
+  return best;
+}
+
+// The single definition of "what happens at one real IMU epoch": predict, then
+// the per-epoch pseudo-observations (leveling, ZUPT), then (during replay only)
+// re-apply any wheel measurements that fall in this epoch's interval, then
+// snapshot. Sharing this between the live path and forward re-propagation is
+// what makes in-order processing and latency-replay produce the same state.
+void GnssImuKalmanFilter::processImuEpoch(const ImuSample& s, double dt,
+                                          bool replay_wheel,
+                                          const rclcpp::Time& skip_wheel_stamp) {
+  const rclcpp::Time from = prev_imu_stamp_;
+  predict(s.acc_body, s.gyr_body, dt);
+  prev_imu_stamp_ = s.stamp;
+  updateLeveling(s.stamp);
+  updateZupt(s.stamp);
+  if (replay_wheel) replayWheelEvents(from, s.stamp, skip_wheel_stamp);
+  pushStateSnapshot(s.stamp);
 }
 
 // Forward-only time alignment: advance the state from prev_imu_stamp_ to t_obs
-// using buffered IMU samples (and ZOH on the latest sample for any tail interval).
-void GnssImuKalmanFilter::predictToTime(const rclcpp::Time& t_obs) {
+// using buffered IMU samples (full per-epoch aiding + wheel replay), plus a ZOH
+// tail on the latest sample at/before t_obs for the fractional remainder.
+void GnssImuKalmanFilter::predictToTime(const rclcpp::Time& t_obs,
+                                        const rclcpp::Time& skip_wheel_stamp) {
   if (!initialized_ || !has_prev_imu_stamp_) return;
 
   double total = (t_obs - prev_imu_stamp_).seconds();
@@ -563,26 +677,37 @@ void GnssImuKalmanFilter::predictToTime(const rclcpp::Time& t_obs) {
   }
 
   // Walk forward through buffered IMU samples in (prev_imu_stamp_, t_obs).
+  // In the live synchronous path this walk is EMPTY (no buffered sample is newer
+  // than the state), so processImuEpoch is not invoked and behaviour is
+  // unchanged; it only does work during OOSM re-propagation.
   for (const auto& s : imu_buffer_) {
     if (s.stamp <= prev_imu_stamp_) continue;
     if (s.stamp >= t_obs) break;
     double dt = (s.stamp - prev_imu_stamp_).seconds();
-    if (dt > 1e-6) predict(s.acc_body, s.gyr_body, dt);
-    prev_imu_stamp_ = s.stamp;
+    if (dt > 1e-6) processImuEpoch(s, dt, /*replay_wheel=*/true, skip_wheel_stamp);
+    else prev_imu_stamp_ = s.stamp;  // duplicate/zero-dt sample: just advance
   }
 
-  // Tail: ZOH-extrapolate the most recent IMU sample up to t_obs — but ONLY for
-  // genuinely-ahead observations. For a synchronous / high-rate observation
-  // (within ~one IMU interval of the state), apply the update at the current
-  // state instead: extrapolating on every observation would re-run a
-  // predict-then-update cycle each time and pump the marginally-observed lateral
-  // velocity, destabilizing IMU-rate wheel updates. The residual mis-alignment is
-  // bounded by one IMU interval (a few cm at 100 Hz IMU).
+  // Tail: ZOH-extrapolate the most recent IMU sample AT OR BEFORE t_obs up to
+  // t_obs — but ONLY for genuinely-ahead observations. For a synchronous /
+  // high-rate observation (within ~one IMU interval of the state), apply the
+  // update at the current state instead: extrapolating on every observation
+  // would re-run a predict-then-update cycle each time and pump the
+  // marginally-observed lateral velocity, destabilizing IMU-rate wheel
+  // updates. The residual mis-alignment is bounded by one IMU interval (a few
+  // cm at 100 Hz IMU).
+  //
+  // Must use lastImuSampleAtOrBefore(t_obs), NOT imu_buffer_.back(): after a
+  // store-and-rewind (applyTimeAlignedUpdate), imu_buffer_ still holds
+  // samples up to the pre-rewind head time, which is AFTER t_obs — using
+  // .back() there would ZOH-extrapolate with a sample from the future.
   double dt_tail = (t_obs - prev_imu_stamp_).seconds();
-  if (dt_tail > 1.5 * nominal_imu_dt_ && !imu_buffer_.empty()) {
-    const auto& last = imu_buffer_.back();
-    predict(last.acc_body, last.gyr_body, dt_tail);
-    prev_imu_stamp_ = t_obs;
+  if (dt_tail > 1.5 * nominal_imu_dt_) {
+    const ImuSample* last = lastImuSampleAtOrBefore(t_obs);
+    if (last != nullptr) {
+      predict(last->acc_body, last->gyr_body, dt_tail);
+      prev_imu_stamp_ = t_obs;
+    }
   }
 }
 
@@ -602,7 +727,8 @@ void GnssImuKalmanFilter::pushStateSnapshot(const rclcpp::Time& stamp) {
 
 // Store-and-rewind measurement update for out-of-sequence (latent) observations.
 void GnssImuKalmanFilter::applyTimeAlignedUpdate(const rclcpp::Time& t_obs,
-                                                 const std::function<void()>& doUpdate) {
+                                                 const std::function<void()>& doUpdate,
+                                                 const rclcpp::Time& skip_wheel_stamp) {
   // Legacy immediate-update when alignment is off or no state-time reference yet.
   if (!config_.time_align_to_gnss || !initialized_ || !has_prev_imu_stamp_) {
     doUpdate();
@@ -612,7 +738,7 @@ void GnssImuKalmanFilter::applyTimeAlignedUpdate(const rclcpp::Time& t_obs,
   const double ahead = (t_obs - prev_imu_stamp_).seconds();
   if (ahead >= 0.0) {
     // Synchronous / future observation: forward-align then update (no rewind).
-    predictToTime(t_obs);
+    predictToTime(t_obs, skip_wheel_stamp);
     doUpdate();
     return;
   }
@@ -642,19 +768,21 @@ void GnssImuKalmanFilter::applyTimeAlignedUpdate(const rclcpp::Time& t_obs,
     state_buffer_.pop_back();
   }
 
-  // Forward-integrate to the observation epoch and apply the update there.
-  predictToTime(t_obs);
+  // Forward-integrate to the observation epoch (replaying leveling/ZUPT/wheel at
+  // each rebuilt epoch) and apply the update there.
+  predictToTime(t_obs, skip_wheel_stamp);
   doUpdate();
 
-  // Re-propagate the buffered IMU samples from the (corrected) observation epoch
-  // back up to the previous state time, rebuilding their snapshots.
+  // Re-propagate from the (corrected) observation epoch back up to the previous
+  // state time, running the SAME per-epoch processing (leveling/ZUPT/wheel) and
+  // rebuilding snapshots — so nothing that had been applied in the rewound
+  // interval is silently dropped.
   for (const auto& s : imu_buffer_) {
     if (s.stamp <= prev_imu_stamp_) continue;
     if (s.stamp > head_stamp) break;
     const double dt = (s.stamp - prev_imu_stamp_).seconds();
-    if (dt > 1e-6) predict(s.acc_body, s.gyr_body, dt);
-    prev_imu_stamp_ = s.stamp;
-    pushStateSnapshot(s.stamp);
+    if (dt > 1e-6) processImuEpoch(s, dt, /*replay_wheel=*/true, skip_wheel_stamp);
+    else prev_imu_stamp_ = s.stamp;
   }
 }
 
@@ -689,7 +817,7 @@ void GnssImuKalmanFilter::applyErrorState(
     G.setIdentity();
     G.block<3,3>(EIDX_ATT, EIDX_ATT) -= 0.5 * skew(dtheta);
     P_ = G * P_ * G.transpose();
-    P_ = 0.5 * (P_ + P_.transpose());
+    P_ = (0.5 * (P_ + P_.transpose())).eval();  // .eval(): transpose self-assign aliasing (see sanitizeCovariance)
   }
 }
 
@@ -723,14 +851,14 @@ bool GnssImuKalmanFilter::kalmanUpdate(const Eigen::VectorXd& innovation,
       Eigen::Matrix<double, ERROR_STATE_DIM, ERROR_STATE_DIM>::Identity();
   const Eigen::MatrixXd IKH = I15 - K * H;
   P_ = IKH * P_ * IKH.transpose() + K * R * K.transpose();
-  P_ = 0.5 * (P_ + P_.transpose());
+  P_ = (0.5 * (P_ + P_.transpose())).eval();  // .eval(): transpose self-assign aliasing (see sanitizeCovariance)
 
   applyErrorState(dx);
   return true;
 }
 
 // GNSS Position Update
-void GnssImuKalmanFilter::updateGnssPosition(const Eigen::Vector3d& z_pos,
+bool GnssImuKalmanFilter::updateGnssPosition(const Eigen::Vector3d& z_pos,
                                   const Eigen::Matrix3d& R_pos) {
   // Observation: GNSS Antenna Position z_pos = p_gnss
   Eigen::Vector3d innovation;
@@ -754,41 +882,57 @@ void GnssImuKalmanFilter::updateGnssPosition(const Eigen::Vector3d& z_pos,
     H.block<3,3>(0, EIDX_POS) = Eigen::Matrix3d::Identity();
   }
 
-  kalmanUpdate(innovation, H, R_pos);
+  return kalmanUpdate(innovation, H, R_pos);
+}
+
+Eigen::Matrix<double, 1, 3> GnssImuKalmanFilter::headingJacobian(double roll, double pitch) {
+  // dyaw/ddelta_theta_b = [0, sin(roll)/cos(pitch), cos(roll)/cos(pitch)].
+  // Derivation: the residual is the Euler yaw extracted from the quaternion
+  // (atan2-based ZYX yaw), NOT the nav-frame rotation-vector z-component
+  // C_bn.row(2) — those two only coincide at zero tilt. Caller must gate on
+  // |cos(pitch)| to avoid the gimbal-lock singularity.
+  const double cp = std::cos(pitch);
+  Eigen::Matrix<double, 1, 3> H;
+  H << 0.0, std::sin(roll) / cp, std::cos(roll) / cp;
+  return H;
 }
 
 // GNSS Heading Update (from Doppler velocity)
-void GnssImuKalmanFilter::updateGnssHeading(double heading_rad, double heading_var) {
+bool GnssImuKalmanFilter::updateGnssHeading(double heading_rad, double heading_var) {
   Eigen::Quaterniond q_pred = getQuaternion();
   Eigen::Vector3d euler = quaternionToEuler(q_pred);
-  double yaw_pred = euler(2);
+  const double roll = euler(0), pitch = euler(1), yaw_pred = euler(2);
+
+  // Near-gimbal-lock (pitch -> +-90 deg) the Euler-yaw Jacobian is singular;
+  // skip rather than inject a blown-up correction. Not expected in normal
+  // ground/air vehicle operation.
+  if (std::abs(std::cos(pitch)) < 0.2) return false;
 
   double yaw_err = heading_rad - yaw_pred;
   // Normalize to [-pi, pi]
   while (yaw_err >  M_PI) yaw_err -= 2.0 * M_PI;
   while (yaw_err < -M_PI) yaw_err += 2.0 * M_PI;
 
-  // The state carries a LOCAL (body-frame) attitude error δθ; the nav-frame
-  // rotation error is C_bn·δθ, so the observed nav-frame yaw error is its
-  // Z-component: yaw_err = (C_bn·δθ)_z = C_bn.row(2)·δθ. Near level C_bn.row(2)
-  // ≈ [0,0,1], but using the exact third row keeps the update correct under tilt.
-  Eigen::Matrix3d C_bn = getRotationMatrix();
+  // The residual is the Euler yaw error; its Jacobian w.r.t. the LOCAL
+  // (body-frame) attitude error δθ_b is headingJacobian(roll, pitch) — see
+  // that function's derivation note. (This is NOT C_bn.row(2), which is the
+  // nav-frame rotation-vector Jacobian and only matches at zero tilt.)
   Eigen::Matrix<double, 1, ERROR_STATE_DIM> H;
   H.setZero();
-  H.block<1,3>(0, EIDX_ATT) = C_bn.row(2);
+  H.block<1,3>(0, EIDX_ATT) = headingJacobian(roll, pitch);
 
   Eigen::VectorXd innovation(1);
   innovation(0) = yaw_err;
   Eigen::MatrixXd R(1, 1);
   R(0, 0) = heading_var;
-  kalmanUpdate(innovation, H, R);
+  return kalmanUpdate(innovation, H, R);
 }
 
 // GNSS Velocity Update (nav-frame Doppler velocity)
 //   Observation: GNSS antenna velocity z_vel = v_gnss, in the working frame.
 //   This is a standard, independent velocity aiding update (complementary to the
 //   wheel-speed body-frame longitudinal update).
-void GnssImuKalmanFilter::updateGnssVelocity(const Eigen::Vector3d& z_vel,
+bool GnssImuKalmanFilter::updateGnssVelocity(const Eigen::Vector3d& z_vel,
                                              const Eigen::Matrix3d& R_vel) {
   Eigen::Matrix<double, 3, ERROR_STATE_DIM> H;
   H.setZero();
@@ -800,7 +944,15 @@ void GnssImuKalmanFilter::updateGnssVelocity(const Eigen::Vector3d& z_vel,
   Eigen::Vector3d v_pred = x_.segment<3>(IDX_VEL);
   if (config_.output_reference_frame == "imu" && config_.lever_arm.norm() > 0.0) {
     Eigen::Matrix3d C_bn = getRotationMatrix();
-    Eigen::Vector3d omega = latest_imu_gyr_ - x_.segment<3>(IDX_GB);
+    // Use the gyro sample AT the state/observation epoch (prev_imu_stamp_),
+    // not latest_imu_gyr_ (the most recent callback-time sample): after a
+    // store-and-rewind this update runs with the state rewound to t_obs, so
+    // latest_imu_gyr_ would be a later, inconsistent-epoch value whenever the
+    // platform is turning (nonzero lever arm + turn is exactly the case this
+    // breaks).
+    const ImuSample* epoch_sample = lastImuSampleAtOrBefore(prev_imu_stamp_);
+    const Eigen::Vector3d& gyr_at_epoch = epoch_sample != nullptr ? epoch_sample->gyr_body : latest_imu_gyr_;
+    Eigen::Vector3d omega = gyr_at_epoch - x_.segment<3>(IDX_GB);
     Eigen::Vector3d wxl = omega.cross(config_.lever_arm);
     v_pred += C_bn * wxl;
 
@@ -808,32 +960,49 @@ void GnssImuKalmanFilter::updateGnssVelocity(const Eigen::Vector3d& z_vel,
     H.block<3,3>(0, EIDX_GB)  = C_bn * skew(config_.lever_arm); // d(C_bn*(w x l))/d(gyro_bias)
   }
 
-  kalmanUpdate(z_vel - v_pred, H, R_vel);
+  return kalmanUpdate(z_vel - v_pred, H, R_vel);
 }
 
-// Continuous Accelerometer Leveling Update (gravity-direction observation)
-//   The bias-corrected specific force points along +Up in the body frame:
-//   f_body ≈ -C_bnᵀ·g = ||g||·C_bnᵀ·e_z. Observing its unit direction constrains
-//   roll/pitch directly (yaw — rotation about gravity — stays unobserved: H's
-//   null space contains u_pred). With a low-grade IMU the gravity-dominated
-//   specific force turns a sub-degree attitude error into a large spurious
-//   horizontal acceleration ("gravity leak") that dead-reckons between GNSS
-//   fixes; running this update continuously keeps roll/pitch — and thus the
-//   gravity projection — bounded. Instead of a hard quasi-static gate the
-//   measurement noise is inflated by the departure from pure gravity
-//   (| ||f||-g |) and by the angular rate, so the update self-weights: strong
-//   when near-static, negligible under manoeuvre.
-void GnssImuKalmanFilter::updateLeveling() {
+Eigen::Matrix3d GnssImuKalmanFilter::levelingBiasJacobian(const Eigen::Vector3d& u_pred, double f_norm) {
+  // Physical model (attitude fixed, isolating the bias effect):
+  //   f_body_true = C_bn^T*(-g)                (gravity term at truth)
+  //   acc_mean    = f_body_true + b_a_true      (sensor model, b_a_true = b_a_hat + delta_b_a)
+  //   f (code)    = acc_mean - b_a_hat = f_body_true + delta_b_a   <- b_a_hat CANCELS,
+  //                                                                   delta_b_a enters ADDITIVELY
+  //   u_meas      = normalize(f) = normalize(f_body_true + delta_b_a)
+  //   u_pred      = normalize(f_body_true)
+  // so d(u_meas)/d(delta_b_a) at delta_b_a=0 is normalize()'s plain forward
+  // derivative (I - u_pred*u_pred^T)/f_norm — a POSITIVE sign, not negative
+  // (subtracting delta_b_a here would incorrectly double-apply the bias
+  // correction). Verified against a full finite-difference simulation of the
+  // above model (not just the innovation algebra, which is easy to sign-flip).
+  return (Eigen::Matrix3d::Identity() - u_pred * u_pred.transpose()) / f_norm;
+}
+
+// Accelerometer Leveling Update (gravity-direction observation).
+//   The specific force f_body ≈ ||g||·C_bnᵀ·e_z observes roll/pitch (yaw stays
+//   unobserved), bounding the "gravity leak" that dead-reckons into position
+//   between fixes. The noise inflates with kinematic acceleration / angular
+//   rate (self-weighting instead of a hard quasi-static gate).
+//   Applied at most once per leveling_window so consecutive updates use
+//   DISJOINT moving-average windows — running it every IMU sample would feed
+//   near-identical observations as independent and collapse the covariance.
+void GnssImuKalmanFilter::updateLeveling(const rclcpp::Time& stamp) {
   if (!config_.leveling_enable || !initialized_ || imu_buffer_.empty()) return;
 
-  // Moving average of the specific force / angular rate over leveling_window to
-  // reject per-sample IMU noise (which would otherwise trip the a_lin gate and
-  // corrupt the gravity direction on a low-grade IMU).
-  const rclcpp::Time now = imu_buffer_.back().stamp;
+  // Non-overlap rate limit: skip until a full window has elapsed since the last
+  // APPLIED update (advanced only just before kalmanUpdate below, so a
+  // gate-skipped epoch does not consume the window).
+  if ((stamp - last_leveling_stamp_).seconds() < config_.leveling_window) return;
+
+  // Moving average of the specific force / angular rate over leveling_window,
+  // ending at `stamp`. During OOSM replay imu_buffer_ still holds samples newer
+  // than `stamp` (at the back), so skip those to stay causal.
   Eigen::Vector3d acc_sum = Eigen::Vector3d::Zero(), gyr_sum = Eigen::Vector3d::Zero();
   int cnt = 0;
   for (auto it = imu_buffer_.rbegin(); it != imu_buffer_.rend(); ++it) {
-    if ((now - it->stamp).seconds() > config_.leveling_window) break;
+    if (it->stamp > stamp) continue;                                   // future sample (replay)
+    if ((stamp - it->stamp).seconds() > config_.leveling_window) break;
     acc_sum += it->acc_body;
     gyr_sum += it->gyr_body;
     ++cnt;
@@ -853,13 +1022,20 @@ void GnssImuKalmanFilter::updateLeveling() {
   const double a_lin = (C_bn * f + kGravityEnu).norm();
   if (a_lin > config_.leveling_max_acc) return;  // clearly manoeuvring
 
-  const Eigen::Vector3d u_meas = f.normalized();
+  const double f_norm = f.norm();
+  const Eigen::Vector3d u_meas = f / f_norm;
   const Eigen::Vector3d u_pred = C_bn.transpose() * Eigen::Vector3d::UnitZ();
 
-  // h(δθ) = (C_bn·exp([δθ×]))ᵀ·e_z ≈ u_pred + [u_pred×]·δθ  (local error)
+  // h(δθ, δb_a) = (C_bn·exp([δθ×]))ᵀ·e_z − A·δb_a
+  //   ATT block: ≈ u_pred + [u_pred×]·δθ  (local error)
+  //   AB  block: u = normalize(acc_mean − b_a); with b_a = b̂_a + δb_a,
+  //     u ≈ u_pred + levelingBiasJacobian(u_pred, f_norm)·δb_a — see that
+  //     function's derivation (sign is +, not −: verified against the
+  //     innovation convention u_meas − u_pred by finite difference).
   Eigen::Matrix<double, 3, ERROR_STATE_DIM> H;
   H.setZero();
   H.block<3,3>(0, EIDX_ATT) = skew(u_pred);
+  H.block<3,3>(0, EIDX_AB)  = levelingBiasJacobian(u_pred, f_norm);
 
   // Adaptive 1-sigma [rad]: floor + linear inflation with the kinematic
   // acceleration and the angular rate, so the update self-weights (strong near
@@ -869,31 +1045,40 @@ void GnssImuKalmanFilter::updateLeveling() {
                         + config_.leveling_gyr_gain * w.norm()) * M_PI / 180.0;
   const Eigen::Matrix3d R = Eigen::Matrix3d::Identity() * sigma * sigma;
 
+  // Advance the non-overlap clock only for an update that actually reaches
+  // kalmanUpdate (all gates passed), so gate-skipped epochs don't burn the
+  // window and the NEXT genuinely-static epoch can still level promptly.
+  last_leveling_stamp_ = stamp;
   kalmanUpdate(u_meas - u_pred, H, R);
 }
 
-// Zero-Velocity Update (ZUPT)
-//   Stationarity is detected over the trailing zupt_window of buffered IMU
-//   samples (acc/gyro standard deviation thresholds); while stationary a v = 0
-//   pseudo-observation bounds velocity/position drift (standstill, GNSS gaps).
+// Zero-Velocity Update (ZUPT): v = 0, applied only with positive evidence of a
+// standstill — a false ZUPT while cruising silently freezes the position, so a
+// fresh measured speed reference must say "stopped" unless zupt_allow_imu_only.
 void GnssImuKalmanFilter::updateZupt(const rclcpp::Time& stamp) {
   if (!config_.zupt_enable || !initialized_) return;
   if ((stamp - last_zupt_stamp_).seconds() < config_.zupt_min_interval) return;
-  // IMU variance cannot distinguish rest from smooth constant-velocity motion,
-  // so suppress ZUPT when a fresh MEASURED speed reference (GNSS/wheel) says the
-  // platform is moving. When no fresh reference exists (e.g. GNSS outage — where
-  // ZUPT matters most) the IMU-variance test below stands alone.
-  if (std::isfinite(last_meas_speed_) &&
-      (stamp - last_meas_speed_stamp_).seconds() < config_.zupt_speed_timeout &&
-      last_meas_speed_ > config_.zupt_speed_thresh) {
+
+  // Primary gate: a MEASURED speed reference (GNSS horizontal / wheel speed).
+  const bool have_fresh_speed =
+      std::isfinite(last_meas_speed_) &&
+      (stamp - last_meas_speed_stamp_).seconds() < config_.zupt_speed_timeout;
+  if (have_fresh_speed) {
+    if (last_meas_speed_ > config_.zupt_speed_thresh) return;  // reference says moving
+    // else: reference says stopped -> allowed (subject to the IMU gates below).
+  } else if (!config_.zupt_allow_imu_only) {
+    // No fresh reference and IMU-only ZUPT not opted in: cannot distinguish
+    // rest from smooth motion, so do not fire.
     return;
   }
 
-  // Trailing-window mean/variance of the buffered body-frame samples.
+  // Trailing-window mean/variance of the buffered body-frame samples (up to
+  // `stamp`; skip newer samples so an OOSM replay stays causal).
   Eigen::Vector3d acc_sum = Eigen::Vector3d::Zero(), acc_sq = Eigen::Vector3d::Zero();
   Eigen::Vector3d gyr_sum = Eigen::Vector3d::Zero(), gyr_sq = Eigen::Vector3d::Zero();
   int n = 0;
   for (auto it = imu_buffer_.rbegin(); it != imu_buffer_.rend(); ++it) {
+    if (it->stamp > stamp) continue;                                  // future sample (replay)
     if ((stamp - it->stamp).seconds() > config_.zupt_window) break;
     acc_sum += it->acc_body;
     acc_sq  += it->acc_body.cwiseProduct(it->acc_body);
@@ -903,13 +1088,24 @@ void GnssImuKalmanFilter::updateZupt(const rclcpp::Time& stamp) {
   }
   if (n < 5) return;  // window not sufficiently populated
 
+  const Eigen::Vector3d acc_mean = acc_sum / n;
+  const Eigen::Vector3d gyr_mean = gyr_sum / n;
   const Eigen::Vector3d acc_var =
-      (acc_sq / n - (acc_sum / n).cwiseProduct(acc_sum / n)).cwiseMax(0.0);
+      (acc_sq / n - acc_mean.cwiseProduct(acc_mean)).cwiseMax(0.0);
   const Eigen::Vector3d gyr_var =
-      (gyr_sq / n - (gyr_sum / n).cwiseProduct(gyr_sum / n)).cwiseMax(0.0);
+      (gyr_sq / n - gyr_mean.cwiseProduct(gyr_mean)).cwiseMax(0.0);
   const double acc_std = std::sqrt(acc_var.sum() / 3.0);
   const double gyr_std = std::sqrt(gyr_var.sum() / 3.0);
   if (acc_std > config_.zupt_acc_std_thresh || gyr_std > config_.zupt_gyr_std_thresh) return;
+
+  // Supporting mean gates (always applied): low VARIANCE alone still fits a
+  // coordinated turn or a sustained acceleration, which are not standstills.
+  // Bias-correct the means, then reject a non-zero rotation rate or a specific
+  // force whose magnitude departs from gravity.
+  const Eigen::Vector3d gyr_mean_corr = gyr_mean - x_.segment<3>(IDX_GB);
+  const Eigen::Vector3d acc_mean_corr = acc_mean - x_.segment<3>(IDX_AB);
+  if (gyr_mean_corr.norm() > config_.zupt_gyr_mean_thresh) return;
+  if (std::abs(acc_mean_corr.norm() - kGravity) > config_.zupt_acc_mean_thresh) return;
 
   Eigen::Matrix<double, 3, ERROR_STATE_DIM> H;
   H.setZero();
@@ -925,17 +1121,21 @@ void GnssImuKalmanFilter::updateZupt(const rclcpp::Time& stamp) {
 // Wheel Speed Update
 void GnssImuKalmanFilter::onWheelSpeedWithCov(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg) {
   Eigen::Vector3d linear(msg->twist.twist.linear.x, msg->twist.twist.linear.y, msg->twist.twist.linear.z);
-  Eigen::Matrix3d R_vel = Eigen::Matrix3d::Identity() * config_.wheel_speed_sigma * config_.wheel_speed_sigma;
-  
-  double cov_sum = 0;
-  for (int i = 0; i < 3; ++i) cov_sum += msg->twist.covariance[i*6+i];
-  if (cov_sum > 1e-10) {
-    for (int r = 0; r < 3; ++r)
-      for (int c = 0; c < 3; ++c)
-        R_vel(r,c) = msg->twist.covariance[r*6+c];
-    R_vel += Eigen::Matrix3d::Identity() * 1e-6;
-  }
-  
+  const Eigen::Matrix3d R_fallback =
+      Eigen::Matrix3d::Identity() * config_.wheel_speed_sigma * config_.wheel_speed_sigma;
+
+  Eigen::Matrix3d R_vel;
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c)
+      R_vel(r,c) = msg->twist.covariance[r*6+c];
+  // Same validator as GNSS: finite, symmetric, PSD, and each diagonal entry
+  // above a near-zero floor (rejects the all-zero "unknown" sentinel some
+  // producers publish, and a partially-zero axis, without an ad-hoc trace
+  // check that a zero-y/z, nonzero-x message would pass while still handing
+  // the zero axes an effectively-zero — i.e. wildly over-confident — sigma).
+  sanitizeCovariance(R_vel, R_fallback, 1e-10);
+  R_vel += Eigen::Matrix3d::Identity() * 1e-6;
+
   std::lock_guard<std::mutex> lock(mtx_);
   latest_wheel_.valid = true;
   latest_wheel_.stamp = msg->header.stamp;
@@ -958,24 +1158,15 @@ void GnssImuKalmanFilter::onWheelSpeedPoint(const geometry_msgs::msg::TwistStamp
   processWheelSpeed(linear, R_vel, msg->header.stamp);
 }
 
-// Caller must hold mtx_.
-void GnssImuKalmanFilter::processWheelSpeed(const Eigen::Vector3d& linear_velocity,
-                                            const Eigen::Matrix3d& covariance,
-                                            const rclcpp::Time& t_obs) {
-  if (!initialized_) return;
-
-  // Cache the measured longitudinal wheel speed for the ZUPT gate.
-  last_meas_speed_ = std::fabs(linear_velocity(0));
-  last_meas_speed_stamp_ = t_obs;
-
-  // Time alignment (store-and-rewind for out-of-sequence samples) is handled by
-  // applyTimeAlignedUpdate(); the update body below reads the (rewound) state.
-  applyTimeAlignedUpdate(t_obs, [&]() {
-  Eigen::Matrix3d C_bn = getRotationMatrix();
-  Eigen::Vector3d v_nav_pred = x_.segment<3>(IDX_VEL);
-
-  // Transform predicted nav velocity into body frame to compare directly with linear_velocity
-  Eigen::Vector3d v_body_pred = C_bn.transpose() * v_nav_pred;
+// One wheel-speed velocity update at the current state. Pure of any buffering /
+// time-alignment so it can be driven identically by the live path and by
+// replayWheelEvents() during OOSM re-propagation.
+bool GnssImuKalmanFilter::applyWheelUpdate(const Eigen::Vector3d& linear_velocity,
+                                           const Eigen::Matrix3d& covariance) {
+  const Eigen::Matrix3d C_bn = getRotationMatrix();
+  const Eigen::Vector3d v_nav_pred = x_.segment<3>(IDX_VEL);
+  // Predicted nav velocity in body frame, for direct comparison with the wheel measurement.
+  const Eigen::Vector3d v_body_pred = C_bn.transpose() * v_nav_pred;
 
   if (config_.wheel_speed_mode == "longitudinal_only" && !config_.wheel_nhc_enable) {
     // Only constrain longitudinal (X) velocity
@@ -992,36 +1183,69 @@ void GnssImuKalmanFilter::processWheelSpeed(const Eigen::Vector3d& linear_veloci
     innovation(0) = linear_velocity(0) - v_body_pred(0);
     Eigen::MatrixXd R(1, 1);
     R(0, 0) = covariance(0, 0);
-    kalmanUpdate(innovation, H, R);
-  } else {
-    // 3D body-frame velocity observation. In "3d" mode the full measured body
-    // velocity is used. In "longitudinal_only" mode with NHC enabled, the
-    // measurement is [wheel, 0, 0] and the lateral/vertical rows are the
-    // non-holonomic zero-velocity constraints (their own sigmas) — this directly
-    // observes the lateral velocity that the longitudinal-only update would leave
-    // free.
-    Eigen::Vector3d z_body = linear_velocity;
-    Eigen::Matrix3d R_body = covariance;
-    if (config_.wheel_speed_mode == "longitudinal_only") {
-      z_body = Eigen::Vector3d(linear_velocity(0), 0.0, 0.0);
-      R_body = Eigen::Vector3d(
-          config_.wheel_speed_sigma * config_.wheel_speed_sigma,
-          config_.wheel_nhc_sigma_lateral * config_.wheel_nhc_sigma_lateral,
-          config_.wheel_nhc_sigma_vertical * config_.wheel_nhc_sigma_vertical)
-          .asDiagonal();
-    }
-    Eigen::Matrix<double, 3, ERROR_STATE_DIM> H;
-    H.setZero();
-    H.block<3,3>(0, EIDX_VEL) = C_bn.transpose();
+    return kalmanUpdate(innovation, H, R);
+  }
+  // 3D body-frame velocity observation. In "3d" mode the full measured body
+  // velocity is used. In "longitudinal_only" mode with NHC enabled, the
+  // measurement is [wheel, 0, 0] and the lateral/vertical rows are the
+  // non-holonomic zero-velocity constraints (their own sigmas) — this directly
+  // observes the lateral velocity that the longitudinal-only update would leave
+  // free.
+  Eigen::Vector3d z_body = linear_velocity;
+  Eigen::Matrix3d R_body = covariance;
+  if (config_.wheel_speed_mode == "longitudinal_only") {
+    z_body = Eigen::Vector3d(linear_velocity(0), 0.0, 0.0);
+    R_body = Eigen::Vector3d(
+        config_.wheel_speed_sigma * config_.wheel_speed_sigma,
+        config_.wheel_nhc_sigma_lateral * config_.wheel_nhc_sigma_lateral,
+        config_.wheel_nhc_sigma_vertical * config_.wheel_nhc_sigma_vertical)
+        .asDiagonal();
+  }
+  Eigen::Matrix<double, 3, ERROR_STATE_DIM> H;
+  H.setZero();
+  H.block<3,3>(0, EIDX_VEL) = C_bn.transpose();
+  // ∂v_body/∂δθ = [v_body×] = C_bnᵀ·[v_nav×]·C_bn (LOCAL body-frame error).
+  H.block<3,3>(0, EIDX_ATT) = C_bn.transpose() * skew(v_nav_pred) * C_bn;
+  return kalmanUpdate(z_body - v_body_pred, H, R_body);
+}
 
-    // ∂v_body/∂δθ = [v_body×] = C_bnᵀ·[v_nav×]·C_bn (LOCAL body-frame error).
-    H.block<3,3>(0, EIDX_ATT) = C_bn.transpose() * skew(v_nav_pred) * C_bn;
+// Re-apply buffered wheel measurements in (from_excl, to_incl], skipping the
+// one at skip_stamp (applied separately by the current update's doUpdate).
+void GnssImuKalmanFilter::replayWheelEvents(const rclcpp::Time& from_excl,
+                                            const rclcpp::Time& to_incl,
+                                            const rclcpp::Time& skip_stamp) {
+  for (const auto& w : wheel_buffer_) {
+    if (w.stamp <= from_excl || w.stamp > to_incl) continue;
+    if (w.stamp == skip_stamp) continue;
+    applyWheelUpdate(w.linear, w.R);
+  }
+}
 
-    kalmanUpdate(z_body - v_body_pred, H, R_body);
+// Caller must hold mtx_.
+void GnssImuKalmanFilter::processWheelSpeed(const Eigen::Vector3d& linear_velocity,
+                                            const Eigen::Matrix3d& covariance,
+                                            const rclcpp::Time& t_obs) {
+  if (!initialized_) return;
+
+  // Cache the measured longitudinal wheel speed for the ZUPT gate.
+  last_meas_speed_ = std::fabs(linear_velocity(0));
+  last_meas_speed_stamp_ = t_obs;
+
+  // Retain the measurement so a later OOSM rewind that discards the snapshot in
+  // which it was first applied can replay it (bounded like imu_buffer_).
+  wheel_buffer_.push_back(WheelMeas{t_obs, linear_velocity, covariance});
+  while (wheel_buffer_.size() > 1 &&
+         (t_obs - wheel_buffer_.front().stamp).seconds() > config_.imu_buffer_duration) {
+    wheel_buffer_.pop_front();
   }
 
-  latest_wheel_.used_for_update = true;
-  });
+  // Apply at the true epoch via store-and-rewind. skip_wheel_stamp = t_obs so
+  // the re-propagation does not double-apply THIS measurement (it is applied by
+  // the doUpdate lambda below); other buffered wheel events in a rewound
+  // interval are still replayed.
+  applyTimeAlignedUpdate(t_obs, [&]() {
+    latest_wheel_.used_for_update = applyWheelUpdate(linear_velocity, covariance);
+  }, t_obs);
 }
 
 // IMU Callback
@@ -1035,6 +1259,15 @@ void GnssImuKalmanFilter::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
   Eigen::Vector3d gyr_raw(msg->angular_velocity.x,
                           msg->angular_velocity.y,
                           msg->angular_velocity.z);
+
+  // Minimal linear-algebra defense, not an outlier gate: a single NaN/Inf
+  // sample would otherwise propagate into x_/P_/the quaternion via predict()
+  // and never recover. Drop the sample and keep waiting for a valid one.
+  if (!acc_raw.allFinite() || !gyr_raw.allFinite()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+        "onImu: dropping non-finite IMU sample (acc/gyr)");
+    return;
+  }
 
   Eigen::Vector3d acc_body = applyImuAxisRotation(acc_raw);
   Eigen::Vector3d gyr_body = applyImuAxisRotation(gyr_raw);
@@ -1090,15 +1323,12 @@ void GnssImuKalmanFilter::onImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
     if (dt > 0.0) {
       // Track the nominal IMU interval (used to gate predictToTime()).
       if (dt < 1.0) nominal_imu_dt_ = 0.9 * nominal_imu_dt_ + 0.1 * dt;
-      predict(acc_body, gyr_body, dt);
-      prev_imu_stamp_ = stamp;
-      // IMU-epoch aiding: continuous (adaptive) leveling keeps roll/pitch bounded
-      // against gravity leak; ZUPT pins velocity while stationary.
-      updateLeveling();
-      updateZupt(stamp);
-      // Snapshot the state at this epoch so a later out-of-sequence observation
-      // can rewind to it (store-and-rewind, see applyTimeAlignedUpdate()).
-      pushStateSnapshot(stamp);
+      // Full per-epoch processing (predict + leveling + ZUPT + snapshot), the
+      // same routine used by forward re-propagation. replay_wheel=false: live
+      // wheel measurements arrive on their own callback and are applied there,
+      // so they must not also be replayed here.
+      processImuEpoch(imu_buffer_.back(), dt, /*replay_wheel=*/false,
+                      rclcpp::Time(0, 0, RCL_ROS_TIME));
     }
     // dt <= 0: state already passed this IMU's epoch (after a GNSS-driven ZOH
     // extrapolation, or because of upstream IMU out-of-order publishing).
@@ -1155,6 +1385,15 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
 
   latest_gnss_ = snap;
 
+  // Epoch time this solution is applied at (see ekf.gnss_time_source). Computed
+  // for every arriving solution so the tow_auto_offset window warms up early.
+  std::string align_warn;
+  const rclcpp::Time t_obs = gnss_epoch_aligner_.align(
+      msg->time_week, msg->time_tow, rclcpp::Time(msg->header.stamp), &align_warn);
+  if (!align_warn.empty()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "%s", align_warn.c_str());
+  }
+
   // A solution is usable iff its quality matches the configured gnss_update_mode.
   // The SAME gate is applied to BOTH initialization and measurement updates: the
   // filter must not start dead-reckoning from (or be aided by) a lower-quality
@@ -1162,7 +1401,7 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
   // first RTK FIX before initializing, instead of starting on an early FLOAT/Single
   // solution and then drifting on IMU alone until FIX arrives.
   auto solution_usable = [&](uint8_t status) {
-    if (pos_nan || status == grs::GnssSolution::STATUS_NONE) return false;
+    if (pos_nan) return false;
     switch (config_.gnss_update_mode) {
       case GnssUpdateMode::FIX_ONLY:
         return status == grs::GnssSolution::STATUS_FIX;
@@ -1170,7 +1409,17 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
         return status == grs::GnssSolution::STATUS_FIX ||
                status == grs::GnssSolution::STATUS_FLOAT;
       case GnssUpdateMode::ALL:
-        return true;
+        // Explicitly enumerate raw GNSS solution types rather than "anything
+        // but NONE": this must reject STATUS_EKF (this node's own fused
+        // output) and any unrecognized/future status value, so that a
+        // misconfigured topic remap cannot self-fuse the EKF's output back
+        // in as if it were a fresh GNSS fix.
+        return status == grs::GnssSolution::STATUS_FIX ||
+               status == grs::GnssSolution::STATUS_FLOAT ||
+               status == grs::GnssSolution::STATUS_SBAS ||
+               status == grs::GnssSolution::STATUS_DGPS ||
+               status == grs::GnssSolution::STATUS_SINGLE ||
+               status == grs::GnssSolution::STATUS_PPP;
     }
     return false;
   };
@@ -1193,6 +1442,11 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
     has_initial_gnss_ = true;
     RCLCPP_INFO(get_logger(), "Initial GNSS position acquired");
 
+    // Same-epoch velocity for a moving-start initialization (see tryInitialize()).
+    const OriginVelocity ov0 = computeOriginFrameVelocity(snap);
+    init_gnss_vel_enu_ = ov0.vel_enu;
+    init_gnss_vel_valid_ = ov0.valid;
+
     // Use configured initial yaw if use_init_yaw is true, otherwise try Doppler heading
     // (from the origin-frame velocity — origin_llh_ is now valid, set just above).
     if (!has_initial_yaw_ && config_.use_init_yaw) {
@@ -1200,8 +1454,7 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
       has_initial_yaw_ = true;
       RCLCPP_INFO(get_logger(), "Initial yaw from config: %.2f [deg]", config_.init_yaw_deg);
     } else if (!has_initial_yaw_) {
-      const double origin_doppler_heading =
-          dopplerHeadingFromOriginVelocity(computeOriginFrameVelocity(snap));
+      const double origin_doppler_heading = dopplerHeadingFromOriginVelocity(ov0);
       if (!std::isnan(origin_doppler_heading)) {
         init_yaw_ = origin_doppler_heading;
         has_initial_yaw_ = true;
@@ -1214,17 +1467,30 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
     return;
   }
 
-  // Try initial yaw if not yet set (origin-frame Doppler heading)
-  if (has_initial_gnss_ && !has_initial_yaw_) {
-    const double origin_doppler_heading =
-        dopplerHeadingFromOriginVelocity(computeOriginFrameVelocity(snap));
-    if (!std::isnan(origin_doppler_heading)) {
-      init_yaw_ = origin_doppler_heading;
-      has_initial_yaw_ = true;
-      RCLCPP_INFO(get_logger(), "Initial yaw from GNSS Doppler: %.2f [deg]",
-                  init_yaw_ * 180.0/M_PI);
-      tryInitialize();
-      return;
+  // Until the filter actually initializes, keep the initialization anchor
+  // (init_gnss_pos_ecef_/vel_enu_) refreshed on every usable fix — covering
+  // BOTH remaining waits (Doppler yaw and the initial-IMU averaging window).
+  // Without this, tryInitialize() would use the very FIRST fix's position and
+  // v=0, which for a slow-moving platform can be stale by the time the other
+  // prerequisites are met. Also try the initial yaw (origin-frame Doppler
+  // heading) if it is still missing.
+  if (has_initial_gnss_ && !initialized_) {
+    const OriginVelocity ov = computeOriginFrameVelocity(snap);
+    if (usable) {
+      init_gnss_pos_ecef_ = snap.pos_ecef;
+      init_gnss_vel_enu_ = ov.vel_enu;
+      init_gnss_vel_valid_ = ov.valid;
+    }
+    if (!has_initial_yaw_) {
+      const double origin_doppler_heading = dopplerHeadingFromOriginVelocity(ov);
+      if (!std::isnan(origin_doppler_heading)) {
+        init_yaw_ = origin_doppler_heading;
+        has_initial_yaw_ = true;
+        RCLCPP_INFO(get_logger(), "Initial yaw from GNSS Doppler: %.2f [deg]",
+                    init_yaw_ * 180.0/M_PI);
+        tryInitialize();
+        return;
+      }
     }
   }
 
@@ -1232,72 +1498,71 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
 
   // --- Measurement update (only for solutions matching gnss_update_mode) ---
   if (usable) {
-    // GNSS solutions are stamped at their measurement epoch but delivered late
-    // (RTK base matching + rtkpos: tens–hundreds of ms, variable), so by arrival
-    // the IMU-driven state has moved past that epoch. Precompute the measurement
-    // quantities (state-independent, from the message), then apply all three
-    // updates at the true epoch via store-and-rewind: applyTimeAlignedUpdate()
-    // rewinds the filter to the observation epoch, updates, and re-propagates the
-    // buffered IMU forward — eliminating the OOSM position/velocity kick that
-    // otherwise makes the trajectory zig-zag.
+    // GNSS solutions arrive late (receiver output + RTK: tens-hundreds of ms).
+    // Precompute the measurement quantities, then apply all three updates at
+    // t_obs via store-and-rewind (applyTimeAlignedUpdate), eliminating the
+    // OOSM position/velocity kick.
 
     // Position observation
     Eigen::Vector3d z_pos = ecefToEnu(snap.pos_ecef);
     double cov_enu[9];
     gnss_utils::rotateCovariance(snap.pos_cov_ecef.data(), origin_llh_(0), origin_llh_(1), cov_enu);
     Eigen::Matrix3d R_pos = Eigen::Map<Eigen::Matrix<double,3,3,Eigen::RowMajor>>(cov_enu);
-    // Guard a degenerate (e.g. all-zero) GNSS position covariance: some receivers
-    // publish zero cov meaning "unknown". Without this, the +1e-6 floor below turns
-    // it into a ~1 mm, wildly over-confident observation that snaps the fused
-    // position (a direct cause of the zig-zag on zero-cov data). Treat it as unknown
-    // and substitute a conservative configured default. This mirrors the velocity/
-    // heading zero-cov guards, which skip; position is the primary aid so we
-    // down-weight instead of skipping.
-    if (R_pos.diagonal().maxCoeff() < config_.gnss_cov_min_var) {
-      // Choose the fallback by solution status: an RTK fix is cm-level, a coarse
-      // SINGLE/DGPS fix is metre-level - trusting them equally is what snaps the
-      // fused position on zero-cov data.
-      const Eigen::Vector3d& sig =
-          snap.status == grs::GnssSolution::STATUS_FIX
-              ? config_.gnss_pos_sigma_default_fix
-              : (snap.status == grs::GnssSolution::STATUS_FLOAT
-                     ? config_.gnss_pos_sigma_default_float
-                     : config_.gnss_pos_sigma_default_other);
-      R_pos = sig.array().square().matrix().asDiagonal();
+    // Status-chosen sigma: the "config"-mode covariance, and the "message"-mode
+    // fallback when the reported covariance is degenerate (non-finite, below
+    // gnss_cov_min_var, or not PSD). Position is the primary aid, so degenerate
+    // data is down-weighted instead of skipped.
+    const Eigen::Vector3d& sig =
+        snap.status == grs::GnssSolution::STATUS_FIX
+            ? config_.gnss_pos_sigma_default_fix
+            : (snap.status == grs::GnssSolution::STATUS_FLOAT
+                   ? config_.gnss_pos_sigma_default_float
+                   : config_.gnss_pos_sigma_default_other);
+    const Eigen::Matrix3d R_pos_fallback = sig.array().square().matrix().asDiagonal();
+    if (config_.gnss_pos_cov_source == "config") {
+      // Ignore the reported covariance: always use the status-chosen sigma.
+      R_pos = R_pos_fallback;
+    } else {
+      sanitizeCovariance(R_pos, R_pos_fallback, config_.gnss_cov_min_var);
     }
-    // Ensure R_pos is positive definite (add small diagonal if needed)
+    // Small diagonal floor for numerical PD margin after symmetrization.
     R_pos += Eigen::Matrix3d::Identity() * 1e-6;
 
-    // Velocity observation (nav-frame Doppler velocity), rotated into the
-    // FIXED origin ENU frame — the same frame as the EKF velocity state (see
-    // computeOriginFrameVelocity()). Independent of and complementary to the
-    // wheel-speed update; applied whenever the solution carries a usable
-    // velocity covariance.
+    // Velocity observation (nav-frame Doppler velocity) in the FIXED origin ENU
+    // frame — the frame of the EKF velocity state.
     const OriginVelocity origin_vel = computeOriginFrameVelocity(snap);
     Eigen::Vector3d z_vel = origin_vel.vel_enu;
     Eigen::Matrix3d R_vel = origin_vel.cov_enu;
-    // Note: RTKLIB defines a `trace(...)` macro, so avoid Eigen's .trace().
-    double r_diag = R_vel(0,0) + R_vel(1,1) + R_vel(2,2);
-    // Degenerate (zero) velocity covariance: substitute a conservative default so
-    // the velocity and Doppler-heading updates still work (mirrors the position
-    // guard). Skip when the reported velocity is exactly zero: a receiver emitting
-    // neither velocity nor covariance sends all-zeros, indistinguishable from a
-    // true standstill, so substituting there would inject a false v=0 observation.
-    if (origin_vel.valid && r_diag <= 1e-12 && config_.gnss_vel_sigma_default > 0.0 &&
-        z_vel.allFinite() && z_vel.squaredNorm() > 0.0) {
-      const double s2 =
-          config_.gnss_vel_sigma_default * config_.gnss_vel_sigma_default;
-      R_vel = Eigen::Matrix3d::Identity() * s2;
-      r_diag = R_vel(0,0) + R_vel(1,1) + R_vel(2,2);
+    // Guard shared by both modes below: an all-zero reported velocity is
+    // indistinguishable from a true standstill, so the configured sigma is
+    // never substituted there (it would fabricate a confident v=0 observation).
+    const bool vel_nonzero = origin_vel.valid && config_.gnss_vel_sigma_default > 0.0 &&
+                             z_vel.allFinite() && z_vel.squaredNorm() > 0.0;
+    const double vel_s2 =
+        config_.gnss_vel_sigma_default * config_.gnss_vel_sigma_default;
+    bool r_vel_ok;
+    if (config_.gnss_vel_cov_source == "config") {
+      // Always use the configured sigma (when the velocity value is usable).
+      r_vel_ok = vel_nonzero;
+      if (r_vel_ok) R_vel = Eigen::Matrix3d::Identity() * vel_s2;
+    } else {
+      // "message": validate the reported covariance (R_vel as its own fallback
+      // makes sanitizeCovariance a pure validity check), then substitute the
+      // configured sigma only when it is degenerate.
+      r_vel_ok = sanitizeCovariance(R_vel, R_vel, 1e-12);
+      if (!r_vel_ok && vel_nonzero) {
+        R_vel = Eigen::Matrix3d::Identity() * vel_s2;
+        r_vel_ok = true;
+      }
     }
-    const bool vel_usable = origin_vel.valid && z_vel.allFinite() && r_diag > 1e-12;
+    const bool vel_usable = origin_vel.valid && z_vel.allFinite() && r_vel_ok;
     if (vel_usable) R_vel += Eigen::Matrix3d::Identity() * 1e-6;
 
     // Cache the measured horizontal speed for the ZUPT gate (generic, not the
     // filter's own estimate).
     if (vel_usable) {
       last_meas_speed_ = std::hypot(z_vel(0), z_vel(1));
-      last_meas_speed_stamp_ = msg->header.stamp;
+      last_meas_speed_stamp_ = t_obs;
     }
 
     // Doppler heading observation, derived from the same origin-frame z_vel
@@ -1311,30 +1576,41 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
     const double horiz_speed = std::hypot(ve, vn);
     const double var_ve = R_vel(0,0);
     const double var_vn = R_vel(1,1);
+    const double cov_ve_vn = R_vel(0,1);  // R_vel is symmetrized by sanitizeCovariance above
     const bool vel_cov_ok = std::isfinite(var_ve) && std::isfinite(var_vn) &&
                             (var_ve > 1e-12 || var_vn > 1e-12);
     const bool heading_usable =
-        vel_usable &&
+        config_.use_doppler_heading && vel_usable &&
         horiz_speed > config_.gnss_heading_speed_threshold && vel_cov_ok;
     double heading_var = 0.0;
     double doppler_heading = 0.0;
     if (heading_usable) {
       doppler_heading = std::atan2(vn, ve);  // ENU yaw: from East, CCW
       // Error propagation of atan2(vn, ve) through the velocity covariance,
-      // floored at (5 deg)^2: the course-over-ground is only an approximate
+      // INCLUDING the E-N cross term (a common incomplete form drops it):
+      //   var_yaw = (vn^2*R_ee + ve^2*R_nn - 2*ve*vn*R_en) / (ve^2+vn^2)^2
+      // Floored at (5 deg)^2: the course-over-ground is only an approximate
       // yaw observation (sideslip, antenna sway), never trust it below that.
+      // Clamp a tiny negative from floating-point round-off before flooring.
       constexpr double kHeadingVarFloor = 7.6e-3;  // (5 deg)^2 [rad^2]
       const double s2 = horiz_speed * horiz_speed;
-      heading_var = std::max((var_ve * vn*vn + var_vn * ve*ve) / (s2 * s2),
-                             kHeadingVarFloor);
+      const double var_yaw_raw =
+          (vn*vn*var_ve + ve*ve*var_vn - 2.0*ve*vn*cov_ve_vn) / (s2 * s2);
+      heading_var = std::isfinite(var_yaw_raw)
+          ? std::max(var_yaw_raw, kHeadingVarFloor)
+          : kHeadingVarFloor;
     }
 
-    applyTimeAlignedUpdate(msg->header.stamp, [&]() {
-      updateGnssPosition(z_pos, R_pos);
-      if (vel_usable) updateGnssVelocity(z_vel, R_vel);
-      if (heading_usable) updateGnssHeading(doppler_heading, heading_var);
+    // used_for_update must reflect whether a Kalman update was actually
+    // ACCEPTED (kalmanUpdate() can decline on non-finite / non-invertible
+    // inputs), not merely attempted.
+    bool any_update_accepted = false;
+    applyTimeAlignedUpdate(t_obs, [&]() {
+      any_update_accepted |= updateGnssPosition(z_pos, R_pos);
+      if (vel_usable) any_update_accepted |= updateGnssVelocity(z_vel, R_vel);
+      if (heading_usable) any_update_accepted |= updateGnssHeading(doppler_heading, heading_var);
     });
-    latest_gnss_.used_for_update = true;
+    latest_gnss_.used_for_update = any_update_accepted;
   }
 }
 
@@ -1344,7 +1620,10 @@ void GnssImuKalmanFilter::onGnss(const grs::GnssSolution::SharedPtr msg) {
 void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
   auto sol = grs::GnssSolution();
   sol.header.stamp = stamp;
-  sol.header.frame_id = "gnss_imu_kalman_filter";
+  // frame_id names the coordinate frame the pos_enu/vel_enu fields are
+  // expressed in (the world/output frame), not the node — "gnss_imu_kalman_
+  // filter" told a reader nothing about ENU/ECEF/origin.
+  sol.header.frame_id = config_.frame_world;
 
   Eigen::Vector3d pos = x_.segment<3>(IDX_POS);
   Eigen::Vector3d vel = x_.segment<3>(IDX_VEL);
@@ -1393,14 +1672,37 @@ void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
   }
 
   sol.status = grs::GnssSolution::STATUS_EKF;
+  // Locally computed (fused), like the SPP/RTK/FGO examples — NOT a receiver
+  // binary/NMEA passthrough.
+  sol.solution_source = grs::GnssSolution::SOLUTION_SOURCE_COMPUTED;
+  // week/tow are derived from header.stamp (this solution's own epoch), not
+  // copied from the last GNSS input: that GNSS message can be tens–hundreds
+  // of ms older than the current (IMU-epoch) EKF output, so copying its
+  // week/tow would silently disagree with header.stamp.
+  uint32_t gpst_week = 0;
+  double gpst_tow = 0.0;
+  if (gnss_utils::utcRosTimeToGpst(stamp, gpst_week, gpst_tow)) {
+    sol.time_week = gpst_week;
+    sol.time_tow = gpst_tow;
+  }
+  // num_sats / DOP / ratio / age_diff are attributes of a GNSS receiver fix,
+  // not of this EKF's fused output — left at their default (unknown) rather
+  // than copied from a GNSS input of uncertain age relative to this epoch.
 
   solution_pub_->publish(sol);
 
   // Publish Odometry message
   auto odom = nav_msgs::msg::Odometry();
   odom.header.stamp = stamp;
-  odom.header.frame_id = "odom";
-  odom.child_frame_id = config_.output_reference_frame == "imu" ? "imu_link" : "gnss_antenna";
+  // World frame: GNSS updates can move this solution discontinuously (a new
+  // fix, a status change), which is NOT what REP-105 "odom" means (locally
+  // continuous) — default is "map" (frames.world param). A continuous odom,
+  // if needed, should be a separate dead-reckoning estimate plus a
+  // map->odom correction; out of scope for this example.
+  odom.header.frame_id = config_.frame_world;
+  odom.child_frame_id = !config_.frame_child.empty()
+      ? config_.frame_child
+      : (config_.output_reference_frame == "imu" ? "imu_link" : "gnss_antenna");
 
   // Pos (local ENU)
   odom.pose.pose.position.x = pos(0);
@@ -1421,16 +1723,65 @@ void GnssImuKalmanFilter::publishSolution(const rclcpp::Time& stamp) {
   odom.twist.twist.linear.y = vel_body(1);
   odom.twist.twist.linear.z = vel_body(2);
 
+  // Angular velocity: bias-corrected gyro, in the child (body) frame, to
+  // match the linear twist above. latest_imu_gyr_ is this callback's own IMU
+  // sample (publishSolution is called synchronously from onImu), so no
+  // observation-epoch mismatch applies here (unlike the rewound updates).
+  const Eigen::Vector3d gyr_pub = latest_imu_gyr_ - x_.segment<3>(IDX_GB);
+  odom.twist.twist.angular.x = gyr_pub(0);
+  odom.twist.twist.angular.y = gyr_pub(1);
+  odom.twist.twist.angular.z = gyr_pub(2);
+
+  // Angular-velocity covariance = gyro measurement covariance (from the input
+  // Imu message if it reported one; otherwise approximated from the
+  // configured noise DENSITY converted to a per-sample variance via the
+  // nominal IMU interval) + gyro-bias uncertainty P_gb (assumed independent).
+  // NOT left at an exact zero: that would claim "angular velocity is known
+  // perfectly", which sigma_gyr/P_gb contradict.
+  Eigen::Matrix3d gyr_meas_cov;
+  if (latest_imu_gyr_cov_[0] >= 0.0) {
+    // The published angular velocity is mounting-rotated (body frame), so the
+    // message covariance (sensor axes) must be rotated the same way.
+    const Eigen::Matrix3d cov_sensor =
+        Eigen::Map<const Eigen::Matrix<double,3,3,Eigen::RowMajor>>(latest_imu_gyr_cov_.data());
+    gyr_meas_cov = R_imu_body_ * cov_sensor * R_imu_body_.transpose();
+    if (gyr_meas_cov.isZero(0.0)) {
+      // "unknown" sentinel (all-zero, per sensor_msgs/Imu semantics) —
+      // approximate from the configured continuous-time noise density.
+      gyr_meas_cov = config_.sigma_gyr.array().square().matrix().asDiagonal();
+      gyr_meas_cov /= std::max(nominal_imu_dt_, 1e-6);
+    }
+  } else {
+    // covariance[0] == -1: angular velocity itself was not provided by the
+    // driver. Shouldn't reach here (we require gyro to run predict()), but
+    // fall back to the same noise-density approximation rather than zero.
+    gyr_meas_cov = config_.sigma_gyr.array().square().matrix().asDiagonal();
+    gyr_meas_cov /= std::max(nominal_imu_dt_, 1e-6);
+  }
+  const Eigen::Matrix3d gyr_pub_cov = gyr_meas_cov + P_.block<3,3>(EIDX_GB, EIDX_GB);
+
+  // Attitude covariance transform: the ESKF's attitude covariance P_att is a
+  // RIGHT-LOCAL (body-frame) small-angle covariance (see the convention note
+  // at the top of this file); PoseWithCovariance expects a fixed nav-axis
+  // small-angle covariance (NOT the Euler roll/pitch/yaw covariance):
+  //   P_att_nav    = C_bn * P_att_body * C_bn^T
+  //   P_pos_att_nav = P_pos_att_body * C_bn^T
+  const Eigen::Matrix3d P_att_body = P_.block<3,3>(EIDX_ATT, EIDX_ATT);
+  const Eigen::Matrix3d P_posatt_body = P_.block<3,3>(EIDX_POS, EIDX_ATT);
+  const Eigen::Matrix3d P_att_nav = C_bn * P_att_body * C_bn.transpose();
+  const Eigen::Matrix3d P_posatt_nav = P_posatt_body * C_bn.transpose();
+
   // Covariance arrays: Odometry uses 36-element arrays for 6D pose/twist
   Eigen::Matrix3d P_vv_body = C_bn.transpose() * P_vv * C_bn;
   for (int min_i = 0; min_i < 3; ++min_i) {
     for (int min_j = 0; min_j < 3; ++min_j) {
-      odom.pose.covariance[min_i * 6 + min_j] = P_(EIDX_POS + min_i, EIDX_POS + min_j);        // pos-pos
-      odom.pose.covariance[(min_i + 3) * 6 + (min_j + 3)] = P_(EIDX_ATT + min_i, EIDX_ATT + min_j); // att-att
-      odom.pose.covariance[min_i * 6 + (min_j + 3)] = P_(EIDX_POS + min_i, EIDX_ATT + min_j);       // pos-att
-      odom.pose.covariance[(min_i + 3) * 6 + min_j] = P_(EIDX_ATT + min_i, EIDX_POS + min_j);       // att-pos
+      odom.pose.covariance[min_i * 6 + min_j] = P_(EIDX_POS + min_i, EIDX_POS + min_j);  // pos-pos
+      odom.pose.covariance[(min_i + 3) * 6 + (min_j + 3)] = P_att_nav(min_i, min_j);     // att-att (nav fixed-axis)
+      odom.pose.covariance[min_i * 6 + (min_j + 3)] = P_posatt_nav(min_i, min_j);        // pos-att
+      odom.pose.covariance[(min_i + 3) * 6 + min_j] = P_posatt_nav(min_j, min_i);        // att-pos (transpose)
 
-      odom.twist.covariance[min_i * 6 + min_j] = P_vv_body(min_i, min_j);  // vel in body frame
+      odom.twist.covariance[min_i * 6 + min_j] = P_vv_body(min_i, min_j);                    // linear vel, body frame
+      odom.twist.covariance[(min_i + 3) * 6 + (min_j + 3)] = gyr_pub_cov(min_i, min_j);       // angular vel, body frame
     }
   }
 
@@ -1558,8 +1909,8 @@ void GnssImuKalmanFilter::writeStateRow(const rclcpp::Time& stamp) {
 
 }  // namespace gnss_imu_kalman_filter
 
-// main — guarded so the node implementation can be linked into the gtest
-// verification harness (test/test_gnss_imu_ekf.cpp), which provides its own main.
+// main — guarded so an external verification harness can compile this
+// translation unit in and provide its own main.
 #ifndef GNSS_IMU_KF_NO_MAIN
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);

@@ -18,10 +18,10 @@
 // State per epoch k: X(k) body Pose3 (ENU), V(k) velocity (ENU),
 //                    B(k) IMU bias; N(j) carrier ambiguities in cycles.
 //
-// Time bases: GNSS epochs are paired with IMU samples via the rover
-// observation's ROS header stamp (PC arrival time, like the loose EKF does).
-// Receiver output latency therefore shifts the IMU integration boundaries by
-// tens of milliseconds - an accepted approximation for this example.
+// Time bases: GNSS epochs are paired with IMU samples on the ROS stamp time
+// base; time.gnss_epoch_source picks "header" (stamp as-is) or
+// "tow_auto_offset" (rebuild from week/tow, strip receiver latency). See
+// gnss_utils::GnssEpochAligner.
 //
 // Initialization: the platform is assumed STATIC for the first
 // init_imu_duration seconds. Roll/pitch come from the averaged accelerometer,
@@ -238,6 +238,23 @@ class GnssImuFgoNode : public rclcpp::Node {
     declare_parameter("isam2.relinearize_threshold", 0.01);
     declare_parameter("isam2.relinearize_skip", 1);
 
+    // GNSS epoch time source for IMU pairing: "header" (trust header.stamp,
+    // legacy) or "tow_auto_offset" (utc(week,tow) + estimated clock offset;
+    // removes the receiver output latency even on an unsynced PC clock). See
+    // gnss_utils::GnssEpochAligner.
+    declare_parameter("time.gnss_epoch_source", std::string("header"));
+    declare_parameter("time.offset_window_s", 60.0);
+
+    gnss_utils::GnssEpochAligner::Config tcfg;
+    const std::string src = get_parameter("time.gnss_epoch_source").as_string();
+    if (!gnss_utils::GnssEpochAligner::parseSource(src, tcfg.source)) {
+      RCLCPP_WARN(get_logger(),
+                  "Unknown time.gnss_epoch_source '%s' - using 'header'.",
+                  src.c_str());
+    }
+    tcfg.offset_window_s = get_parameter("time.offset_window_s").as_double();
+    epoch_aligner_ = gnss_utils::GnssEpochAligner(tcfg);
+
     ar_enable_ = get_parameter("ambiguity_resolution.enable").as_bool();
     ar_ratio_threshold_ =
         get_parameter("ambiguity_resolution.ratio_threshold").as_double();
@@ -416,12 +433,25 @@ class GnssImuFgoNode : public rclcpp::Node {
           ep.tow);
       return;
     }
-    const double t_ros = rclcpp::Time(ep.stamp).seconds();
+    // GNSS epoch time on the IMU stamp time base (see time.gnss_epoch_source).
+    // Everything downstream - IMU integration boundaries, initialization
+    // window, published stamps - uses this aligned time.
+    std::string align_warn;
+    const rclcpp::Time t_epoch =
+        epoch_aligner_.align(ep.week, ep.tow, rclcpp::Time(ep.stamp), &align_warn);
+    if (!align_warn.empty()) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "%s",
+                           align_warn.c_str());
+    }
+    double t_ros = t_epoch.seconds();
 
     if (!initialized_) {
       tryInitialize(ep, t_ros);
       return;
     }
+    // The auto-offset estimate can step down between epochs; keep the epoch
+    // chain strictly monotonic so the integration interval stays valid.
+    t_ros = std::max(t_ros, prev_t_ros_ + 1e-4);
 
     // Integrate the IMU samples in (t_{k-1}, t_k].
     gtsam::PreintegratedCombinedMeasurements pim(pim_params_, prev_bias_);
@@ -636,8 +666,10 @@ class GnssImuFgoNode : public rclcpp::Node {
       }
     }
 
-    publishSolution(ep, pub_pos, pub_cov, vel, vel_cov, status, ratio);
-    publishOdometry(ep, pose, pose_cov, vel, vel_cov);
+    const rclcpp::Time stamp_pub(static_cast<int64_t>(t_ros * 1e9),
+                                 t_epoch.get_clock_type());
+    publishSolution(ep, stamp_pub, pub_pos, pub_cov, vel, vel_cov, status, ratio);
+    publishOdometry(stamp_pub, pose, pose_cov, vel, vel_cov);
 
     prev_state_ = gtsam::NavState(pose, vel);
     prev_bias_ = estimate.at<gtsam::imuBias::ConstantBias>(bk);
@@ -801,16 +833,17 @@ class GnssImuFgoNode : public rclcpp::Node {
   }
 
   void publishSolution(const gnss_utils::PreprocessedEpoch& ep,
+                       const rclcpp::Time& stamp,
                        const Eigen::Vector3d& pos_ecef,
                        const Eigen::Matrix3d& pos_cov_ecef,
                        const gtsam::Vector3& vel_enu,
                        const Eigen::Matrix3d& vel_cov_enu, uint8_t status,
                        double ratio) {
     auto msg = std::make_unique<grs::GnssSolution>();
-    // Inherit the observation epoch stamp (not now()): keeps the solution's
-    // header time tied to the input, so a downstream time-aligned consumer does
-    // not fold FGO processing / bag-replay wall-clock into the measurement time.
-    msg->header.stamp = ep.stamp;
+    // The aligned observation epoch time (not now()): keeps the solution's
+    // header time tied to the measurement epoch, so a downstream time-aligned
+    // consumer (e.g. the loose EKF in "header" mode) pairs it correctly.
+    msg->header.stamp = stamp;
     msg->header.frame_id = "gnss_link";
     msg->time_week = ep.week;
     msg->time_tow = ep.tow;
@@ -906,12 +939,12 @@ class GnssImuFgoNode : public rclcpp::Node {
   // Full navigation state as nav_msgs/Odometry (body pose + attitude + velocity),
   // same convention as the GNSS/IMU EKF example: frame "odom" (local ENU nav),
   // child "imu_link" (body); twist is expressed in the body frame (REP-105).
-  void publishOdometry(const gnss_utils::PreprocessedEpoch& ep,
+  void publishOdometry(const rclcpp::Time& stamp,
                        const gtsam::Pose3& pose, const Eigen::MatrixXd& pose_cov,
                        const gtsam::Vector3& vel_enu,
                        const Eigen::Matrix3d& vel_cov_enu) {
     nav_msgs::msg::Odometry odom;
-    odom.header.stamp = ep.stamp;
+    odom.header.stamp = stamp;
     odom.header.frame_id = "odom";
     odom.child_frame_id = "imu_link";
 
@@ -960,6 +993,7 @@ class GnssImuFgoNode : public rclcpp::Node {
 
   std::mutex mtx_;
   std::unique_ptr<gnss_utils::GnssPreprocessor> preprocessor_;
+  gnss_utils::GnssEpochAligner epoch_aligner_;
   std::unique_ptr<gtsam::ISAM2> isam_;
   gnss_fgo::AdapterConfig adapter_cfg_;
   std::shared_ptr<gtsam::PreintegratedCombinedMeasurements::Params> pim_params_;

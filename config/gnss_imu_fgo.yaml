@@ -12,12 +12,17 @@ gnss_imu_fgo:
       postype: "llh"
       pos: [0.0, 0.0, 0.0]
 
-    # Body-frame translation from the body/IMU origin to the GNSS antenna
-    # phase center [m]. Convention: x forward, y left, z up (body frame).
+    # Body-frame lever arm from IMU origin to GNSS antenna [m] (x fwd, y left, z up).
     lever_arm: [0.0, 0.0, 0.0]
 
-    # ENU anchor for the navigation frame (also the ENU output origin).
-    # "gnss_fix": first GNSS a-priori position. "manual": use pos below.
+    # GNSS epoch time for IMU pairing (see README):
+    #   header          : use header.stamp as-is (default)
+    #   tow_auto_offset : rebuild epoch from week/tow, strip receiver latency
+    time:
+      gnss_epoch_source: "header"
+      offset_window_s: 60.0        # [s] tow_auto_offset window
+
+    # ENU nav anchor (also ENU output origin). "gnss_fix": first fix | "manual": pos below.
     local_origin:
       mode: "gnss_fix"
       postype: "llh"
@@ -26,7 +31,7 @@ gnss_imu_fgo:
     masks:
       elevation_deg: 15.0
       snr_dbhz: 35.0          # flat SNR mask [dBHz]; 0 disables it
-      # Elevation-dependent SNR mask (RTKLIB testsnr), same model as gnss_fgo.
+      # Elevation-dependent SNR mask (RTKLIB testsnr).
       snrmask:
         enable: true
         l1: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
@@ -41,7 +46,7 @@ gnss_imu_fgo:
       qzs: true
     glonass_carrier_dd: false
 
-    # Dual-frequency (L1+L2) makes instantaneous AR much more reliable.
+    # Dual-frequency (L1+L2) improves instantaneous AR reliability.
     frequencies:
       enable_l1: true
       enable_l2: true

@@ -75,39 +75,3 @@ ros2 run gnss_ros_standardization gnss_imu_fgo --ros-args \
 | Sub | `/gnss/ephemeris` | `GnssEphemerides` |
 | Sub | `/gnss/imu/data_raw` | `sensor_msgs/Imu` |
 | Pub | `/gnss/fgo/solution` (+ `_odom` full pose/attitude) | `GnssSolution` / `nav_msgs/Odometry` |
-
-## Scope & limitations
-
-These are **educational / research reference implementations** of an RTK-style
-factor graph — a clear, readable mapping from raw DD observations onto GTSAM's
-official GNSS factors, resolved with RTKLIB's `lambda()`. They are **not** a
-claim of full RTKLIB compatibility or a production-grade RTK engine, and they do
-not guarantee cm-level accuracy across arbitrary receivers or baseline lengths.
-
-- **Graph growth.** Plain `ISAM2` retains the full epoch history, so memory and
-  marginal-computation cost grow without bound. This is fine for an example or
-  an hours-scale session; a production node should use
-  `gtsam::IncrementalFixedLagSmoother` (or similar) instead. A fixed-lag variant
-  of these examples may be added separately in the future.
-- **FLOAT graph DD correlation.** GTSAM's scalar DD factors use independent
-  per-pair noise, so the FLOAT graph's marginal covariance does not fully
-  capture the correlation that DD pairs sharing a reference satellite actually
-  have. The analytical AR (`resolveAmbiguitiesDd`) uses the correctly-correlated
-  RTKLIB-style covariance for its ratio test regardless, but a fully-calibrated
-  joint-marginal AR from the graph itself would need a correlated vector DD
-  factor.
-- **Corrections not modelled.** Satellite/receiver TGD/DCB and other
-  inter-code biases, baseline-length-dependent tropospheric/ionospheric models,
-  GLONASS inter-frequency bias, antenna phase-center variation, and a base-side
-  SNR mask (only the rover stream is masked) are all out of scope. These
-  examples target short baselines with synchronized-enough rover/base streams,
-  primarily GPS/Galileo/BeiDou/QZSS.
-- **Mode guidance.** `continuous` is a reasonable default for normal operation
-  (good balance of reliability and accuracy); `fix_and_hold` gives the highest
-  accuracy but a wrong fix pollutes the graph until the satellite is re-keyed;
-  `instantaneous` is the conservative fallback / comparison baseline.
-- Any accuracy figures quoted against a receiver's own NMEA/RTK output should be
-  read as **an external reference solution**, not ground truth — it comes from
-  the same antenna/receiver and, if compared only over its own FIX intervals,
-  carries a selection bias. Surveyed static points or independent post-processed
-  (PPK) or independent-receiver solutions are preferable where available.
