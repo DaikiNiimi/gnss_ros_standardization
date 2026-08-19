@@ -45,7 +45,7 @@ namespace gnss_fgo {
 // Measurement-model constants shared by grouped factor construction, FDE and
 // posterior AR. Only the two undifferenced sigmas are data-dependent enough to
 // expose in YAML (noise.*); the rest are fixed, well-justified constants (see
-// the tightly_coupled_fgo README "Fixed constants" table). One struct keeps a
+// the tightly_coupled_fgo README). One struct keeps a
 // single stochastic model.
 struct AdapterConfig {
   double pr_sigma_m{0.5};    // UNDIFFERENCED (zenith) pseudorange sigma [m]

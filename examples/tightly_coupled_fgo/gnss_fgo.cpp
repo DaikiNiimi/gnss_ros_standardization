@@ -81,7 +81,7 @@ namespace {
 constexpr int kPositionLogThrottleMs = 1000;
 constexpr int kMinDdForAr = 3;
 constexpr double kEpochBudgetMs = 100.0;  // 10 Hz real-time budget per epoch
-// Fixed motion / prior constants (see README "Fixed constants").
+// Fixed motion / prior constants.
 // GNSS gap (s) with no DD reaching the graph that forces a re-anchor.
 constexpr double kReanchorGapS = 5.0;
 // Sigma of the position prior used when RE-ANCHORING on the code a-priori.
@@ -283,7 +283,7 @@ class GnssFgoNode : public rclcpp::Node {
     // Rover-base cycle-slip detection. Always-on checks (LLI cycle-slip bit,
     // half-cycle-bit transition, observed-code change, SD code-minus-carrier
     // gross error, Doppler-phase) protect the carried ambiguities; only the two
-    // data-dependent thresholds are exposed. See the README "Fixed constants".
+    // data-dependent thresholds are exposed.
     declare_parameter("cycle_slip.gf_threshold_m", 0.05);  // SD geometry-free
     declare_parameter("cycle_slip.max_gap_s", 2.0);        // carrier outage [s]
 

@@ -108,7 +108,7 @@ constexpr double kStaticGyroRadps = 0.05;
 constexpr double kStaticAccStdMps2 = 0.5;
 constexpr double kStaticAccNormTolMps2 = 0.3;  // |mean acc| must be within this of g
 constexpr double kStaticMaxSpeedMps = 0.3;     // GNSS Doppler speed gate for static
-// Fixed constants (see README "Fixed constants"). Held-back GNSS epoch wait,
+// Fixed constants. Held-back GNSS epoch wait,
 // tow_auto_offset estimation window, Doppler velocity-factor sigma floor, and
 // the initial-state standard deviations.
 // PPC IMU is 100 Hz. A gap beyond 100 ms is an outage, not a sample interval to
@@ -629,7 +629,7 @@ class GnssImuFgoNode : public rclcpp::Node {
     // This is an accuracy-versus-LATENCY knob, and the latency half is steep:
     // cost is near-linear in the number of poses in the window, so a longer one
     // buys a little accuracy and quickly stops meeting the epoch period. See
-    // the README table before raising it.
+    // the README before raising it.
     declare_parameter("graph.lag_s", 25.0);
 
     // ENU output origin: fixed_origin (configured) takes priority over the base

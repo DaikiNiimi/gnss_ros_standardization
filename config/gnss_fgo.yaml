@@ -52,7 +52,7 @@ gnss_fgo:
       base_reuse_factor: 1.0
 
     # Rover-base cycle-slip detection. Only the two data-dependent thresholds
-    # are exposed; the rest of the detectors are fixed constants (see README).
+    # are exposed; the rest of the detectors are fixed constants.
     cycle_slip:
       gf_threshold_m: 0.05    # SD geometry-free jump [m]
       max_gap_s: 2.0          # carrier-outage gap that re-keys an arc [s]
@@ -70,7 +70,7 @@ gnss_fgo:
       doppler_sigma_mps: 0.1
 
     # LAMBDA + ratio test + FDE + partial AR on the graph posterior; accepted
-    # integers are held as gauge-free constraints. See the README table.
+    # integers are held as gauge-free constraints.
     ambiguity:
       resolution: true        # false = FLOAT-only (scores the float on its own)
       fde_max_exclude: 2

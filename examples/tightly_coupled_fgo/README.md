@@ -42,100 +42,7 @@ phase accumulates and σ(N) falls over the arc. Each epoch:
    cycle-closure checks; a mismatch rolls the affected component back.
 
 Dual-frequency (L1+L2) makes slip detection and re-locking far more reliable and
-is recommended. CMC only initializes a new ambiguity value; one data-independent
-gauge constraint per connected component makes the graph observable, so the CMC
-initializer cannot act as an extra measurement.
-
-## Real-time
-
-The estimator is a `gtsam::IncrementalFixedLagSmoother` — ISAM2 plus
-marginalization of variables older than `graph.lag_s`. Marginalizing a position
-folds its ambiguity-constraining information into a prior, so the carrier keeps
-accumulating and the current-epoch AR is unchanged. The retained graph uses
-**QR** factorization, not Cholesky, which squares the condition number of the
-ill-conditioned carrier graph. `graph.lag_s <= 0` keeps full history (offline
-only; per-epoch cost then grows without bound).
-
-**`graph.lag_s` is an accuracy-versus-latency knob, and the latency half is
-steep.** Solve cost is near-linear in the number of poses in the window: at a
-fixed DD count, ISAM2's `update()` costs 12 ms at 6 % window occupancy and
-237 ms at 100 %. Past the epoch period the node cannot recover — one dense-sky
-stretch builds a backlog lasting minutes. Measured on `gnss_imu_fgo`,
-PPC nagoya_run1:
-
-| `graph.lag_s` | fix | p05 | epochs solved | latency median | p90 | p99 |
-|---|--:|--:|--:|--:|--:|--:|
-| 25 (default) | 60.35 % | 71.74 | **7596** | 0.41 s | **0.58 s** | **1.89 s** |
-| 40 | 62.18 % | 73.01 | 7520 | 0.47 s | 32.4 s | **58.8 s** |
-
-The extra 1.8 points of fix rate costs 76 epochs that never get a solution and
-puts more than a tenth of the output over half a minute late — while the median
-stays healthy, so only the upper percentiles reveal it. Raise it only if your
-application genuinely prefers a late, better answer.
-
-`gnss_imu_fgo` runs observation intake, IMU intake and the solver on three
-separate callback groups, with the solve on a timer and a bounded number of
-epochs per tick. Intake therefore keeps recording arrivals during a solve, which
-is what lets the node tell *"no observation exists"* from *"the observation is
-queued behind me"*. Gaps are bridged from two independent triggers, so
-availability does not depend on the node keeping up: the rover going silent in
-**arrival**, and a hole in the **emitted epoch stream**. Synthesized slots are
-published in time order ahead of the epoch that revealed the hole, and never take
-a slot already published.
-
-Run each node alone — concurrent nodes contend for the CPU, and a node that falls
-behind loses base epochs to the matcher queue.
-
-## AR acceptance settings
-
-Lowering these trades integrity for FIX rate; record them with any result.
-
-| Setting | Value | Meaning |
-|---|---|---|
-| `ambiguity.ratio_threshold` | 3.0 | LAMBDA ratio test |
-| `ambiguity.min_lock` | 5 | epochs an arc is carried before it may be fixed |
-| `ambiguity.min_fix_to_hold` | 10 | consecutive fixes before an integer is held |
-| `ambiguity.max_pos_var_m2` | 0.25 m² | skip AR while the float has not converged |
-| `ambiguity.hold_refresh_s` | 30 s | re-key an arc at this age, so an unverified hold cannot persist |
-| `fde_nsigma` / `fde_max_exclude` | 4 / 2 | pre-fit innovation test and its exclusion budget |
-| `hold_sigma_cycles` | 0.03 | held integer constraint, applied once per arc |
-| escape gate 1 | 0.08 m / 5 epochs | reject a fix whose code DDs disagree with the integer correction |
-| escape gate 2 (IMU) | 2.5 m / 3 epochs | reject when the float itself sits where the code says the antenna is not |
-| Huber kernel | k = 1.345, per group | one weight per grouped DD factor |
-| GLONASS carrier DD | off | FDMA biases do not cancel across heterogeneous receivers |
-
-Post-fit FIX validation evaluates residuals at the integer-conditioned position,
-which was estimated from the rows being tested, so the covariance shrinks below
-the measurement noise and is rank-deficient by construction. It is inverted on
-its column space and compared against a χ² quantile at that rank, and fails
-closed if the robust weights the graph applied cannot be reproduced.
-
-## Inspecting the ambiguity resolution
-
-Set `debug.ar_dump_dir` (empty = off) and both nodes write, per epoch, the state
-LAMBDA decided on: float antenna position and covariance, `a_float`, `Qa`, the
-ratio and the integers. `gnss_imu_fgo` also writes IMU diagnostics and solve
-times. Leave it empty in production — the files grow without bound.
-
-A wrong fix has two causes the ratio test cannot separate, since it is computed
-from the same covariance: a **biased float** or an **over-confident covariance**.
-With a truth trajectory they do separate — recover each DD's true integer, form
-`eps = a_float − N_true`, and test `eps' Qa⁻¹ eps` against χ². A median `chi2/k`
-near 1 means `Qa` is honest.
-
-Every position in the dump except two is a function of the graph state, so a
-wrong fix is self-consistent with all of them. Two columns break out of that
-loop because no carrier ambiguity enters either:
-
-| Column | Source |
-|---|---|
-| `spp_*` | standalone single-point fix |
-| `ddwls_*` | code double-difference WLS (`solveCodeDdWls`), fed the **raw** epoch |
-
-`ddwls` is the tighter yardstick: differencing against the base cancels
-ionosphere, troposphere, orbit and clock error. **`rover_ecef_apriori` is NOT
-independent** — both nodes pass their own last estimate to `drainEpochs`, so it
-returns as a copy of the previous graph float.
+is recommended.
 
 ## `gnss_fgo` — GNSS only
 
@@ -156,18 +63,10 @@ ros2 run gnss_ros_standardization gnss_fgo --ros-args \
 | Sub | `/gnss/ephemeris` | `GnssEphemerides` |
 | Pub | `/gnss/fgo/solution` | `GnssSolution` |
 
-It publishes **no** solution on an epoch with no double differences: this is a
-purely relative method, so "no DD" means "no solution", and emitting the code-only
-SPP instead would mislead a consumer into treating a metre-level absolute fix as
-the FGO output. Availability is therefore reported against the reference epoch
-count, not flattered by a fallback.
+It publishes **no** solution on an epoch with no double differences.
+Set `ambiguity.resolution: false` for a **FLOAT-only** run.
 
-Set `ambiguity.resolution: false` for a **FLOAT-only** run: LAMBDA never runs and
-no integer is held. The float carries the position whenever AR fails, so scoring
-it on its own is the honest way to compare estimators. The same switch exists on
-`gnss_imu_fgo`; `real_time_kinematic` has `pos2.armode: 0`.
-
-## `gnss_imu_fgo` — GNSS + IMU (experimental)
+## `gnss_imu_fgo` — GNSS + IMU
 
 <p align="center"><img src="../../fig/gnss_imu_fgo_graph.svg" alt="gnss_imu_fgo factor graph" width="720"></p>
 
@@ -176,12 +75,6 @@ random-walk evolution and the bias/measurement cross-correlation); the DD factor
 attach to the body pose through the "Arm" factor variants (lever arm +
 `ecef_T_nav`). The platform is assumed static for `init.imu_duration` seconds to
 initialize attitude; yaw converges once it moves.
-
-`imu.sigma_acc` / `imu.sigma_gyr` are deliberately **inflated** over the sensor
-datasheet. That is standard for a road vehicle: the effective process noise must
-absorb vibration and unmodeled dynamics, and a tightly-coupled solve is
-destabilized by an over-confident IMU. Only the bias random walks are
-datasheet-derived.
 
 ```bash
 ros2 run gnss_ros_standardization gnss_imu_fgo --ros-args \
@@ -196,6 +89,10 @@ ros2 run gnss_ros_standardization gnss_imu_fgo --ros-args \
 | Sub | `/gnss/imu/data_raw` | `sensor_msgs/Imu` |
 | Pub | `/gnss/imu_fgo/solution` (+ `_odom`) | `GnssSolution` / `nav_msgs/Odometry` |
 
+`GnssSolution` reports the **antenna** phase centre; `Odometry` reports the
+**body** pose (FLU, REP-105). Both describe the same state, so mixing them
+without applying `lever_arm` introduces a lever-arm-sized error.
+
 ### Vehicle-motion constraints
 
 This example excludes wheel odometry, so it recovers most of that information
@@ -208,45 +105,11 @@ from pure-kinematic pseudo-measurements, all stock GTSAM factors in
 | `zupt.enable` | **on** | velocity is exactly zero while stationary. Evidence-gated by `zupt.max_speed_mps`, since the IMU alone cannot tell rest from traffic creep |
 | `nhc.enable` | off | body-lateral and vertical velocity are ≈ 0. Gated to straight driving by `nhc.max_yaw_rate_rps`, where the `ω × r` term vanishes and the constraint is exact at the IMU regardless of the lever |
 
-> **Platform assumption.** The attitude aiding requires a **wheeled vehicle**:
-> small side-slip, body +x along the direction of travel, no sustained reverse.
-> Set `attitude.velocity_aiding: false` for aircraft, boats or handheld use.
-
-> **Prefer the attitude aiding over the NHC.** The NHC states the same physics as
-> a *velocity* constraint, so it collides with ZUPT at a standstill and with the
-> Doppler prior while moving, and makes the velocity over-confident. The attitude
-> factor carries no velocity information, so it cannot do that.
-
-The first heading of a run is set by `alignYawToCourse`, which replaces yaw
-outright from the course over ground once several consecutive candidates agree on
-the *offset* `course − yaw`. Voting on the offset keeps the test usable while
-manoeuvring. A reversing vehicle reads exactly 180° repeatably, so an agreed
-offset beyond 90° is applied only at or above 3 m/s.
-
-### Before relying on it
-
-**Experimental.** It carries extra pose / velocity / bias states, emits no
-solution until the static IMU window is complete, and its per-epoch solve is
-heavier. A poor attitude init or a wrong lever arm biases every DD factor and can
-produce false fixes. Set **`lever_arm`** to the real body→antenna offset, verify
-the IMU axis / scale / bias, and confirm time sync.
-
-With `time.gnss_epoch_source: tow_auto_offset` the node estimates the GNSS↔IMU
-clock offset as a sliding-window **minimum** of `stamp − utc(week,tow)`. That
-strips the variable part of the receiver latency but leaves the constant minimum
-in place, which cannot be observed from the stream alone. For tight sync feed a
-hardware-synchronized time (PPS/PTP) or a measured `latency`.
-
-Gap dead-reckoning reports an approximate covariance (last posterior plus
-preintegration noise and a velocity-over-horizon term), so it is a lower bound
-that grows with the outage — adequate for short bridging, not an INS covariance
-engine.
-
-`GnssSolution` reports the **antenna** phase centre; `Odometry` reports the
-**body** pose (FLU, REP-105). At a FIX both are the same integer-conditioned
-state, so `antenna(Odometry pose) == GnssSolution.pos` by construction. Because
-`Odometry` has no status field its pose steps at a FIX↔FLOAT transition, with the
-covariance tightening accordingly.
+> **Platform assumption.** The attitude aiding is **on by default** and requires a
+> **wheeled vehicle**: small side-slip, body +x along the direction of travel, no
+> sustained reverse. Set `attitude.velocity_aiding: false` for aircraft, boats or
+> handheld use, where the velocity direction says nothing about where the body
+> points.
 
 ## Parameter reference
 

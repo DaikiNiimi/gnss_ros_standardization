@@ -86,7 +86,7 @@ gnss_imu_fgo:
 
     graph:
       # The code default. 40 s buys ~1.8 points of fix rate and costs 76
-      # unsolved epochs plus a p90 publish latency of 32 s (README table).
+      # unsolved epochs plus a p90 publish latency of 32 s.
       lag_s: 25.0
 
     imu:
