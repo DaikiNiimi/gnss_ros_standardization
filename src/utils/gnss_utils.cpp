@@ -117,7 +117,14 @@ rclcpp::Time GnssEpochAligner::align(uint32_t week, double tow,
                                      std::string* warn) {
   if (warn) warn->clear();
   if (cfg_.source == Source::Header) return stamp;
-  if (week == 0 || !std::isfinite(tow)) {
+  // The RANGE matters, not just finiteness. gpst2time() happily accepts a tow
+  // of -1 or 604800 and returns a time one second before the week, or the
+  // first second of the next one; the measurement would then be applied a week
+  // away from where it belongs, and this function's contract ("on ANY fallback
+  // to Header, warn is set") would be broken by a path that never falls back.
+  // Same canonical range the epoch matcher rejects on
+  // (RoverBaseEpochMatcher::validTow).
+  if (week == 0 || !std::isfinite(tow) || tow < 0.0 || tow >= 604800.0) {
     if (warn) *warn = "GNSS week/tow invalid - applying at header.stamp";
     return stamp;
   }
@@ -132,7 +139,14 @@ rclcpp::Time GnssEpochAligner::align(uint32_t week, double tow,
   const double t_s = stamp.nanoseconds() / 1e9;
   if (!offsets_.empty() && t_s < offsets_.back().first) offsets_.clear();
   offsets_.emplace_back(t_s, d);
-  while (!offsets_.empty() && t_s - offsets_.front().first > cfg_.offset_window_s) {
+  // size() > 1, not !empty(): the sample just pushed has age 0, so with a
+  // non-negative window the loop stops on its own - but offset_window_s is a
+  // plain ROS parameter (ekf.gnss_offset_window_s) with no validation, and a
+  // negative value would make `0 > window` true, empty the deque, and leave
+  // front() below dereferencing nothing. Keeping the newest sample makes that
+  // impossible whatever the configuration says.
+  while (offsets_.size() > 1 &&
+         t_s - offsets_.front().first > cfg_.offset_window_s) {
     offsets_.pop_front();
   }
   double offset = offsets_.front().second;
@@ -548,7 +562,12 @@ int NmeaParser::parseInteger(const std::string& str) {
 double NmeaParser::parseCoordinate(const std::string& coord_str, const std::string& hem) {
   if (coord_str.empty() || hem.empty()) return 0.0;
 
-  double dot_pos = coord_str.find('.');
+  // std::size_t, not double. find() returns size_type, and npos is
+  // 2^64-1: routing it through a double makes the "not found" comparison
+  // depend on 2^64-1 and its double image round-tripping to the same value,
+  // and hands substr() a double to convert back. It happens to work for the
+  // short field an NMEA sentence carries, but nothing about it should.
+  const std::size_t dot_pos = coord_str.find('.');
   if (dot_pos == std::string::npos || dot_pos < 2) return 0.0;
 
   std::string deg_str = coord_str.substr(0, dot_pos - 2);

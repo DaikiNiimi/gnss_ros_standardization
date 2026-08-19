@@ -2,6 +2,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rosbag2_cpp/writer.hpp>
 #include <rosbag2_storage/storage_options.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/bag_io_utils.hpp"
@@ -9,9 +11,11 @@
 // gnss_utils.hpp includes rtklib.h internally
 
 #include <algorithm>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <queue>
+#include <sstream>
 #include <vector>
 #include <string>
 #include <map>
@@ -42,6 +46,11 @@ struct ObsSource {
   std::string topic;  // resolved after CLI parse
 };
 
+// Everything below is private to this translation unit. Each converter is a
+// separate executable, but they all declare a file-scope `struct Args`, and
+// identical names with different layouts at external linkage are an ODR
+// violation the moment anything links two of them (cppcheck flags it as one).
+namespace {
 struct Args {
   std::vector<ObsSource> obs_sources;
   std::vector<std::string> nav_paths;
@@ -55,7 +64,62 @@ struct Args {
   EphMode eph_mode = EphMode::OnChange;
   double max_dtoe_gnss    = kDefaultMaxDtoeGnss;
   double max_dtoe_glonass = kDefaultMaxDtoeGlonass;
+  // Optional IMU csv -> sensor_msgs/Imu (e.g. PPC-Dataset imu.csv). Columns:
+  // GPS TOW, GPS Week, Acc XYZ [m/s^2], Ang Rate XYZ [deg/s] (deg->rad applied).
+  std::string imu_path;
+  std::string topic_imu = "/gnss/imu/data_raw";
+  std::string imu_frame = "raw";  // see applyImuFrame()
+  // Optional ground-truth trajectory csv (e.g. PPC-Dataset reference.csv).
+  // Written on its OWN topics, never on --topic-pos: a reference trajectory
+  // and an estimator's output must not be confusable in a published dataset.
+  std::string reference_path;
+  std::string topic_reference = "/gnss/reference/solution";
 };
+
+// Body-frame convention adapters for the IMU. The FGO node integrates in a
+// z-up ENU navigation frame (gtsam MakeSharedU), so the body specific force must
+// read +g on the up axis at rest and the frame must be right-handed z-up.
+//   raw (default): pass through unchanged - the source is already a z-up
+//     specific force in x-forward / y-left / z-up. This is the correct mode
+//     for PPC-Dataset (verified on all six runs; see the sign checks below).
+//   frd2flu : plain FRD->FLU rotation acc=(ax,-ay,-az), gyr=(gx,-gy,-gz)
+//     (source already reports specific force = reaction, +g on up).
+//   frd2flu_grav : source is right-handed Forward-Right-Down AND the
+//     accelerometer reports the GRAVITY direction rather than specific force.
+//     Negate to specific force, then rotate FRD->FLU (180 deg about forward):
+//     acc=(-ax, ay, az), gyr=(gx, -gy, -gz).
+//
+// Identity is the default because a wrong non-identity mode is unrecoverable:
+// the accelerometer leg of frd2flu_grav is a reflection (det -1) while its gyro
+// leg is a rotation (det +1), so if the mode does not match the source, no
+// attitude whatsoever can reconcile the two sensors and the optimiser is handed
+// a physically impossible pair.
+//
+// Verify the mode with two sign checks against a reference trajectory. Both use
+// only quantities that carry no Euler-angle convention, so neither can be
+// fooled by a roll/pitch/yaw sign disagreement:
+//   1. accel x   vs d|v|/dt              -> slope +1 means x is forward
+//   2. gyro  z   vs d(atan2(vn,ve))/dt   -> slope +1 means z is up
+// A negative slope on either one means the mode is wrong. Matching the node's
+// initialized roll/pitch/heading is NOT a sufficient check: with an FLU source
+// and frd2flu_grav applied, only accel x and gyro y/z flip, so roll still
+// agrees with the reference while pitch and heading are silently corrupted.
+struct ImuTriplet { double x, y, z; };
+static bool applyImuFrame(const std::string& mode, ImuTriplet& acc,
+                          ImuTriplet& gyr) {
+  if (mode == "raw") {
+    return true;
+  } else if (mode == "frd2flu") {
+    acc = {acc.x, -acc.y, -acc.z};
+    gyr = {gyr.x, -gyr.y, -gyr.z};
+    return true;
+  } else if (mode == "frd2flu_grav") {
+    acc = {-acc.x, acc.y, acc.z};
+    gyr = {gyr.x, -gyr.y, -gyr.z};
+    return true;
+  }
+  return false;
+}
 
 // RAII wrappers for RTKLIB obs_t / nav_t so memory is released on any exit
 // path (writer exception, early return, std::terminate from a downstream
@@ -114,9 +178,178 @@ Args parseArgs(const std::vector<std::string>& args) {
       auto [label, path] = splitLabel(args[++i]);
       a.pos_label = label;
       a.pos_path  = path;
+    } else if (args[i] == "--imu" && i + 1 < args.size()) {
+      a.imu_path = args[++i];
+    } else if (args[i] == "--topic-imu" && i + 1 < args.size()) {
+      a.topic_imu = args[++i];
+    } else if (args[i] == "--imu-frame" && i + 1 < args.size()) {
+      a.imu_frame = args[++i];
+    } else if (args[i] == "--reference" && i + 1 < args.size()) {
+      a.reference_path = args[++i];
+    } else if (args[i] == "--topic-reference" && i + 1 < args.size()) {
+      a.topic_reference = args[++i];
     }
   }
   return a;
+}
+
+// Read a PPC-style IMU csv and write sensor_msgs/Imu to the bag. Header line is
+// skipped; each row is "GPS TOW, GPS Week, Acc X,Y,Z [m/s^2], Ang Rate X,Y,Z
+// [deg/s]". Gyro is converted deg->rad and both are mapped into the node's z-up
+// body frame by applyImuFrame(imu_frame). Timestamps are GPST from week/tow, so
+// they share the GNSS time base. Returns the number of samples written (-1 on
+// a fatal error).
+static long writeImuCsv(rosbag2_cpp::Writer& writer, const std::string& path,
+                        const std::string& topic, const std::string& frame,
+                        std::ostream& err) {
+  std::ifstream ifs(path);
+  if (!ifs) { err << "Error: cannot open --imu file '" << path << "'\n"; return -1; }
+  std::string line;
+  std::getline(ifs, line);  // header
+  long n = 0, n_skip = 0;
+  const double kDeg2Rad = 3.14159265358979323846 / 180.0;
+  while (std::getline(ifs, line)) {
+    if (line.empty()) continue;
+    for (char& c : line) if (c == ',') c = ' ';
+    std::istringstream iss(line);
+    double tow; int week;
+    ImuTriplet acc{}, gyr{};
+    if (!(iss >> tow >> week >> acc.x >> acc.y >> acc.z >> gyr.x >> gyr.y >> gyr.z)) {
+      if (++n_skip <= 5) err << "[imu] skipped malformed line: " << line << "\n";
+      continue;
+    }
+    gyr.x *= kDeg2Rad; gyr.y *= kDeg2Rad; gyr.z *= kDeg2Rad;
+    if (!applyImuFrame(frame, acc, gyr)) {
+      err << "Error: unknown --imu-frame '" << frame
+          << "' (expected frd2flu_grav | frd2flu | raw)\n";
+      return -1;
+    }
+    gtime_t t = gpst2time(week, tow);
+    rclcpp::Time stamp = gnss_converter_io::toRosTimeGpst(t);
+    sensor_msgs::msg::Imu msg;
+    msg.header.stamp = stamp;
+    msg.header.frame_id = "imu_link";
+    msg.linear_acceleration.x = acc.x;
+    msg.linear_acceleration.y = acc.y;
+    msg.linear_acceleration.z = acc.z;
+    msg.angular_velocity.x = gyr.x;
+    msg.angular_velocity.y = gyr.y;
+    msg.angular_velocity.z = gyr.z;
+    msg.orientation_covariance[0] = -1.0;  // orientation unknown (REP-145)
+    writer.write(msg, topic, stamp);
+    ++n;
+  }
+  return n;
+}
+
+// Ground-truth trajectory csv -> GnssSolution + nav_msgs/Odometry.
+//
+// Columns (PPC-Dataset reference.csv):
+//   GPS TOW [s], GPS Week, Lat [deg], Lon [deg], Ellipsoid Height [m],
+//   ECEF X/Y/Z [m], Roll [deg], Pitch [deg], Heading [deg],
+//   East/North/Up Velocity [m/s]
+//
+// Two topics because one message cannot carry the whole state: GnssSolution has
+// no attitude field, and a trajectory reference without attitude cannot check
+// an estimator that produces attitude. The Odometry companion follows the same
+// "<solution>_odom" convention gnss_imu_fgo already publishes on, so the same
+// consumer reads truth and estimate the same way.
+//
+// HEADING CONVENTION - the one thing here that can be silently wrong.
+// The csv Heading is degrees clockwise from North; the ROS/ENU convention is
+// yaw counter-clockwise from East, so yaw_enu = 90 - heading. A sign or offset
+// error produces a perfectly plausible-looking bag, so it is verified rather
+// than asserted: reference.csv also carries East/North velocity, and
+// atan2(VN, VE) is the course over ground in the SAME convention the quaternion
+// must use. test/ppc_eval/verify_bag_reference.py regresses one against the
+// other and requires slope +1, intercept 0. (This is the identical trap that
+// let a wrong IMU body frame survive in this converter for months: the check
+// that was performed could not have detected it.)
+static long writeReferenceCsv(rosbag2_cpp::Writer& writer,
+                              const std::string& path, const std::string& topic,
+                              std::ostream& err) {
+  std::ifstream ifs(path);
+  if (!ifs) {
+    err << "Error: cannot open --reference file '" << path << "'\n";
+    return -1;
+  }
+  const std::string odom_topic = topic + "_odom";
+  std::string line;
+  std::getline(ifs, line);  // header
+  long n = 0, n_skip = 0;
+  const double kDeg2Rad = 3.14159265358979323846 / 180.0;
+  while (std::getline(ifs, line)) {
+    if (line.empty()) continue;
+    for (char& c : line) if (c == ',') c = ' ';
+    std::istringstream iss(line);
+    double tow, lat, lon, hgt, ex, ey, ez, roll, pitch, heading, ve, vn, vu;
+    int week;
+    if (!(iss >> tow >> week >> lat >> lon >> hgt >> ex >> ey >> ez >> roll >>
+          pitch >> heading >> ve >> vn >> vu)) {
+      if (++n_skip <= 5) err << "[reference] skipped malformed line: " << line << "\n";
+      continue;
+    }
+    const gtime_t t = gpst2time(week, tow);
+    const rclcpp::Time stamp = gnss_converter_io::toRosTimeGpst(t);
+
+    gnss_ros_standardization::msg::GnssSolution sol;
+    sol.header.stamp = stamp;
+    sol.header.frame_id = "gnss_link";
+    sol.time_week = static_cast<uint32_t>(week);
+    sol.time_tow = tow;
+    // The PPC reference is a post-processed tightly-coupled GNSS/INS product
+    // from the receiver vendor's suite, not something computed here.
+    sol.solution_source = gnss_ros_standardization::msg::GnssSolution::SOLUTION_SOURCE_BINARY;
+    sol.status = gnss_ros_standardization::msg::GnssSolution::STATUS_FIX;
+    sol.latitude = lat;
+    sol.longitude = lon;
+    sol.altitude = hgt;
+    sol.pos_ecef.x = ex;
+    sol.pos_ecef.y = ey;
+    sol.pos_ecef.z = ez;
+    sol.vel_enu.x = ve;
+    sol.vel_enu.y = vn;
+    sol.vel_enu.z = vu;
+    // ENU -> ECEF for the velocity, so both frames agree in one message.
+    {
+      const double llh[3] = {lat * kDeg2Rad, lon * kDeg2Rad, hgt};
+      const double enu[3] = {ve, vn, vu};
+      double ecef_v[3];
+      enu2ecef(llh, enu, ecef_v);
+      sol.vel_ecef.x = ecef_v[0];
+      sol.vel_ecef.y = ecef_v[1];
+      sol.vel_ecef.z = ecef_v[2];
+    }
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    sol.gdop = sol.pdop = sol.hdop = sol.vdop = nan;
+    writer.write(sol, topic, stamp);
+
+    nav_msgs::msg::Odometry odom;
+    odom.header.stamp = stamp;
+    odom.header.frame_id = "map";
+    odom.child_frame_id = "base_link";
+    // ENU yaw from a North-referenced clockwise heading (see the note above).
+    const double yaw_enu = (90.0 - heading) * kDeg2Rad;
+    const double cr = std::cos(roll * kDeg2Rad * 0.5);
+    const double sr = std::sin(roll * kDeg2Rad * 0.5);
+    const double cp = std::cos(pitch * kDeg2Rad * 0.5);
+    const double sp = std::sin(pitch * kDeg2Rad * 0.5);
+    const double cy = std::cos(yaw_enu * 0.5);
+    const double sy = std::sin(yaw_enu * 0.5);
+    odom.pose.pose.orientation.w = cr * cp * cy + sr * sp * sy;
+    odom.pose.pose.orientation.x = sr * cp * cy - cr * sp * sy;
+    odom.pose.pose.orientation.y = cr * sp * cy + sr * cp * sy;
+    odom.pose.pose.orientation.z = cr * cp * sy - sr * sp * cy;
+    odom.twist.twist.linear.x = ve;
+    odom.twist.twist.linear.y = vn;
+    odom.twist.twist.linear.z = vu;
+    writer.write(odom, odom_topic, stamp);
+    ++n;
+  }
+  if (n_skip > 5) {
+    err << "[reference] " << n_skip << " malformed lines skipped in total\n";
+  }
+  return n;
 }
 
 // Resolve each ObsSource.topic from CLI overrides, label-derived auto names,
@@ -171,16 +404,35 @@ static bool resolveObsTopics(Args& a, std::ostream& err) {
 
 // Select the best ephemeris index for the current time. Works for both eph_t
 // and geph_t (any RTKLIB type with a `toe` field).
-// Selection rule: smallest |t_curr - toe| within max_dtoe. On exact ties,
-// prefer the later array index — since RTKLIB appends records in file order,
-// "later index" means "issued more recently in the source RINEX nav file",
-// which is the safer choice when two ephemerides share the same TOE.
+//
+// The selection MIRRORS RTKLIB's seleph() (ephemeris.c) so that a node
+// consuming the bag makes the same per-epoch choice rnx2rtkp makes reading the
+// RINEX directly:
+//   - smallest |t_curr - toe| within the per-system window, FUTURE toe
+//     included (that is what seleph does for GPS/QZS/BDS/IRN);
+//   - EXCEPT Galileo, where seleph requires toe strictly in the PAST
+//     ("AOD<=0") - set require_past_toe. Without this, nearest-|toe| selects a
+//     future record and the downstream seleph rejects the satellite outright:
+//     measured on PPC tokyo_run1, E36/E09 carried a toe ~25 min in the future
+//     from epoch 0 and were unusable for the first 1530 s of the replay.
+// (A stricter transmission-time causality filter - only records with
+// ttr <= t_curr, like a live receiver - was tried and REJECTED: seleph does
+// not apply it, so it broke selection parity with the CLI for GPS/BDS/QZS and
+// measurably cost satellite availability early in ephemeris windows.)
+//
+// On exact ties, prefer the later array index - since RTKLIB appends records
+// in file order, "later index" means "issued more recently in the source
+// RINEX nav file", which is the safer choice when two ephemerides share the
+// same TOE.
 template <typename T>
 int select_best_eph(const std::vector<int>& indices, const T* data_array,
-                    gtime_t t_curr, double max_dtoe) {
+                    gtime_t t_curr, double max_dtoe,
+                    bool require_past_toe = false) {
     int best_idx = -1;
     double min_diff = std::numeric_limits<double>::max();
     for (int idx : indices) {
+        if (require_past_toe &&
+            timediff(data_array[idx].toe, t_curr) >= 0.0) continue;
         double diff = std::fabs(timediff(t_curr, data_array[idx].toe));
         if (diff > max_dtoe) continue;
         if (diff < min_diff) { min_diff = diff; best_idx = idx; }
@@ -188,6 +440,8 @@ int select_best_eph(const std::vector<int>& indices, const T* data_array,
     }
     return best_idx;
 }
+
+}  // namespace
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
@@ -209,6 +463,9 @@ int main(int argc, char** argv) {
       "                       [--eph-mode per-epoch|on-change]\n"
       "                       [--max-dtoe-gnss <sec>] [--max-dtoe-glo <sec>]\n"
       "                       [--pos [name=]<pos_file>]\n"
+      "                       [--imu <imu_csv>] [--topic-imu <topic>]\n"
+      "                       [--reference <csv>] [--topic-reference <topic>]\n"
+      "                       [--imu-frame raw|frd2flu|frd2flu_grav]\n"
       "\n"
       "  --obs         Repeatable. Use 'name=path' (e.g. rover=rover.obs) to give the\n"
       "                source a label; topic becomes /<name>/observation. Without a\n"
@@ -231,6 +488,27 @@ int main(int argc, char** argv) {
       "  --max-dtoe-*  max |t_obs - toe| for ephemeris selection [sec]. Defaults:\n"
       "                GNSS=" << kDefaultMaxDtoeGnss
       << ", GLONASS=" << kDefaultMaxDtoeGlonass << ".\n"
+      "  --imu         Optional IMU csv (GPS TOW, Week, Acc XYZ [m/s^2], Ang Rate XYZ\n"
+      "                [deg/s]; e.g. PPC-Dataset imu.csv). Written as sensor_msgs/Imu\n"
+      "                to --topic-imu (default /gnss/imu/data_raw), GPST-stamped.\n"
+      "  --imu-frame   Body-frame adapter into the node's z-up (ENU) body frame:\n"
+      "                raw (default; source already FLU specific force - correct for\n"
+      "                PPC-Dataset), frd2flu (source FRD, accel reports specific\n"
+      "                force), frd2flu_grav (source FRD, accel reports gravity dir).\n"
+      "                Verify: accel x must correlate +1 with d|v|/dt and gyro z\n"
+      "                +1 with the reference course rate; a wrong mode is silent.\n"
+      "  --reference   Optional ground-truth trajectory csv (GPS TOW, Week, Lat, Lon,\n"
+      "                Height, ECEF XYZ, Roll, Pitch, Heading [deg], E/N/U velocity;\n"
+      "                e.g. PPC-Dataset reference.csv). Written GPST-stamped to TWO\n"
+      "                topics so the whole state survives: --topic-reference\n"
+      "                (default /gnss/reference/solution, GnssSolution: position and\n"
+      "                velocity) and <topic>_odom (nav_msgs/Odometry: attitude).\n"
+      "                Deliberately separate from --topic-pos so a reference can\n"
+      "                never be mistaken for an estimator's own output.\n"
+      "                Heading is North-referenced clockwise; the Odometry yaw is\n"
+      "                ENU (90-heading). Verify with\n"
+      "                test/ppc_eval/verify_bag_reference.py - a wrong convention\n"
+      "                produces a plausible-looking bag.\n"
       "  When --nav is omitted, the NAV topic is created but empty.\n";
     return 1;
   }
@@ -326,6 +604,8 @@ int main(int argc, char** argv) {
   size_t n_obs_epochs = 0;
   size_t n_eph_msgs   = 0;
   size_t n_sol_msgs   = 0;
+  long   n_imu_msgs   = 0;
+  long   n_ref_msgs   = 0;
   {
     rosbag2_cpp::Writer writer;
     rosbag2_storage::StorageOptions storage_opts;
@@ -371,8 +651,27 @@ int main(int argc, char** argv) {
       writer.create_topic(tm);
     }
 
-    // Per-satellite "last published nav index" for --eph-mode on-change.
-    // Shared across all OBS sources because NAV is shared. -1 means "never published yet".
+    if (!args.imu_path.empty()) {
+      gnss_converter_io::set_qos_profile(tm, gnss_converter_io::defaultConverterQosYaml());
+      tm.name = args.topic_imu;
+      tm.type = "sensor_msgs/msg/Imu";
+      writer.create_topic(tm);
+    }
+
+    if (!args.reference_path.empty()) {
+      gnss_converter_io::set_qos_profile(tm, gnss_converter_io::defaultConverterQosYaml());
+      tm.name = args.topic_reference;
+      tm.type = "gnss_ros_standardization/msg/GnssSolution";
+      writer.create_topic(tm);
+      tm.name = args.topic_reference + "_odom";
+      tm.type = "nav_msgs/msg/Odometry";
+      writer.create_topic(tm);
+    }
+
+    // "Last published nav index" for --eph-mode on-change, keyed by
+    // sat*4 + nav-type group (Galileo I/NAV and F/NAV are independent
+    // streams; see the emission loop). Shared across all OBS sources because
+    // NAV is shared.
     std::map<int, int> last_eph_idx;
     std::map<int, int> last_geph_idx;
 
@@ -464,16 +763,42 @@ int main(int argc, char** argv) {
           }
         } else {
           if (sat_eph_indices.count(sat)) {
-            int idx = select_best_eph(sat_eph_indices[sat], ng.nav.eph,
-                                      t_curr, args.max_dtoe_gnss);
-            if (idx == -1) continue;
-            if (args.eph_mode == EphMode::OnChange) {
-              auto it = last_eph_idx.find(sat);
-              if (it != last_eph_idx.end() && it->second == idx) continue;
-              last_eph_idx[sat] = idx;
+            // Galileo broadcasts two independent navigation messages (I/NAV on
+            // E1B/E5b: eph.code bit 9; F/NAV on E5a: bit 8) and RTKLIB's
+            // seleph() selects BY TYPE (default: I/NAV only). Selecting the
+            // nearest-toe record across both types therefore lets an F/NAV
+            // record shadow its I/NAV twin under on-change emission, and the
+            // downstream node then sees NO usable ephemeris for that satellite
+            // until the next I/NAV change - measured to remove E36/E09 from
+            // half of a 40-minute run. Select and emit the best record PER
+            // navigation type.
+            std::map<int, std::vector<int>> nav_type_groups;
+            for (int i : sat_eph_indices[sat]) {
+              int g = 0;
+              if (sys == SYS_GAL) {
+                g = (ng.nav.eph[i].code & (1 << 9)) ? 1 : 2;  // I/NAV : F/NAV
+              }
+              nav_type_groups[g].push_back(i);
             }
-            msg_eph.gnss_ephemeris.push_back(
-                gnss_utils::ephToMsg(ng.nav.eph[idx]));
+            // Per-system validity window, as in seleph() (Galileo and BeiDou
+            // ephemerides are valid far longer than GPS's 2 h; capping them at
+            // the GPS window starves satellites the CLI happily uses).
+            double tmax = args.max_dtoe_gnss;
+            if (sys == SYS_GAL) tmax = std::max(tmax, double(MAXDTOE_GAL));
+            if (sys == SYS_CMP) tmax = std::max(tmax, MAXDTOE_CMP + 1.0);
+            for (const auto& kv : nav_type_groups) {
+              int idx = select_best_eph(kv.second, ng.nav.eph, t_curr, tmax,
+                                        /*require_past_toe=*/sys == SYS_GAL);
+              if (idx == -1) continue;
+              if (args.eph_mode == EphMode::OnChange) {
+                const int key = sat * 4 + kv.first;
+                auto it = last_eph_idx.find(key);
+                if (it != last_eph_idx.end() && it->second == idx) continue;
+                last_eph_idx[key] = idx;
+              }
+              msg_eph.gnss_ephemeris.push_back(
+                  gnss_utils::ephToMsg(ng.nav.eph[idx]));
+            }
           }
         }
       }
@@ -514,10 +839,28 @@ int main(int argc, char** argv) {
       ++n_sol_msgs;
     }
 
+    // IMU is written in its own pass; 'ros2 bag play' replays by timestamp so
+    // the higher-rate IMU interleaves correctly with the GNSS epochs regardless
+    // of storage order.
+    if (!args.reference_path.empty()) {
+      n_ref_msgs = writeReferenceCsv(writer, args.reference_path,
+                                     args.topic_reference, std::cerr);
+      if (n_ref_msgs < 0) return 1;
+    }
+    if (!args.imu_path.empty()) {
+      n_imu_msgs = writeImuCsv(writer, args.imu_path, args.topic_imu,
+                               args.imu_frame, std::cerr);
+      if (n_imu_msgs < 0) return 1;
+    }
+
     std::cerr << "[rinex_to_rosbag] done: " << n_obs_epochs
               << " obs epochs, " << n_eph_msgs << " eph msgs";
     if (!pos_result.rows.empty())
       std::cerr << ", " << n_sol_msgs << " solution msgs";
+    if (!args.imu_path.empty())
+      std::cerr << ", " << n_imu_msgs << " imu msgs";
+    if (!args.reference_path.empty())
+      std::cerr << ", " << n_ref_msgs << " reference msgs (x2 topics)";
     std::cerr << " -> " << args.output_bag << "\n";
   }  // writer closed here
 
