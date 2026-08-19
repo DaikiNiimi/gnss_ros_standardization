@@ -117,6 +117,7 @@ tables, parameter lists, and `ros2 run` examples.
 | Converters | RINEX ↔ rosbag and RTKLIB `.pos` ↔ rosbag | [src/converter/README.md](src/converter/README.md) |
 | Examples | SPP, RTK, loose-coupled GNSS/IMU EKF, tightly-coupled FGO (GTSAM) | [examples/README.md](examples/README.md) |
 | Messages | Public ROS message contract | [msg/README.md](msg/README.md) |
+| Tests & tools | Unit tests, and checks for a converted rosbag against its source files | [test/README.md](test/README.md) |
 
 ## Acknowledgements
 
