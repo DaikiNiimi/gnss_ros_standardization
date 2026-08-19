@@ -40,7 +40,10 @@ class RtkPositionNode : public rclcpp::Node {
         std::bind(&RtkPositionNode::onBaseObs, this, std::placeholders::_1));
 
     nav_sub_ = create_subscription<grs::GnssEphemerides>(
-        get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(1).transient_local(),
+        // depth 256 (not 1): ephemeris arrives as many per-satellite messages; a
+        // depth-1 transient_local latch keeps only the last satellite, starving a
+        // subscriber that matches after the initial burst (e.g. against a bag).
+        get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(256).transient_local(),
         std::bind(&RtkPositionNode::onNav, this, std::placeholders::_1));
 
     initializeRtk();
@@ -61,6 +64,7 @@ class RtkPositionNode : public rclcpp::Node {
 
   ~RtkPositionNode() override {
     tcp_server_.stop();
+    if (solstat_open_) rtkclosestat();
     rtkfree(&rtk_);
     std::lock_guard<std::mutex> lk(nav_mtx_);
     freenav(&nav_, 0xFF);
@@ -108,7 +112,12 @@ class RtkPositionNode : public rclcpp::Node {
     declare_safe("pos1.navsys.qzs", true);
     declare_safe("pos1.navsys.irn", true);
 
-    declare_safe("pos1.snrmask.enable", false);
+    // SNR mask, per receiver (RTKLIB pos1-snrmask_r / pos1-snrmask_b). Rover and
+    // base are separate because their antennas/receivers report different SNR
+    // scales; masking the base at a rover-tuned threshold silently deletes
+    // satellites from the double difference.
+    declare_safe("pos1.snrmask.rover", false);
+    declare_safe("pos1.snrmask.base", false);
     declare_safe("pos1.snrmask.l1", std::vector<double>(9, 0.0));
     declare_safe("pos1.snrmask.l2", std::vector<double>(9, 0.0));
     declare_safe("pos1.snrmask.l5", std::vector<double>(9, 0.0));
@@ -118,33 +127,59 @@ class RtkPositionNode : public rclcpp::Node {
     declare_safe("pos2.armode", ARMODE_CONT);
     declare_safe("pos2.gloarmode", 1);
     declare_safe("pos2.bdsarmode", 1);
+    declare_safe("pos2.arfilter", 1);
     declare_safe("pos2.arthres", 3.0);
     declare_safe("pos2.arlockcnt", 0);
+    declare_safe("pos2.minfixsats", 4);
+    declare_safe("pos2.minholdsats", 5);
+    declare_safe("pos2.mindropsats", 10);
     declare_safe("pos2.arelmask", 0.0);
     declare_safe("pos2.arminfix", 10);
     declare_safe("pos2.armaxiter", 1);
     declare_safe("pos2.elmaskhold", 0.0);
-    declare_safe("pos2.aroutcnt", 5);
+    declare_safe("pos2.aroutcnt", 20);
     declare_safe("pos2.maxage", 30.0);
     declare_safe("pos2.syncsol", 0);
     declare_safe("pos2.slipthres", 0.05);
-    declare_safe("pos2.rejionno", 30.0);
+    // Innovation rejection thresholds [m], per observable (RTKLIB maxinno =
+    // {phase, code}). Carrier phase is ~100x more precise than code, so it gets
+    // a far tighter gate; a single threshold on both leaves the phase gate so
+    // loose that slip/multipath-corrupted carrier reaches the ambiguity search.
+    declare_safe("pos2.rejphase", 5.0);
+    declare_safe("pos2.rejcode", 30.0);
+    // Deprecated alias for pos2.rejphase (RTKLIB renamed pos2-rejionno ->
+    // pos2-rejphase and added pos2-rejcode); honoured when set, but it only
+    // ever governed the PHASE gate.
+    declare_safe("pos2.rejionno", 0.0);
     declare_safe("pos2.niter", 1);
 
-    declare_safe("rtk_stats.eratio1", 100.0);
-    declare_safe("rtk_stats.eratio2", 100.0);
+    // Code/phase error ratio (RTKLIB eratio). 300 is the RTKLIB default and
+    // reflects real code multipath; a lower value over-weights the pseudorange
+    // in the float solution, which is what the ambiguity search must resolve.
+    declare_safe("rtk_stats.eratio1", 300.0);
+    declare_safe("rtk_stats.eratio2", 300.0);
+    declare_safe("rtk_stats.eratio5", 300.0);
     declare_safe("rtk_stats.errphase", 0.003);
     declare_safe("rtk_stats.errphaseel", 0.003);
     declare_safe("rtk_stats.errdoppler", 1.0);
     declare_safe("rtk_stats.stdbias", 30.0);
     declare_safe("rtk_stats.stdiono", 0.03);
     declare_safe("rtk_stats.stdtrop", 0.3);
-    declare_safe("rtk_stats.prnaccelh", 10.0);
-    declare_safe("rtk_stats.prnaccelv", 10.0);
+    // Process noise: unmodelled horizontal/vertical acceleration [m/s^2]. Sized
+    // for a ground vehicle; too large and the filter stops carrying position
+    // information between epochs, which is what fix-and-hold depends on.
+    declare_safe("rtk_stats.prnaccelh", 3.0);
+    declare_safe("rtk_stats.prnaccelv", 1.0);
     declare_safe("rtk_stats.prnbias", 0.0001);
     declare_safe("rtk_stats.prniono", 0.001);
-    declare_safe("rtk_stats.prntrop", 0.0001);
     declare_safe("rtk_stats.prnpos", 0.0);
+    declare_safe("rtk_stats.prntrop", 0.0001);
+
+    // RTKLIB solution-status file (empty = off): per-epoch filter states and
+    // per-satellite residuals ($SAT lines), the same format rnx2rtkp emits with
+    // out-outstat=residual. This is the apples-to-apples channel for comparing
+    // this node against a post-processed CLI run epoch by epoch.
+    declare_safe("debug.solstatus_path", std::string(""));
   }
 
   void initializeRtk() {
@@ -173,9 +208,9 @@ class RtkPositionNode : public rclcpp::Node {
     if (get_parameter("pos1.navsys.qzs").as_bool()) opt.navsys |= SYS_QZS;
     if (get_parameter("pos1.navsys.irn").as_bool()) opt.navsys |= SYS_IRN;
 
-    if (get_parameter("pos1.snrmask.enable").as_bool()) {
-      opt.snrmask.ena[0] = 1;
-      opt.snrmask.ena[1] = 1;
+    opt.snrmask.ena[0] = get_parameter("pos1.snrmask.rover").as_bool() ? 1 : 0;
+    opt.snrmask.ena[1] = get_parameter("pos1.snrmask.base").as_bool() ? 1 : 0;
+    if (opt.snrmask.ena[0] || opt.snrmask.ena[1]) {
       const auto l1 = get_parameter("pos1.snrmask.l1").as_double_array();
       const auto l2 = get_parameter("pos1.snrmask.l2").as_double_array();
       const auto l5 = get_parameter("pos1.snrmask.l5").as_double_array();
@@ -195,8 +230,12 @@ class RtkPositionNode : public rclcpp::Node {
     opt.modear     = get_parameter("pos2.armode").as_int();
     opt.glomodear  = get_parameter("pos2.gloarmode").as_int();
     opt.bdsmodear  = get_parameter("pos2.bdsarmode").as_int();
+    opt.arfilter   = get_parameter("pos2.arfilter").as_int();
     opt.thresar[0] = get_parameter("pos2.arthres").as_double();
     opt.minlock    = get_parameter("pos2.arlockcnt").as_int();
+    opt.minfixsats = get_parameter("pos2.minfixsats").as_int();
+    opt.minholdsats = get_parameter("pos2.minholdsats").as_int();
+    opt.mindropsats = get_parameter("pos2.mindropsats").as_int();
     opt.elmaskar   = get_parameter("pos2.arelmask").as_double() * D2R;
     opt.minfix     = get_parameter("pos2.arminfix").as_int();
     opt.armaxiter  = get_parameter("pos2.armaxiter").as_int();
@@ -207,14 +246,22 @@ class RtkPositionNode : public rclcpp::Node {
     opt.thresslip  = get_parameter("pos2.slipthres").as_double();
     // rtklibexplorer: maxinno is now an array [phase, code]; maxgdop was removed.
     {
+      opt.maxinno[0] = get_parameter("pos2.rejphase").as_double();
+      opt.maxinno[1] = get_parameter("pos2.rejcode").as_double();
       const double rejionno = get_parameter("pos2.rejionno").as_double();
-      opt.maxinno[0] = rejionno;
-      opt.maxinno[1] = rejionno;
+      if (rejionno > 0.0) {
+        RCLCPP_WARN(get_logger(),
+                    "pos2.rejionno is deprecated - use pos2.rejphase (phase "
+                    "innovation gate). Applying %.1f m to the phase gate only.",
+                    rejionno);
+        opt.maxinno[0] = rejionno;
+      }
     }
     opt.niter = get_parameter("pos2.niter").as_int();
 
     opt.eratio[0] = get_parameter("rtk_stats.eratio1").as_double();
     opt.eratio[1] = get_parameter("rtk_stats.eratio2").as_double();
+    opt.eratio[2] = get_parameter("rtk_stats.eratio5").as_double();
     opt.err[1] = get_parameter("rtk_stats.errphase").as_double();
     opt.err[2] = get_parameter("rtk_stats.errphaseel").as_double();
     opt.err[4] = get_parameter("rtk_stats.errdoppler").as_double();
@@ -248,6 +295,18 @@ class RtkPositionNode : public rclcpp::Node {
       for (int i = 0; i < 3; ++i) rtk_.rb[i] = opt.rb[i];
       RCLCPP_INFO(get_logger(), "RTK init: forced base position to %.3f %.3f %.3f",
                   rtk_.rb[0], rtk_.rb[1], rtk_.rb[2]);
+    }
+
+    const std::string stat_path = get_parameter("debug.solstatus_path").as_string();
+    if (!stat_path.empty()) {
+      // Level 2 = states + per-satellite residuals (RTKLIB out-outstat=residual).
+      if (rtkopenstat(stat_path.c_str(), 2)) {
+        solstat_open_ = true;
+        RCLCPP_INFO(get_logger(), "Solution status -> %s", stat_path.c_str());
+      } else {
+        RCLCPP_WARN(get_logger(), "Failed to open solution status file %s",
+                    stat_path.c_str());
+      }
     }
 
     std::memset(&nav_, 0, sizeof(nav_));
@@ -477,6 +536,7 @@ class RtkPositionNode : public rclcpp::Node {
 
   double fixed_origin_ecef_[3]{0.0, 0.0, 0.0};
   bool fixed_origin_valid_{false};
+  bool solstat_open_{false};
 };
 
 int main(int argc, char** argv) {

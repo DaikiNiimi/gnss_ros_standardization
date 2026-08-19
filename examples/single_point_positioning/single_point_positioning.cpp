@@ -38,7 +38,10 @@ class SppPntposNode : public rclcpp::Node {
         std::bind(&SppPntposNode::onObs, this, std::placeholders::_1));
 
     nav_sub_ = create_subscription<grs::GnssEphemerides>(
-        get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(1).transient_local(),
+        // depth 256 (not 1): ephemeris arrives as many per-satellite messages; a
+        // depth-1 transient_local latch keeps only the last satellite, starving a
+        // subscriber that matches after the initial burst (e.g. against a bag).
+        get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(256).transient_local(),
         std::bind(&SppPntposNode::onNav, this, std::placeholders::_1));
 
     gnss_sol_pub_ = create_publisher<grs::GnssSolution>(
