@@ -87,7 +87,7 @@ private:
         get_parameter("observation_topic").as_string(), 10);
     nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>(
         get_parameter("ephemeris_topic").as_string(),
-        rclcpp::QoS(1).transient_local());
+        rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
   }
 
   void initializeDecoder() {

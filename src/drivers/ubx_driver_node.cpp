@@ -274,7 +274,7 @@ class UbxDriverNode : public rclcpp::Node {
 
   void initializePublishers() {
     obs_pub_     = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
-    eph_pub_     = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(1).transient_local());
+    eph_pub_     = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
     sol_pub_     = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
     imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(config_.imu_topic, 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
