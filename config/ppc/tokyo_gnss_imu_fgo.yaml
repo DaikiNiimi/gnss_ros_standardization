@@ -1,0 +1,122 @@
+# PPC-Dataset (Tokyo) — gnss_imu_fgo evaluation config.
+# Derived from config/gnss_imu_fgo.yaml. Deployment-specific fields: base
+# phase-center, IMU->antenna lever arm, and tow_auto_offset epoch source.
+#
+# Lever arm: the PPC metadata gives it in the FRD body frame (x fwd, y right,
+# z down) as (0.31, 0.0, -0.55) m. The node body frame is FLU (x fwd, y left,
+# z up), so it converts (lx, -ly, -lz) = (0.31, 0.0, 0.55).
+# NOTE: the dataset is MIXED - this lever arm is documented FRD but imu.csv is
+# already FLU, so the bag is built with `--imu-frame raw` (verify_bag_imu.py
+# checks it). Do not "correct" one to match the other.
+gnss_imu_fgo:
+  ros__parameters:
+    topics:
+      rover_observation: "/gnss/observation"
+      base_observation: "/base/gnss/observation"
+      ephemeris: "/gnss/ephemeris"
+      imu: "/gnss/imu/data_raw"
+      solution: "/gnss/solution"
+
+    base_position:
+      postype: "llh"
+      pos: [35.66633426, 139.79220181, 59.82]
+
+    # IMU->antenna lever arm in the node body frame (FLU), converted from the
+    # PPC FRD metadata (0.31, 0.0, -0.55). The negative down component puts the
+    # antenna 0.55 m ABOVE the IMU, which is what fixes the frame.
+    # Note the dataset is mixed - this lever arm is documented FRD but imu.csv
+    # itself is already FLU, so the bag is built with `--imu-frame raw`. Do not
+    # "correct" one to match the other; verify with verify_bag_imu.py instead.
+    lever_arm: [0.31, 0.0, 0.55]
+
+    time:
+      gnss_epoch_source: "tow_auto_offset"
+
+    fixed_origin:
+      postype: "llh"
+      pos: [0.0, 0.0, 0.0]
+
+    masks:
+      elevation_deg: 15.0
+      snr_dbhz: 35.0
+
+    navsys:
+      gps: true
+      glo: false
+      gal: true
+      bds: true
+      qzs: true
+
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false  # L1+L2 baseline (unified across methods)
+
+    max_age_s: 5.0
+
+    measurement:
+      iono_model: "brdc"
+      trop_model: "saas"
+      base_correlation_model: "variance_inflation"
+      base_reuse_factor: 5.0
+
+    cycle_slip:
+      gf_threshold_m: 0.05
+      max_gap_s: 2.0
+
+    noise:
+      pr_sigma_m: 0.5
+      doppler_max_res_m: 2.0
+      cp_sigma_m: 0.005
+    gap:
+      # Longest stretch the node dead-reckons through a GNSS outage before it
+      # stops publishing. Beyond this the solution is inertial drift, not a
+      # position; <= 0 disables the bound (offline replay only).
+      max_coast_s: 30.0
+
+    ambiguity:
+      ratio_threshold: 3.0
+      min_fix: 4
+      min_lock: 5
+      min_fix_to_hold: 10
+      partial_max_drop: 5
+      max_pos_var_m2: 0.25
+      max_outage_s: 5.0
+      hold_refresh_s: 30.0
+
+    graph:
+      # The code default. 40 s buys ~1.8 points of fix rate and costs 76
+      # unsolved epochs plus a p90 publish latency of 32 s (README table).
+      lag_s: 25.0
+
+    imu:
+      # Deliberately INFLATED vs the ADIS16505-2 datasheet: a loose
+      # accelerometer lets the state keep following GNSS, so a wrong integer set
+      # is contradicted and breaks instead of being smoothed over. Tighten only
+      # where multipath is mild. sigma_gyr is neutral over 0.01-0.0015.
+      sigma_acc: 0.3
+      sigma_gyr: 0.01
+      sigma_acc_bias: 1.0e-5
+      sigma_gyr_bias: 1.0e-6
+      sigma_integration: 0.01
+      max_wait_s: 0.2       # sensor-watermark wait; live outage uses watchdog
+      queue_depth: 2000      # DDS IMU subscription history
+
+    nhc:
+      enable: false
+      sigma_lat_mps: 0.3
+      sigma_vert_mps: 0.2
+      min_speed_mps: 0.0
+      lever_frd: [0.0, 0.0, 0.0]
+      max_yaw_rate_rps: 0.02  # apply NHC only when driving straight (lever-safe)
+    zupt:
+      enable: true
+      max_acc_std: 0.55
+      max_gyr_std: 0.030
+      max_gyr_median: 0.020
+      min_samples: 5
+      max_speed_mps: 1.0
+      sigma_mps: 0.5
+
+    init:
+      imu_duration: 1.0

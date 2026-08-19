@@ -6,9 +6,7 @@
 
 ubx_driver_node:
   ros__parameters:
-    # ==========================================================================
     # Basic Settings
-    # ==========================================================================
     
     # Stream path (serial, tcp, ntrip, file)
     # Examples:
@@ -59,9 +57,7 @@ ubx_driver_node:
     # G9 uses legacy CFG commands, G10 uses CFG-VALSET
     generation: "G9"
     
-    # ==========================================================================
     # Output Messages
-    # ==========================================================================
     messages:
       # Raw measurement data (required for RTK/PPP)
       rawx: true
@@ -100,9 +96,7 @@ ubx_driver_node:
       esf_raw: false   # ESF-RAW: uncalibrated, native IMU sample rate → /gnss/imu/data_raw
       esf_ins: false   # ESF-INS: receiver-calibrated angular rate + accel → /gnss/imu/data
 
-    # ==========================================================================
     # GNSS Constellation Settings
-    # ==========================================================================
     # All supported frequencies for each enabled constellation are configured
     # automatically (depends on hardware + RTKLIB decoder support).
     gnss:

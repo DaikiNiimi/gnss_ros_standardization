@@ -1,0 +1,68 @@
+# PPC-Dataset (Tokyo) — gnss_fgo evaluation config.
+# Derived from config/gnss_fgo.yaml; only the deployment-specific fields differ:
+# base phase-center position and the GPST epoch reconstruction. See
+# examples/tightly_coupled_fgo/README.md for the full parameter documentation.
+gnss_fgo:
+  ros__parameters:
+    topics:
+      rover_observation: "/gnss/observation"
+      base_observation: "/base/gnss/observation"
+      ephemeris: "/gnss/ephemeris"
+      solution: "/gnss/solution"
+
+    # Tokyo base station antenna phase center (authoritative metadata).
+    base_position:
+      postype: "llh"
+      pos: [35.66633426, 139.79220181, 59.82]
+
+    fixed_origin:
+      postype: "llh"
+      pos: [0.0, 0.0, 0.0]
+
+    masks:
+      elevation_deg: 15.0
+      snr_dbhz: 35.0
+
+    navsys:
+      gps: true
+      glo: false
+      gal: true
+      bds: true
+      qzs: true
+
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false  # L1+L2 baseline (unified across methods)
+
+    max_age_s: 5.0
+
+    measurement:
+      iono_model: "brdc"
+      trop_model: "saas"
+      base_correlation_model: "variance_inflation"
+      base_reuse_factor: 5.0
+
+    cycle_slip:
+      gf_threshold_m: 0.05
+      max_gap_s: 2.0
+
+    noise:
+      pr_sigma_m: 0.5
+      cp_sigma_m: 0.005
+
+    ambiguity:
+      ratio_threshold: 3.0
+      min_fix: 4
+      min_lock: 5
+      min_fix_to_hold: 10
+      partial_max_drop: 5
+      max_pos_var_m2: 0.25
+      max_outage_s: 5.0
+      hold_refresh_s: 30.0
+
+    motion:
+      accel_sigma_mps2: 3.0
+
+    graph:
+      lag_s: 25.0

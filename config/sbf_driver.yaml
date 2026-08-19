@@ -6,9 +6,7 @@
 
 sbf_driver_node:
   ros__parameters:
-    # ==========================================================================
     # Basic Settings
-    # ==========================================================================
     
     # Stream path (serial, tcp, ntrip, file)
     # Examples:
@@ -45,9 +43,7 @@ sbf_driver_node:
       enabled: false
       listen: "tcpsvr://:5557" # RTKLIB stream path; ":port" binds all interfaces
 
-    # ==========================================================================
     # Receiver Configuration
-    # ==========================================================================
     
     # Receiver output port
     # Specifies which logical port on the receiver to configure for SBF output.
@@ -55,9 +51,7 @@ sbf_driver_node:
     # Must match the physical connection used by stream_path.
     receiver_port: "USB1"
 
-    # ==========================================================================
     # Output Messages
-    # ==========================================================================
     messages:
       meas_epoch: true       # Raw observations (MeasEpoch)
 

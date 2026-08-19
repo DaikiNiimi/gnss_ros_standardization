@@ -6,9 +6,7 @@
 
 single_point_positioning:
   ros__parameters:
-    # ==========================================================================
     # Input / Output
-    # ==========================================================================
     
     # TCP port for RTKPLOT stream (providing NMEA output)
     tcp_port: 8002
@@ -28,9 +26,7 @@ single_point_positioning:
       # Position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
       pos: [0.0, 0.0, 0.0]
 
-    # ==========================================================================
     # Processing Options
-    # ==========================================================================
     
     # Excluded Satellites (e.g. ["G01", "R03"])
     excluded_satellites: [""]
@@ -49,9 +45,7 @@ single_point_positioning:
       # L5/E5a/B2a
       l5: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
 
-    # ==========================================================================
     # Navigation Systems
-    # ==========================================================================
     # Set to true to enable processing for specific systems
     nav_systems:
       gps: true
@@ -62,9 +56,7 @@ single_point_positioning:
       irn: true
       sbs: false
 
-    # ==========================================================================
     # Frequencies
-    # ==========================================================================
     # Enable specific frequency bands
     # L1: GPS L1, GLO G1, GAL E1, BDS B1, QZS L1
     # L2: GPS L2, GLO G2, BDS B2

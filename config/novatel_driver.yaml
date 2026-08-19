@@ -5,9 +5,7 @@
 
 novatel_driver_node:
   ros__parameters:
-    # ==========================================================================
     # Connection Settings
-    # ==========================================================================
     # Stream path: serial://<device>:<baud> or tcpcli://<host>:<port> or file://<path>
     # Common bauds: 9600, 115200, 230400, 460800, 921600
     stream_path: "serial:///dev/ttyUSB1:230400"
@@ -47,9 +45,7 @@ novatel_driver_node:
       output: ""                  # dedicated correction port, e.g. "serial:///dev/ttyUSB2:230400" (must differ from stream_path)
       correction_port: "THISPORT" # INTERFACEMODE target, sent over `output` (leave THISPORT)
 
-    # ==========================================================================
     # Message Configuration
-    # ==========================================================================
     # Enable/Disable specific SBF blocks
     messages:
       # Observation Data

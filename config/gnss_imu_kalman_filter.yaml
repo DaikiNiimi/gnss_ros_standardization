@@ -1,24 +1,18 @@
 gnss_imu_kalman_filter:
   ros__parameters:
-    # ==========================================================================
     # Local ENU Origin
-    # ==========================================================================
     local_origin:
       mode: "gnss_fix"          # "gnss_fix": first valid GNSS fix | "manual": use pos below
       pos: [0.0, 0.0, 0.0]      # [lat_deg, lon_deg, alt_m] (used when mode="manual")
 
-    # ==========================================================================
     # Topic Names
-    # ==========================================================================
     topics:
       gnss_solution: "/gnss/nmea_solution"
       imu_raw: "/gnss/imu/data_raw"
       wheel_speed: "/can_twist"
       solution: "/gnss/fusion/ekf_solution"
 
-    # ==========================================================================
     # EKF Parameters
-    # ==========================================================================
     ekf:
       # Process noise spectral densities [x, y, z]
       sigma_acc:      [0.3, 0.3, 0.3]               # [m/s²/√Hz]
@@ -44,9 +38,7 @@ gnss_imu_kalman_filter:
       gnss_time_source: "header"
       gnss_offset_window_s: 60.0                    # [s] tow_auto_offset window
 
-    # ==========================================================================
     # GNSS Observation Update Mode
-    # ==========================================================================
     # "fix_only" | "fix_float" | "all" (never STATUS_EKF). fix_float recommended:
     # fix_only starves the filter during RTK dropouts, drift snaps back (see README).
     gnss_update_mode:  "fix_float"
@@ -62,9 +54,7 @@ gnss_imu_kalman_filter:
       cov_min_var: 1.0e-6                          # [m²]
       vel_sigma_default: 0.2                       # [m/s]
 
-    # ==========================================================================
     # CSV Log Output
-    # ==========================================================================
     csv:
       dir: ""                                    # output directory ("" = cwd)
       sensors_log_enabled: true                  # raw sensor data log (IMU/GNSS/wheel speed) at IMU rate
@@ -72,9 +62,7 @@ gnss_imu_kalman_filter:
       state_log_enabled: true                   # EKF estimated state + diagonal covariance log
       state_log_filename: "ekf_state_log.csv"
 
-    # ==========================================================================
     # Wheel Speed (Optional)
-    # ==========================================================================
     use_wheel_speed: false
     wheel_speed_topic_type: "twist_with_covariance"   # "twist_with_covariance" | "twist"
     wheel_speed_mode: "longitudinal_only"             # "longitudinal_only" | "3d"
@@ -85,9 +73,7 @@ gnss_imu_kalman_filter:
     wheel_nhc_sigma_lateral: 0.3   # [m/s]
     wheel_nhc_sigma_vertical: 0.3  # [m/s]
 
-    # ==========================================================================
     # Accelerometer Leveling (gravity-reference roll/pitch update)
-    # ==========================================================================
     # Bounds roll/pitch; noise inflates with kinematic accel & rate, applied at
     # most once per window (see README).
     leveling:
@@ -98,9 +84,7 @@ gnss_imu_kalman_filter:
       gyr_gain: 30.0       # [deg per rad/s] sigma inflation vs ||omega||
       max_acc: 0.5         # [m/s^2] skip the update above this (systematic accel bias)
 
-    # ==========================================================================
     # Zero-Velocity Update (ZUPT)
-    # ==========================================================================
     # v=0 update, gated on a fresh measured stop (speed + std-dev + mean gates).
     # Without a speed reference it fires only if allow_imu_only (see README).
     zupt:
@@ -116,26 +100,20 @@ gnss_imu_kalman_filter:
       speed_thresh: 0.5    # [m/s] a fresh reference at/below this means "stopped"
       speed_timeout: 1.5   # [s]   max age of the measured-speed reference to trust
 
-    # ==========================================================================
     # Initial IMU Averaging
-    # ==========================================================================
     init_imu_duration: 1.0  # duration to average initial IMU data for roll/pitch [s]
 
     # true: use init_yaw_deg immediately | false: wait for Doppler heading first.
     use_init_yaw: false
     init_yaw_deg: 0.0   # [deg] initial yaw when use_init_yaw is true
 
-    # ==========================================================================
     # State Update Thresholds
-    # ==========================================================================
     # Continuous yaw aid from GNSS Doppler course (forward-motion model; see
     # README). Code default false; this ground-vehicle demo opts in.
     use_doppler_heading: true
     gnss_heading_speed_threshold: 0.5   # [m/s] min speed to init/update yaw
 
-    # ==========================================================================
     # IMU Installation & Lever-Arm
-    # ==========================================================================
     # Which position the EKF outputs. "imu": IMU | "gnss": GNSS antenna.
     output_reference_frame: "imu"
 
@@ -146,9 +124,7 @@ gnss_imu_kalman_filter:
     # IMU axis orientation relative to body frame [roll, pitch, yaw] [rad]
     imu_orientation: [0.0, 0.0, 0.0]
 
-    # ==========================================================================
     # Output Frames
-    # ==========================================================================
     # world: Odometry/GnssSolution frame_id ("map": GNSS can jump, not odom-safe).
     # child: Odometry.child_frame_id; "" auto-derives from output_reference_frame.
     frames:

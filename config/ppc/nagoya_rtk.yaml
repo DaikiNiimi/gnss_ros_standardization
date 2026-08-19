@@ -1,0 +1,86 @@
+# PPC-Dataset (Nagoya) — real_time_kinematic (RTKLIB) evaluation config.
+# Derived from config/real_time_kinematic.yaml; only the base station position
+# differs. Used as the RTK reference in the truth-based comparison.
+real_time_kinematic:
+  ros__parameters:
+    topics:
+      rover_observation: "/gnss/observation"
+      base_observation: "/base/gnss/observation"
+      ephemeris: "/gnss/ephemeris"
+      solution: "/gnss/solution"
+
+    tcp_port: 8002
+    excluded_satellites: [""]
+
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false  # L1+L2 baseline (unified across methods)
+
+    # Nagoya base station antenna phase center (authoritative metadata).
+    ant2:
+      postype: "llh"
+      pos: [35.13470947, 136.97757427, 104.718]
+
+    fixed_origin:
+      postype: "llh"
+      pos: [0.0, 0.0, 0.0]
+
+    pos1:
+      elmask: 15.0
+      dynamics: 1
+      ionoopt: 1
+      tropopt: 1
+      sateph: 0
+      navsys:
+        gps: true
+        glo: false
+        gal: true
+        bds: true
+        qzs: true
+        irn: false
+      snrmask:
+        rover: true
+        base: true    # symmetric: a DD is only as good as its worst input
+        l1: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        l2: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        l5: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+
+    pos2:
+      armode: 3
+      gloarmode: 1
+      bdsarmode: 1
+      arfilter: 1
+      arthres: 3.0
+      arlockcnt: 0
+      minfixsats: 4
+      minholdsats: 5
+      mindropsats: 10
+      arelmask: 0.0
+      arminfix: 10
+      armaxiter: 1
+      elmaskhold: 0.0
+      aroutcnt: 20
+      maxage: 10.0
+      syncsol: 1
+      slipthres: 0.05
+      rejphase: 5.0
+      rejcode: 30.0
+      niter: 1
+
+    rtk_stats:
+      eratio1: 300.0
+      eratio2: 300.0
+      eratio5: 300.0
+      errphase: 0.003
+      errphaseel: 0.003
+      errdoppler: 1.0
+      stdbias: 30.0
+      stdiono: 0.03
+      stdtrop: 0.3
+      prnaccelh: 3.0
+      prnaccelv: 1.0
+      prnbias: 0.0001
+      prniono: 0.001
+      prntrop: 0.0001
+      prnpos: 0.0
