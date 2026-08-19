@@ -275,7 +275,7 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/rinex_to_rosbag.cpp")
   add_executable(rinex_to_rosbag src/converter/rinex_to_rosbag.cpp)
   target_include_directories(rinex_to_rosbag PUBLIC ${_gen_include})
-  ament_target_dependencies(rinex_to_rosbag rclcpp rosbag2_cpp rosbag2_storage std_msgs builtin_interfaces)
+  ament_target_dependencies(rinex_to_rosbag rclcpp rosbag2_cpp rosbag2_storage std_msgs sensor_msgs nav_msgs builtin_interfaces)
   target_link_libraries(rinex_to_rosbag gnss_utils)
   add_dependencies(rinex_to_rosbag ${_rosidl_deps})
   install(TARGETS rinex_to_rosbag DESTINATION lib/${PROJECT_NAME})
@@ -429,29 +429,35 @@ if(BUILD_GTSAM_FGO_EXAMPLES)
 endif()
 
 # Tests (run locally with `colcon test`; CI wiring is handled separately)
-if(BUILD_TESTING)
+#
+# The whole block is guarded on the test/ DIRECTORY, not on the individual
+# files, so a packaging step that strips tests still configures; but once test/
+# is present, a MISSING FILE INSIDE IT is a hard error (see the comment on the
+# two core tests below). Those are different situations and only one of them is
+# an accident.
+if(BUILD_TESTING AND NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  message(STATUS
+    "test/ is not present - no unit tests will be built or run. It ships with "
+    "the package, so this means either a stripped-down copy or a working tree "
+    "where test/ has gone missing.")
+endif()
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test")
   find_package(ament_cmake_gtest REQUIRED)
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_epoch_matcher.cpp")
-    ament_add_gtest(test_epoch_matcher test/test_epoch_matcher.cpp)
-  endif()
-  if(TARGET test_epoch_matcher)
-    target_include_directories(test_epoch_matcher PUBLIC ${_gen_include})
-    target_link_libraries(test_epoch_matcher gnss_utils)
-    ament_target_dependencies(test_epoch_matcher rclcpp std_msgs builtin_interfaces)
-    add_dependencies(test_epoch_matcher ${_rosidl_deps})
-  endif()
+  # Core matcher/preprocessor regressions are MANDATORY (not EXISTS-guarded):
+  # silently omitting a missing source file previously left only the FGO math
+  # test registered, hiding losslessness regressions.
+  ament_add_gtest(test_epoch_matcher test/test_epoch_matcher.cpp)
+  target_include_directories(test_epoch_matcher PUBLIC ${_gen_include})
+  target_link_libraries(test_epoch_matcher gnss_utils)
+  ament_target_dependencies(test_epoch_matcher rclcpp std_msgs builtin_interfaces)
+  add_dependencies(test_epoch_matcher ${_rosidl_deps})
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_gnss_preprocessor.cpp" AND
-     EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/utils/gnss_preprocessor.cpp")
-    ament_add_gtest(test_gnss_preprocessor test/test_gnss_preprocessor.cpp)
-  endif()
-  if(TARGET test_gnss_preprocessor)
-    target_include_directories(test_gnss_preprocessor PUBLIC ${_gen_include})
-    target_link_libraries(test_gnss_preprocessor gnss_utils)
-    ament_target_dependencies(test_gnss_preprocessor rclcpp std_msgs builtin_interfaces)
-    add_dependencies(test_gnss_preprocessor ${_rosidl_deps})
-  endif()
+  ament_add_gtest(test_gnss_preprocessor test/test_gnss_preprocessor.cpp)
+  target_include_directories(test_gnss_preprocessor PUBLIC ${_gen_include})
+  target_link_libraries(test_gnss_preprocessor gnss_utils)
+  ament_target_dependencies(test_gnss_preprocessor rclcpp std_msgs builtin_interfaces)
+  add_dependencies(test_gnss_preprocessor ${_rosidl_deps})
 
   # End-to-end verification of the GNSS/IMU/wheel-speed EKF: the real node is
   # compiled in (main() guarded out) and driven through its ROS interfaces.
@@ -484,6 +490,8 @@ if(BUILD_TESTING)
         target_link_libraries(${_fgo_test} gnss_utils gtsam)
         ament_target_dependencies(${_fgo_test} rclcpp std_msgs builtin_interfaces)
         add_dependencies(${_fgo_test} ${_rosidl_deps})
+        set_target_properties(${_fgo_test} PROPERTIES INSTALL_RPATH_USE_LINK_PATH ON)
+        target_link_options(${_fgo_test} PRIVATE "-Wl,--disable-new-dtags")
       endif()
     endforeach()
   endif()
