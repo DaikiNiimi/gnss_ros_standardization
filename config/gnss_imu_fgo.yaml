@@ -1,0 +1,170 @@
+gnss_imu_fgo:
+  ros__parameters:
+    topics:
+      rover_observation: "/gnss/observation"
+      base_observation: "/base/gnss/observation"
+      ephemeris: "/gnss/ephemeris"
+      imu: "/gnss/imu/data_raw"
+      solution: "/gnss/solution"
+
+    # Base station antenna position. REQUIRED (see tightly_coupled_fgo README).
+    base_position:
+      postype: "llh"
+      pos: [35.70494444, 139.72169444, 74.380]
+
+    # Body-frame lever arm from IMU origin to GNSS antenna [m] (x fwd, y left,
+    # z up). MUST be set to the real value on the platform: a wrong lever arm
+    # injects a body-attitude-dependent error into every carrier residual and
+    # degrades the fix rate. Left [0,0,0] here (verified only for a co-located
+    # receiver/IMU); see the README.
+    lever_arm: [0.0, 0.0, 0.0]
+
+    # GNSS epoch time for IMU pairing (see README):
+    #   header          : use header.stamp as-is
+    #   tow_auto_offset : rebuild epoch from week/tow, strip receiver latency
+    # tow_auto_offset recommended: receiver output latency (measured 39-129 ms)
+    # otherwise misaligns the IMU integration boundary and degrades the float.
+    time:
+      gnss_epoch_source: "tow_auto_offset"
+
+    # ENU output origin. Priority: fixed_origin > base > local nav anchor.
+    fixed_origin:
+      postype: "llh"
+      pos: [0.0, 0.0, 0.0]
+
+    # ENU nav-frame anchor the graph is solved in (distinct from the output
+    # origin above): "gnss_fix" anchors at the first GNSS a-priori position,
+    # "manual" uses local_origin.pos.
+    local_origin:
+      mode: "gnss_fix"
+      postype: "llh"
+      pos: [0.0, 0.0, 0.0]
+
+    masks:
+      elevation_deg: 15.0
+      snr_dbhz: 35.0          # flat SNR mask [dBHz]; 0 disables it
+
+    navsys:
+      gps: true
+      glo: false
+      # Use GLONASS for the undifferenced product (SPP, Doppler velocity) while
+      # keeping it out of double differencing, and so out of AR. Needs glo: true.
+      glo_undifferenced_only: false
+      gal: true
+      bds: true
+      qzs: true
+
+    # Dual-frequency (L1+L2) is recommended for reliable ambiguity resolution.
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false
+      # Allow a carrier DD whose rover and base codes differ, where that is
+      # integer-safe (the bias is common to the group and cancels in the DD).
+      cross_code_pairing: true
+
+    max_age_s: 5.0
+
+    measurement:
+      iono_model: "brdc"
+      trop_model: "saas"
+      base_correlation_model: "variance_inflation"
+      base_reuse_factor: 1.0
+
+    # Rover-base cycle-slip detection (see gnss_fgo.yaml / the README).
+    cycle_slip:
+      gf_threshold_m: 0.05
+      max_gap_s: 2.0
+
+    # Undifferenced (zenith) measurement sigmas; DD noise is derived from these.
+    noise:
+      pr_sigma_m: 0.5
+      cp_sigma_m: 0.005
+      pr_innov_gate_m: 0.0    # DD pseudorange innovation gate [m] (0 = off)
+      # Doppler error correlation time [s]: the absolute velocity prior is
+      # inflated by sqrt(max(1, corr_time * gnss_rate)) to stop a time-correlated
+      # error being counted as independent at every epoch.
+      doppler_corr_time_s: 2.0
+      doppler_max_res_m: 2.0  # reject Doppler aiding above this post-fit RMS [m/s]
+      doppler_max_nsigma: 4.0  # per-satellite Baarda w-test in the Doppler solve (0 = off)
+      # A-priori zenith range-rate sigma [m/s], scaled by 1/sin^2(elevation).
+      # A real noise figure, not a relative weight.
+      doppler_sigma_mps: 0.1
+
+    # Integer ambiguity resolution on the graph posterior; see gnss_fgo.yaml.
+    gap:
+      # Longest stretch the node dead-reckons through a GNSS outage before it
+      # stops publishing. Beyond this the solution is inertial drift, not a
+      # position; <= 0 disables the bound (offline replay only).
+      max_coast_s: 30.0
+    ambiguity:
+      resolution: true        # false = FLOAT-only (scores the float on its own)
+      fde_max_exclude: 2
+      ratio_threshold: 3.0
+      min_fix: 4
+      min_lock: 5
+      min_fix_to_hold: 10
+      partial_max_drop: 5
+      max_pos_var_m2: 0.25
+      max_outage_s: 5.0
+      hold_refresh_s: 30.0
+
+    # Estimator backend: fixed-lag window [s] bounds the per-epoch solve cost
+    # (real-time); lag_s <= 0 = full-history ISAM2. See gnss_fgo.yaml / README.
+    graph:
+      lag_s: 25.0
+
+    # IMU noise densities. accel/gyro are deliberately INFLATED over the sensor
+    # datasheet - a loose accelerometer keeps the state following GNSS, so a
+    # wrong integer set gets contradicted rather than smoothed over. Tighten
+    # only where multipath is mild. The bias random walks are datasheet-derived.
+    imu:
+      sigma_acc: 0.3          # [m/s^2/sqrt(Hz)]
+      sigma_gyr: 0.01         # [rad/s/sqrt(Hz)]
+      sigma_acc_bias: 1.0e-5  # [m/s^2/sqrt(s)]
+      sigma_gyr_bias: 1.0e-6  # [rad/s/sqrt(s)]
+      sigma_integration: 0.01  # sqrt of integration cov (-> 1e-4)
+      max_wait_s: 0.2       # sensor-watermark wait; live outage uses watchdog
+      queue_depth: 2000      # DDS IMU subscription history
+
+    # Vehicle-motion pseudo-measurements (replace wheel odometry; pure kinematics).
+    attitude:                  # velocity-direction attitude aiding
+      # The only constraint tying body heading to the direction of travel.
+      # ASSUMES A WHEELED VEHICLE: small side-slip, body +x forward, no
+      # sustained reverse. Set false for aircraft, boats and handheld use.
+      velocity_aiding: true
+      min_speed_mps: 3.0       # below this the course is noise, not heading
+      sideslip_deg: 2.0        # sigma floor; keep above the IMU mount yaw offset
+      max_misalign_deg: 90.0   # reject a reversed heading once converged
+    nhc:                       # non-holonomic constraint (no side-slip / hop)
+      # Same physics as the attitude aiding above but as a VELOCITY constraint,
+      # so it collides with zupt at a standstill and with the Doppler prior
+      # while moving, and makes the velocity over-confident. Prefer `attitude`;
+      # if enabled, set lever_frd to the rear axle.
+      enable: false
+      sigma_lat_mps: 0.3
+      sigma_vert_mps: 0.2
+      min_speed_mps: 0.0
+      lever_frd: [0.0, 0.0, 0.0]
+      max_yaw_rate_rps: 0.02  # apply NHC only when driving straight (lever-safe)
+    zupt:                      # zero-velocity update while stationary
+      enable: true
+      max_acc_std: 0.55
+      max_gyr_std: 0.030
+      max_gyr_median: 0.020
+      min_samples: 5
+      max_speed_mps: 1.0
+      sigma_mps: 0.5
+      sigma_vert_mps: 0.5    # looser than sigma_mps: a hard vertical pin traps
+                             # any existing vertical position error
+
+    # Static initialization: platform must be stationary for imu_duration
+    # seconds (roll/pitch + gyro bias from the averages; yaw unknown until it
+    # moves). The initial-state standard deviations are fixed constants.
+    init:
+      imu_duration: 1.0       # [s]
+
+    debug:
+      # Per-epoch ambiguity-resolution dump (float solution, its covariance and
+      # the decision made from them). Empty disables it.
+      ar_dump_dir: ""

@@ -16,6 +16,11 @@
 #include <cstdio>
 #include <string>
 
+// Everything below is private to this translation unit. Each converter is a
+// separate executable, but they all declare a file-scope `struct Args`, and
+// identical names with different layouts at external linkage are an ODR
+// violation the moment anything links two of them (cppcheck flags it as one).
+namespace {
 struct Args {
   std::string pos_path;
   std::string output_bag;
@@ -39,6 +44,8 @@ static Args parseArgs(int argc, char** argv) {
   }
   return a;
 }
+
+}  // namespace
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);

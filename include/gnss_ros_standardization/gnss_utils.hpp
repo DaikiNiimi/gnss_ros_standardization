@@ -3,8 +3,10 @@
 #define GNSS_ROS_STANDARDIZATION_GNSS_UTILS_HPP
 
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 #include <rclcpp/logger.hpp>
 #include <rclcpp/time.hpp>
@@ -88,6 +90,57 @@ rclcpp::Time gpstToUtcRosTime(gtime_t t_gpst);
 bool nmeaUtcToGpsTime(int year, int month, int day, double hms,
                       uint32_t& week, double& tow);
 
+/**
+ * Convert a UTC ROS Time to GPS week / time-of-week via utc2gpst() (leap-
+ * second correction included). Inverse of gpstToUtcRosTime().
+ * @return true on success (week > 0).
+ */
+bool utcRosTimeToGpst(const rclcpp::Time& t_utc_ros, uint32_t& week, double& tow);
+
+/**
+ * Selects the epoch time a GNSS measurement is applied at when fusing against
+ * other ROS-stamped sensors. An arrival-time header.stamp lags the true epoch
+ * (week/tow) by the receiver output latency (tens~150 ms, jittery) — applying
+ * there drags a moving estimate backwards by v x latency.
+ *
+ *  - Header:        header.stamp as-is (correct when the producer stamps at
+ *                   the measurement epoch).
+ *  - TowAutoOffset: utc(week,tow) + sliding-window min of (stamp - utc(tow))
+ *                   (= clock offset + min latency); works on an unsynced PC
+ *                   clock, residual ~= the min latency.
+ *
+ * Invalid week/tow falls back to Header. The returned time uses the stamp's
+ * clock type.
+ */
+class GnssEpochAligner {
+ public:
+  enum class Source { Header, TowAutoOffset };
+
+  struct Config {
+    Source source{Source::Header};
+    double offset_window_s{60.0};  // [s] sliding window of the min-d_k estimate
+  };
+
+  /** Map a parameter string ("header" | "tow_auto_offset") to a Source. */
+  static bool parseSource(const std::string& name, Source& out);
+
+  GnssEpochAligner() = default;
+  explicit GnssEpochAligner(const Config& cfg) : cfg_(cfg) {}
+
+  /**
+   * Return the epoch time to apply a measurement stamped `stamp` with GNSS
+   * time (week, tow). On any fallback to Header, `warn` (if non-null) is set
+   * to a human-readable reason (empty otherwise); callers throttle-log it.
+   */
+  rclcpp::Time align(uint32_t week, double tow, const rclcpp::Time& stamp,
+                     std::string* warn = nullptr);
+
+ private:
+  Config cfg_;
+  // (stamp seconds, d_k = stamp - utc(week,tow)) history for TowAutoOffset.
+  std::deque<std::pair<double, double>> offsets_;
+};
+
 // ---- Math Helpers ----
 
 /**
@@ -163,15 +216,18 @@ void applyDopWithStaleness(gnss_ros_standardization::msg::GnssSolution& sol,
 
 /**
  * Validate a publish/measurement rate in Hz. Logs a WARN via the supplied
- * rclcpp::Logger and clamps to `fallback` when the value is outside [1, 20].
- * Centralized so all GNSS driver nodes use the same range and warning text.
+ * rclcpp::Logger and clamps to `fallback` when the value is outside
+ * [1, max_hz]. Centralized so all GNSS driver nodes use the same warning
+ * text; the upper bound is per-driver (e.g. 100 for Septentrio, 20 for
+ * u-blox/NovAtel).
  *
  * @param rate_hz   the requested rate (mutated in place)
- * @param fallback  the clamp target on out-of-range input (default 5)
+ * @param fallback  the clamp target on out-of-range input
+ * @param max_hz    driver-specific upper bound in Hz
  * @param logger    rclcpp::Logger to emit the warning on
  * @return true if the input was in range; false if it was clamped
  */
-bool validatePublishRate(int& rate_hz, int fallback, const rclcpp::Logger& logger);
+bool validatePublishRate(int& rate_hz, int fallback, int max_hz, const rclcpp::Logger& logger);
 
 // ---- Lightweight NMEA Parser ----
 

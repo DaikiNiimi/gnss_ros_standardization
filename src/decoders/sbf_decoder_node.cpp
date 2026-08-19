@@ -41,6 +41,7 @@ class SbfDecoderNode : public rclcpp::Node {
     initializePublishers();
     initializeDecoder();
     openStream();
+    openRtcmRelay();
     startPolling();
 
     RCLCPP_INFO(get_logger(), "SBF Decoder initialized");
@@ -49,9 +50,9 @@ class SbfDecoderNode : public rclcpp::Node {
   ~SbfDecoderNode() override {
     try {
       strclose(&stream_);
+      relay_.close();
     } catch (...) {}
     free_raw(&raw_);
-    free_rtcm(&rtcm_);
   }
 
  private:
@@ -75,6 +76,9 @@ class SbfDecoderNode : public rclcpp::Node {
     declare_parameter<bool>("use_gps_timestamp", false);
     declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
 
+    // RTCM relay listen URI (opt-in, see openRtcmRelay). Empty = disabled.
+    declare_parameter<std::string>("rtcm_relay", "");
+
     frame_id_ = get_parameter("frame_id").as_string();
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
@@ -91,7 +95,7 @@ class SbfDecoderNode : public rclcpp::Node {
 
   void initializePublishers() {
     obs_pub_          = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
-    eph_pub_          = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(1).transient_local());
+    eph_pub_          = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
     sol_pub_          = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
     imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
 
@@ -124,10 +128,6 @@ class SbfDecoderNode : public rclcpp::Node {
       RCLCPP_ERROR(get_logger(), "Failed to initialize raw decoder");
       throw std::runtime_error("init_raw failed");
     }
-    if (init_rtcm(&rtcm_) != 1) {
-      RCLCPP_ERROR(get_logger(), "Failed to initialize RTCM decoder");
-      throw std::runtime_error("init_rtcm failed");
-    }
   }
 
   void startPolling() {
@@ -137,40 +137,42 @@ class SbfDecoderNode : public rclcpp::Node {
   // Stream Management
 
   void openStream() {
-    const std::string stream_path = get_parameter("stream_path").as_string();
-    std::string path = stream_path;
-
-    int stream_type = 0;
-    bool matched = false;
-    for (const auto& def : sbf::kStreamTypes) {
-      if (path.rfind(def.prefix, 0) == 0) {
-        stream_type = def.type;
-        path.erase(0, def.prefix.size());
-        matched = true;
-        break;
-      }
-    }
-
-    if (!matched) {
-      RCLCPP_ERROR(get_logger(), "Unsupported stream path format: %s", stream_path.c_str());
-      throw std::runtime_error("Unsupported stream_path format");
-    }
-
-    if (stream_type == STR_SERIAL && path.rfind("/dev/", 0) == 0) {
-      path.erase(0, 5);
-    }
-
-    if (!stropen(&stream_, stream_type, STR_MODE_R, path.c_str())) {
-      RCLCPP_ERROR(get_logger(), "Failed to open stream: %s", stream_path.c_str());
+    // The RTCM relay writes corrections back down this stream, so it needs a
+    // read-write open; without relay keep the passive read-only open.
+    const int mode = get_parameter("rtcm_relay").as_string().empty()
+                     ? STR_MODE_R : STR_MODE_RW;
+    if (!decoder_common::openStreamPath(get_logger(), stream_,
+                                        get_parameter("stream_path").as_string(),
+                                        mode, "Input")) {
       throw std::runtime_error("stropen failed");
     }
+  }
 
-    RCLCPP_INFO(get_logger(), "Stream opened: %s", stream_path.c_str());
+  // RTCM relay (RTKLIB STRSVR-style): host a TCP server (recommended
+  // "tcpsvr://:5557", fed by rtcm_decoder_node's rtcm_relay) and write incoming
+  // corrections to the receiver stream in pollStream() for on-chip RTK. No
+  // receiver command is sent; the port must already accept RTCMv3
+  // (setDataInOut) — see src/decoders/README.md.
+  void openRtcmRelay() {
+    const std::string listen = get_parameter("rtcm_relay").as_string();
+    if (listen.empty()) return;
+    if (get_parameter("stream_path").as_string().rfind("file://", 0) == 0) {
+      RCLCPP_WARN(get_logger(),
+        "rtcm_relay is set but stream_path is a file:// stream — forwarded "
+        "corrections have no receiver to reach.");
+    }
+    if (!relay_.open(get_logger(), listen)) {
+      throw std::runtime_error("RTCM relay stropen failed");
+    }
   }
 
   // Polling
 
   void pollStream() {
+    // RTCM relay: drain corrections from the TCP server and write them to the
+    // receiver stream. Same poll thread as the read below, so no lock.
+    relay_.drainTo(get_logger(), *get_clock(), stream_);
+
     uint8_t buffer[sbf::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
 
@@ -181,7 +183,7 @@ class SbfDecoderNode : public rclcpp::Node {
       const int result = input_sbf(&raw_, byte);
       handleDecodeResult(result);
 
-      // Parallel SBF mini-framer for AttEuler
+      // Parallel SBF mini-framer (ExtSensorMeas / PVT blocks)
       parseSbfByte(byte);
 
       // Feed NMEA text parser (SBF and NMEA are interleaved on the same stream).
@@ -216,7 +218,7 @@ class SbfDecoderNode : public rclcpp::Node {
     commitSourceLockIfDue();  // ensure grace finalizes even on idle stream
   }
 
-  // SBF Mini-Framer (parallel to RTKLIB, for AttEuler)
+  // SBF Mini-Framer (parallel to RTKLIB, for ExtSensorMeas and PVT blocks)
   //
   // SBF block layout: SYNC1('$') SYNC2('@') CRC(2) ID(2,LE) Length(2,LE) Body(Length-8)
   // ID bits 0-12 are the block number; bits 13-15 are the revision.
@@ -257,11 +259,8 @@ class SbfDecoderNode : public rclcpp::Node {
   void handleSbfBlock() {
     switch (sbf_id_) {
       case sbf::ID_EXTSENSORMEAS:    handleExtSensorMeas();    break;
-      // SBF Decoded nav blocks (GPSNav / GLONav / GALNav / BDSNav / QZSSNav /
-      // NavICLNav) are handled by RTKLIB's input_sbf() on the parallel byte
-      // stream (see pollStream → handleDecodeResult). Don't decode them twice
-      // here — doing so produced duplicate / conflicting ephemerides in
-      // EphemerisStore.
+      // Decoded *Nav blocks are handled by RTKLIB input_sbf(); decoding them
+      // here too produced duplicate, slightly-different ephemerides.
       case sbf::ID_PVTGEODETIC:      handlePvtGeodetic();      break;
       case sbf::ID_POSCOVGEODETIC:   handlePosCovGeodetic();   break;
       case sbf::ID_VELCOVGEODETIC:   handleVelCovGeodetic();   break;
@@ -273,12 +272,8 @@ class SbfDecoderNode : public rclcpp::Node {
     }
   }
 
-  // Binary PVT handlers (per-system TOW aggregation, first-msg source lock)
-  // Decoder is passive: it cannot know which cov blocks the receiver was
-  // configured to emit. Instead, `cov_ever_seen` is a sticky bitmask updated
-  // whenever a cov block arrives — so the flush condition self-calibrates after
-  // the first epoch of each cov type.
-  // Block bitmask for the unified pending aggregator.
+  // Binary PVT handlers. The decoder is passive, so the expected block set is
+  // learned at runtime (blocks_ever_seen sticky bitmask).
   static constexpr uint8_t BLK_PVT_GEO = 1 << 0;
   static constexpr uint8_t BLK_POS_GEO = 1 << 1;
   static constexpr uint8_t BLK_VEL_GEO = 1 << 2;
@@ -286,14 +281,9 @@ class SbfDecoderNode : public rclcpp::Node {
   static constexpr uint8_t BLK_POS_XYZ = 1 << 4;
   static constexpr uint8_t BLK_VEL_XYZ = 1 << 5;
 
-  // Single pending aggregator that accumulates Geo+Xyz PVT/Cov blocks for one
-  // TOW into pending_.buf. blocks_ever_seen is learned at runtime (the decoder
-  // doesn't know in advance which blocks the receiver will emit); flush triggers
-  // when blocks_received == blocks_ever_seen, or when a new TOW arrives.
-  //
-  // DOP is tracked separately in a persistent (across-epoch) cache; see
-  // last_dop_ below. The DOP block does not participate in completion and does
-  // not gate flushing.
+  // Pending aggregator: Geo+Xyz PVT/Cov blocks for one TOW merge into
+  // pending_.buf; flush when blocks_received == blocks_ever_seen or a new TOW
+  // arrives. DOP is cached separately (last_dop_).
   struct Pending {
     uint32_t tow_ms{UINT32_MAX};
     uint8_t  blocks_received{0};
@@ -302,28 +292,21 @@ class SbfDecoderNode : public rclcpp::Node {
     rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
 
-  // Persistent DOP snapshot — updated by handleDop() and consumed at flush time.
-  // Survives Pending resets so the gate can compare against any past DOP block.
+  // Persistent DOP snapshot (survives Pending resets).
   gnss_utils::DopCache last_dop_;
   uint32_t prev_pvt_tow_ms_{UINT32_MAX};
   uint32_t pvt_period_ms_{0};
 
-  // After a flush, record the (week, tow) that was published. Subsequent blocks
-  // at the same (week, tow) are "late arrivals" — eager-flush already picked up
-  // an incomplete view of this epoch, so we must not re-accumulate into pending_
-  // (would cause an orphan duplicate publish at the next TOW boundary).
-  // Still update blocks_ever_seen so the NEXT epoch waits for the full set.
+  // Last flushed (week, tow) — late arrivals for it must not re-accumulate
+  // (would duplicate-publish); they only update blocks_ever_seen.
   uint32_t last_flushed_week_{0};
   uint32_t last_flushed_tow_ms_{UINT32_MAX};
 
-  // Solution source policy (grace-period detection):
-  //   Start in UNDETERMINED. Wait kGracePeriodSec to detect whether the stream
-  //   carries PVT blocks. If yes → BINARY (PVT wins when both are present).
-  //   If grace expires with no PVT → NMEA. Deterministic regardless of stream
-  //   ordering between NMEA and binary frames.
+  // Solution source policy: publish nothing for kGracePeriodSec; binary PVT
+  // seen during grace → lock BINARY, else lock NMEA. Deterministic and
+  // PVT-preferred regardless of arrival order.
   enum class SolutionSource { UNDETERMINED, BINARY, NMEA };
-  // 1.0 s safely covers a 1 Hz PVT cadence worst-case. Higher PVT rates lock
-  // BINARY in milliseconds — grace only affects NMEA-only commit latency.
+  // 1.0 s covers a 1 Hz PVT cadence; higher rates lock BINARY in milliseconds.
   static constexpr double kGracePeriodSec = 1.0;
 
   void startGraceIfNeeded() {
@@ -363,14 +346,8 @@ class SbfDecoderNode : public rclcpp::Node {
     const size_t   len = sbf_body_.size();
     const uint32_t tow = sbf::pvt::getTowMs(p, len);
 
-    // Already-published epoch guard: if this block's TOW equals the most
-    // recently flushed (week, tow), it's a late arrival from the eager flush's
-    // incomplete view. Only update learning; do NOT re-accumulate into pending_
-    // (would cause an orphan duplicate publish at the next TOW boundary).
-    // Week comparison uses pending_.buf.time_week which is set by PVT-class
-    // parsers when they arrive in this epoch; if no PVT yet seen this epoch,
-    // we fall back to TOW-only (week==0 sentinel) — safe because last_flushed_*
-    // sentinel is also (0, UINT32_MAX).
+    // Late-arrival guard: same (week, tow) as the last flush → update learning
+    // only. Week falls back to TOW-only while this epoch has no PVT yet.
     const uint32_t week = pending_.buf.time_week;
     if (last_flushed_tow_ms_ != UINT32_MAX &&
         tow == last_flushed_tow_ms_ &&
@@ -398,10 +375,8 @@ class SbfDecoderNode : public rclcpp::Node {
   void handlePosCovCartesian(){ mergeBlock(BLK_POS_XYZ, &sbf::pvt::parsePosCovCartesian);}
   void handleVelCovCartesian(){ mergeBlock(BLK_VEL_XYZ, &sbf::pvt::parseVelCovCartesian);}
 
-  // DOP block: parsed into the persistent last_dop_ cache, NOT into pending_.
-  // Does NOT participate in completion and does NOT trigger flush. At flush
-  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
-  // enough (within 0..PVT_period after PVT) to populate the published solution.
+  // DOP block: cached in last_dop_; applied at flush by applyDopWithStaleness()
+  // (does not gate epoch completion).
   void handleDop() {
     const uint8_t* p   = sbf_body_.data();
     const size_t   len = sbf_body_.size();
@@ -498,8 +473,7 @@ class SbfDecoderNode : public rclcpp::Node {
     }
     prev_pvt_tow_ms_ = pending_.tow_ms;
 
-    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
-    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    // DOP staleness gate (see gnss_utils::applyDopWithStaleness).
     gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
                                       binary_solution_.time_week,
                                       pending_.tow_ms, pvt_period_ms_);
@@ -570,18 +544,24 @@ class SbfDecoderNode : public rclcpp::Node {
         : now();
     imu.header.frame_id = frame_id_;
 
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.orientation_covariance.begin());
+    // Orientation is not estimated by this message at all -> "-1" (field not provided).
+    auto orient_unk = ins::makeUnknownCovariance();
+    std::copy(orient_unk.begin(), orient_unk.end(), imu.orientation_covariance.begin());
+
+    // Acceleration/angular-rate VALUES are provided below; only their
+    // covariance is unknown -> all-zero, not "-1" (which would claim the
+    // measurement itself is absent).
+    auto meas_unk = ins::makeZeroCovariance();
 
     imu.linear_acceleration.x = esm_accel_[0];
     imu.linear_acceleration.y = esm_accel_[1];
     imu.linear_acceleration.z = esm_accel_[2];
-    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
+    std::copy(meas_unk.begin(), meas_unk.end(), imu.linear_acceleration_covariance.begin());
 
     imu.angular_velocity.x = esm_gyro_[0] * (M_PI / 180.0);
     imu.angular_velocity.y = esm_gyro_[1] * (M_PI / 180.0);
     imu.angular_velocity.z = esm_gyro_[2] * (M_PI / 180.0);
-    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+    std::copy(meas_unk.begin(), meas_unk.end(), imu.angular_velocity_covariance.begin());
 
     imu_raw_pub_->publish(imu);
 
@@ -590,17 +570,6 @@ class SbfDecoderNode : public rclcpp::Node {
     esm_accel_[0] = esm_accel_[1] = esm_accel_[2] = 0.0;
     esm_gyro_[0]  = esm_gyro_[1]  = esm_gyro_[2]  = 0.0;
   }
-
-  // Decoded *Nav block handlers — removed.
-  //
-  // RTKLIB's input_sbf() decoders (decode_gpsnav / decode_glonav / decode_galnav
-  // / decode_cmpnav / decode_qzssnav in third_party/RTKLIB/src/rcv/septentrio.c)
-  // already process every decoded SBF nav block this node receives. Running our
-  // own parsers in parallel produced two slightly-different eph_t per satellite
-  // (different angular unit conventions and iode/iodc byte widths), which
-  // surfaced as duplicate RINEX records and an incorrect Galileo SVH value.
-  // The mini-framer below is kept solely for AttEuler + ExtSensorMeas, which
-  // RTKLIB does not parse.
 
   // Message Handling
 
@@ -622,12 +591,8 @@ class SbfDecoderNode : public rclcpp::Node {
   // Solution Publishing
 
   void publishSolution(msg::GnssSolution& sol) {
-    // BINARY path: SBF PVT blocks carry WNc+TOW, so the parser has already
-    // filled time_week/time_tow with the solution's own epoch — trust them.
-    // raw_.time (RTKLIB observation-decode clock) is only a fallback; using it
-    // unconditionally would timestamp the position with the latest
-    // *observation* epoch instead. NMEA path trusts time_week/time_tow already
-    // filled by NmeaParser from the sentence itself.
+    // BINARY: SBF PVT blocks carry WNc+TOW — trust them; raw_.time is only a
+    // fallback. NMEA: NmeaParser filled week/tow from the sentence.
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
@@ -781,7 +746,9 @@ class SbfDecoderNode : public rclcpp::Node {
 
   stream_t stream_{};
   raw_t    raw_{};
-  rtcm_t   rtcm_{};
+
+  // RTCM relay (PC -> receiver): STRSVR-style TCP server -> receiver stream
+  decoder_common::RtcmRelayServer relay_;
 
   // NMEA parsing state
   gnss_utils::NmeaParser nmea_parser_;

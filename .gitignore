@@ -2,6 +2,9 @@
 build/
 install/
 log/
+# Sanitizer / warning-audit build trees (colcon --build-base / --install-base)
+build-*/
+install-*/
 
 # CMake
 CMakeFiles/
@@ -37,3 +40,32 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Example runtime output (gnss_imu_kalman_filter CSV logs, written to cwd)
+ekf_sensors_log.csv
+ekf_state_log.csv
+
+# Generated evaluation rosbags (e.g. PPC-Dataset -> ROSBAG; large, non-committed)
+data/
+
+# rosbag_to_rinex writes to the current directory
+output.obs
+output.nav
+
+# The PPC evaluation harness lives in its own repository: it depends on a
+# dataset this package cannot redistribute, and it is versioned with the paper
+# rather than with the code. The unit tests and the bag verification tools in
+# test/ ARE part of the release.
+test/ppc_eval/
+
+# Internal working notes and the evaluation ledger. Not release artifacts.
+HANDOVER.md
+PLAN.md
+report.md
+AUDIT.md
+EVAL_LEDGER.md
+
+# Merge/patch leftovers must never reach a release: install(DIRECTORY include/)
+# copies the whole directory, so a stray .orig header would be installed.
+*.orig
+*.rej

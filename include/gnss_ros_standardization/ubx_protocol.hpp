@@ -56,6 +56,80 @@ namespace esf_raw {
   constexpr uint8_t TYPE_ACCEL_Z = 18; // Z-axis accel specific force,    m/s², scale 2^-10
   constexpr double  GYRO_SCALE   = 0.000244140625;  // 2^-12 (deg/s) — convert to rad/s by × π/180
   constexpr double  ACCEL_SCALE  = 0.0009765625;    // 2^-10 (m/s²)
+
+  // sTtag LSB in seconds (ZED-F9R Interface Description: sensor time tag,
+  // 39.0625 µs → 256 ticks = 10 ms). Used only to space per-sample stamps
+  // inside one batched ESF-RAW message; callers sanity-guard the result.
+  constexpr double STTAG_TICK_S = 39.0625e-6;
+
+  // One IMU sample set reassembled from an ESF-RAW message. ESF-RAW batches
+  // N × { data(u4) + sTtag(u4) } blocks; blocks sharing an sTtag belong to
+  // the same sample instant.
+  struct Sample {
+    double   accel[3]{0.0, 0.0, 0.0};  // m/s²
+    double   gyro[3]{0.0, 0.0, 0.0};   // rad/s
+    bool     has_accel[3]{false, false, false};
+    bool     has_gyro[3]{false, false, false};
+    uint32_t sttag{0};
+
+    bool any() const {
+      return has_accel[0] || has_accel[1] || has_accel[2] ||
+             has_gyro[0]  || has_gyro[1]  || has_gyro[2];
+    }
+  };
+
+  /// Sign-extend the lower 24 bits of a uint32 into an int32.
+  inline int32_t signExtend24(uint32_t v) {
+    return (v & 0x00800000u) ? static_cast<int32_t>(v | 0xFF000000u)
+                             : static_cast<int32_t>(v & 0x00FFFFFFu);
+  }
+
+  /// Parse an ESF-RAW payload (4-byte reserved header + N × { data(u4) +
+  /// sTtag(u4) }; data low 24 bits = signed measurement, high 8 bits = type)
+  /// into per-sample sets, splitting on sTtag changes. Gyro is converted to
+  /// rad/s, accel to m/s². Samples with no recognized axis are dropped.
+  inline std::vector<Sample> parseEsfRawSamples(const std::vector<uint8_t>& payload) {
+    constexpr int kHeaderLen = 4;
+    constexpr int kBlockLen  = 8;
+    constexpr double kDeg2Rad = 3.14159265358979323846 / 180.0;
+
+    std::vector<Sample> samples;
+    const int n = (static_cast<int>(payload.size()) - kHeaderLen) / kBlockLen;
+    if (n <= 0) return samples;
+
+    Sample cur;
+    bool cur_started = false;
+    auto flush = [&]() {
+      if (cur_started && cur.any()) samples.push_back(cur);
+      cur = Sample{};
+      cur_started = false;
+    };
+
+    for (int i = 0; i < n; ++i) {
+      const uint8_t* p = payload.data() + kHeaderLen + i * kBlockLen;
+      uint32_t data = 0, sttag = 0;
+      std::memcpy(&data,  p,     4);
+      std::memcpy(&sttag, p + 4, 4);
+      const uint8_t type = static_cast<uint8_t>((data >> 24) & 0xFFu);
+      const int32_t val  = signExtend24(data);
+
+      if (cur_started && sttag != cur.sttag) flush();
+      cur.sttag   = sttag;
+      cur_started = true;
+
+      switch (type) {
+        case TYPE_GYRO_X:  cur.gyro[0]  = val * GYRO_SCALE * kDeg2Rad; cur.has_gyro[0]  = true; break;
+        case TYPE_GYRO_Y:  cur.gyro[1]  = val * GYRO_SCALE * kDeg2Rad; cur.has_gyro[1]  = true; break;
+        case TYPE_GYRO_Z:  cur.gyro[2]  = val * GYRO_SCALE * kDeg2Rad; cur.has_gyro[2]  = true; break;
+        case TYPE_ACCEL_X: cur.accel[0] = val * ACCEL_SCALE;           cur.has_accel[0] = true; break;
+        case TYPE_ACCEL_Y: cur.accel[1] = val * ACCEL_SCALE;           cur.has_accel[1] = true; break;
+        case TYPE_ACCEL_Z: cur.accel[2] = val * ACCEL_SCALE;           cur.has_accel[2] = true; break;
+        default: break;  // ignore other sensor types (temp, wheel speed, etc.)
+      }
+    }
+    flush();
+    return samples;
+  }
 }
 
 // ESF-INS payload offsets (version 0, 36 bytes)
@@ -127,7 +201,7 @@ constexpr uint32_t CFG_SIGNAL_GAL_E5A_ENA = 0x10310009;
 constexpr uint32_t CFG_SIGNAL_GAL_E5B_ENA = 0x1031000A;
 
 // BeiDou
-// Note: X20P supports B1C/B2A/B3I but MALIB NOT support B1C/B2A/B3I.
+// Note: X20P supports B1C/B2A/B3I, but the RTKLIB decoder does not.
 constexpr uint32_t CFG_SIGNAL_BDS_ENA     = 0x10310022;
 constexpr uint32_t CFG_SIGNAL_BDS_B1I_ENA = 0x1031000D;  // B1I (F9P)
 constexpr uint32_t CFG_SIGNAL_BDS_B1C_ENA = 0x1031000F;  // B1C (X20P)
@@ -224,9 +298,10 @@ struct StreamTypeDef {
   int type;
 };
 
-/// Supported stream type prefixes (using MALIB stream types)
+/// Supported stream type prefixes (RTKLIB stream types)
 constexpr StreamTypeDef kStreamTypes[] = {
     {"tcpcli://", STR_TCPCLI},
+    {"tcpsvr://", STR_TCPSVR},
     {"serial://", STR_SERIAL},
     {"ntrip://", STR_NTRIPCLI},
     {"file://", STR_FILE},

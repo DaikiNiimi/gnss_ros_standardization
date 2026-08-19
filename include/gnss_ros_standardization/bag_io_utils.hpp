@@ -131,9 +131,27 @@ inline void set_qos_profile(TopicMetadataT& tm, const std::string& yaml_profile)
   } else if constexpr (std::is_same_v<std::decay_t<decltype(tm.offered_qos_profiles)>,
                                       std::vector<rclcpp::QoS>>) {
     const bool transient = (yaml_profile.find("durability: 1") != std::string::npos);
-    rclcpp::QoS qos = transient
-        ? rclcpp::QoS(1).reliable().transient_local()
-        : rclcpp::QoS(1).reliable().durability_volatile();
+    // Honour the profile's depth. Hardcoding 1 here silently overrode the
+    // depth-256 transient_local ephemeris profile, reintroducing exactly the
+    // starvation that profile exists to prevent (a depth-1 latch keeps only the
+    // last satellite of the per-satellite ephemeris burst).
+    std::size_t depth = 1;
+    const std::size_t pos = yaml_profile.find("depth:");
+    if (pos != std::string::npos) {
+      try {
+        depth = std::max<std::size_t>(
+            1, std::stoul(yaml_profile.substr(pos + 6)));
+      } catch (const std::exception&) {
+        depth = 1;  // malformed profile: keep the conservative default
+      }
+    }
+    rclcpp::QoS qos{rclcpp::KeepLast(depth)};
+    qos.reliable();
+    if (transient) {
+      qos.transient_local();
+    } else {
+      qos.durability_volatile();
+    }
     tm.offered_qos_profiles.clear();
     tm.offered_qos_profiles.push_back(qos);
   }
@@ -157,10 +175,15 @@ inline const std::string& defaultConverterQosYaml() {
 // QoS YAML for topics consumed by transient_local subscribers (e.g. /gnss/ephemeris).
 // All positioning nodes subscribe /gnss/ephemeris with transient_local(); a VOLATILE
 // publisher is incompatible with TRANSIENT_LOCAL subscribers under DDS QoS rules.
+// Depth is 256, not 1: ephemeris is published as many per-satellite messages on one
+// topic, so a depth-1 latch keeps only the LAST satellite. A subscriber that matches
+// after the initial burst (e.g. a node started against a replayed bag) would then see
+// only one satellite and starve for double-differences. 256 latches a full multi-GNSS
+// constellation so any late/racing subscriber receives the complete ephemeris set.
 inline const std::string& transientLocalConverterQosYaml() {
   static const std::string kProfile =
       "- history: 1\n"
-      "  depth: 1\n"
+      "  depth: 256\n"
       "  reliability: 1\n"
       "  durability: 1\n"
       "  deadline:\n    sec: 0\n    nsec: 0\n"

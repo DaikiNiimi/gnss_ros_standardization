@@ -15,6 +15,23 @@ The decoder layer is shared with [`../decoders/`](../decoders/) — refer to
 message listed below. Message-level semantics (frames, NaN convention,
 covariance frame) live in [`../../msg/README.md`](../../msg/README.md).
 
+## RTCM relay (receiver on-chip RTK)
+
+Every driver can host a TCP server (`rtcm_relay.listen`) and forward RTCM
+corrections pushed there down to the receiver for on-chip RTK. Feed it from
+`rtcm_decoder_node` or any RTKLIB `str2str`/STRSVR.
+
+| YAML key | Applies to | Meaning |
+|---|---|---|
+| `rtcm_relay.enabled` | all | `false` (default) disables the relay |
+| `rtcm_relay.listen` | all | Listen URI; recommended `tcpsvr://:5556` (ubx) / `:5557` (sbf) / `:5558` (novatel) |
+| `rtcm_relay.output` | NovAtel | Dedicated RTCMV3 port device (e.g. `serial:///dev/ttyUSB2:230400`); must differ from `stream_path` |
+| `rtcm_relay.correction_port` | NovAtel | `INTERFACEMODE` target sent over `output` — leave `THISPORT` |
+
+Per-receiver receiver-side setup (u-blox `inProtoMask`, Septentrio
+`setDataInOut`, NovAtel dedicated port) is in
+[`../decoders/README.md`](../decoders/README.md#rtcm-correction-relay-receiver-on-chip-rtk).
+
 ---
 
 ## `ubx_driver_node`

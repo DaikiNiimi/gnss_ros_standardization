@@ -27,7 +27,7 @@ constexpr size_t READ_BUFFER_SIZE = 4096;
 constexpr size_t NMEA_MAX_LINE_LEN = 256;
 
 // NovAtel Message IDs (decimal)
-// Reference: MALIB/src/rcv/novatel.c and OEM7 Commands and Logs Reference Manual
+// Reference: RTKLIB src/rcv/novatel.c and OEM7 Commands and Logs Reference Manual
 
 // Measurement
 constexpr uint16_t ID_RANGECMP          = 140;
@@ -128,6 +128,7 @@ constexpr const char* CMD_UNLOG    = "UNLOG";
 constexpr const char* CMD_LOG = "LOG";
 constexpr const char* CMD_ONTIME = "ONTIME";
 constexpr const char* CMD_ONCHANGED = "ONCHANGED";
+constexpr const char* CMD_INTERFACEMODE = "INTERFACEMODE";
 
 // Stream Type Definition
 struct StreamTypeDef {
@@ -138,6 +139,7 @@ struct StreamTypeDef {
 /// Supported stream type prefixes
 constexpr StreamTypeDef kStreamTypes[] = {
     {"tcpcli://", STR_TCPCLI},
+    {"tcpsvr://", STR_TCPSVR},
     {"serial://", STR_SERIAL},
     {"ntrip://", STR_NTRIPCLI},
     {"file://", STR_FILE},

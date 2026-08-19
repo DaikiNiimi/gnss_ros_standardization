@@ -127,14 +127,20 @@ set(_rosidl_deps
 include_directories(include)
 
 # gnss_utils
-add_library(gnss_utils src/utils/gnss_utils.cpp)
+set(_gnss_utils_sources src/utils/gnss_utils.cpp)
+# GnssPreprocessor (optimizer-ready DD preprocessing) ships with the FGO
+# examples; build it only when present.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/utils/gnss_preprocessor.cpp")
+  list(APPEND _gnss_utils_sources src/utils/gnss_preprocessor.cpp)
+endif()
+add_library(gnss_utils ${_gnss_utils_sources})
 target_include_directories(gnss_utils PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 target_include_directories(gnss_utils PRIVATE "${RTKLIB_ROOT}/src")
 # We need rtkcore_lib for rtklib types used in gnss_utils
-target_link_libraries(gnss_utils rtkcore_lib rtkcore_config ${cpp_typesupport_target})
+target_link_libraries(gnss_utils rtkcore_lib rtkcore_config Eigen3::Eigen ${cpp_typesupport_target})
 ament_target_dependencies(gnss_utils rclcpp std_msgs builtin_interfaces)
 
 install(TARGETS gnss_utils
@@ -269,7 +275,7 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/rinex_to_rosbag.cpp")
   add_executable(rinex_to_rosbag src/converter/rinex_to_rosbag.cpp)
   target_include_directories(rinex_to_rosbag PUBLIC ${_gen_include})
-  ament_target_dependencies(rinex_to_rosbag rclcpp rosbag2_cpp rosbag2_storage std_msgs builtin_interfaces)
+  ament_target_dependencies(rinex_to_rosbag rclcpp rosbag2_cpp rosbag2_storage std_msgs sensor_msgs nav_msgs builtin_interfaces)
   target_link_libraries(rinex_to_rosbag gnss_utils)
   add_dependencies(rinex_to_rosbag ${_rosidl_deps})
   install(TARGETS rinex_to_rosbag DESTINATION lib/${PROJECT_NAME})
@@ -298,11 +304,29 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/pos_to_rosbag.cpp")
   install(TARGETS pos_to_rosbag DESTINATION lib/${PROJECT_NAME})
 endif()
 
+# synthetic_scenario_to_rosbag (multi-GNSS + IMU simulator -> bag, for
+# validating the examples against a known ground truth). Reuses the generator
+# headers under test/. GTSAM-independent.
+option(BUILD_SYNTHETIC_SCENARIO_TOOL "Build synthetic_scenario_to_rosbag" ON)
+if(BUILD_SYNTHETIC_SCENARIO_TOOL AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/converter/synthetic_scenario_to_rosbag.cpp")
+  add_executable(synthetic_scenario_to_rosbag src/converter/synthetic_scenario_to_rosbag.cpp)
+  target_include_directories(synthetic_scenario_to_rosbag PUBLIC ${_gen_include})
+  target_include_directories(synthetic_scenario_to_rosbag PRIVATE
+    "${RTKLIB_ROOT}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  ament_target_dependencies(synthetic_scenario_to_rosbag
+    rclcpp rosbag2_cpp rosbag2_storage std_msgs sensor_msgs geometry_msgs builtin_interfaces)
+  target_link_libraries(synthetic_scenario_to_rosbag gnss_utils Eigen3::Eigen)
+  add_dependencies(synthetic_scenario_to_rosbag ${_rosidl_deps})
+  install(TARGETS synthetic_scenario_to_rosbag DESTINATION lib/${PROJECT_NAME})
+endif()
+
 # single point positioning
 option(BUILD_SPP_EXAMPLE "Build single point positioning example (pntpos)" ON)
 
-if(BUILD_SPP_EXAMPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/single_point_positioning.cpp")
-  add_executable(single_point_positioning src/positioning/single_point_positioning.cpp)
+if(BUILD_SPP_EXAMPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/single_point_positioning/single_point_positioning.cpp")
+  add_executable(single_point_positioning examples/single_point_positioning/single_point_positioning.cpp)
   target_include_directories(single_point_positioning PUBLIC ${_gen_include})
   ament_target_dependencies(single_point_positioning rclcpp std_msgs builtin_interfaces)
   target_link_libraries(single_point_positioning
@@ -311,13 +335,13 @@ if(BUILD_SPP_EXAMPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/sin
   add_dependencies(single_point_positioning ${_rosidl_deps})
   install(TARGETS single_point_positioning DESTINATION lib/${PROJECT_NAME})
 elseif(BUILD_SPP_EXAMPLE)
-  message(WARNING "BUILD_SPP_EXAMPLE=ON but src/positioning/single_point_positioning.cpp was not found.")
+  message(WARNING "BUILD_SPP_EXAMPLE=ON but examples/single_point_positioning/single_point_positioning.cpp was not found.")
 endif()
 # real time kinematic
 option(BUILD_RTK_EXAMPLE "Build real time kinematic example (rtkpos)" ON)
 
-if(BUILD_RTK_EXAMPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/real_time_kinematic.cpp")
-  add_executable(real_time_kinematic src/positioning/real_time_kinematic.cpp)
+if(BUILD_RTK_EXAMPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/real_time_kinematic/real_time_kinematic.cpp")
+  add_executable(real_time_kinematic examples/real_time_kinematic/real_time_kinematic.cpp)
   target_include_directories(real_time_kinematic PUBLIC ${_gen_include})
   ament_target_dependencies(real_time_kinematic rclcpp std_msgs builtin_interfaces)
   target_link_libraries(real_time_kinematic
@@ -326,20 +350,20 @@ if(BUILD_RTK_EXAMPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/rea
   add_dependencies(real_time_kinematic ${_rosidl_deps})
   install(TARGETS real_time_kinematic DESTINATION lib/${PROJECT_NAME})
 elseif(BUILD_RTK_EXAMPLE)
-  message(WARNING "BUILD_RTK_EXAMPLE=ON but src/positioning/real_time_kinematic.cpp not found.")
+  message(WARNING "BUILD_RTK_EXAMPLE=ON but examples/real_time_kinematic/real_time_kinematic.cpp not found.")
 endif()
 
 # gnss_imu_kalman_filter (GNSS/IMU/WheelSpeed Kalman Filter)
 option(BUILD_GNSS_IMU_KALMAN_FILTER "Build gnss_imu_kalman_filter (GNSS/IMU Kalman Filter)" ON)
-if(BUILD_GNSS_IMU_KALMAN_FILTER AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/positioning/gnss_imu_kalman_filter.cpp")
-  add_executable(gnss_imu_kalman_filter src/positioning/gnss_imu_kalman_filter.cpp)
+if(BUILD_GNSS_IMU_KALMAN_FILTER AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/gnss_imu_kalman_filter/gnss_imu_kalman_filter.cpp")
+  add_executable(gnss_imu_kalman_filter examples/gnss_imu_kalman_filter/gnss_imu_kalman_filter.cpp)
   target_include_directories(gnss_imu_kalman_filter PUBLIC ${_gen_include})
   ament_target_dependencies(gnss_imu_kalman_filter rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs builtin_interfaces)
   target_link_libraries(gnss_imu_kalman_filter gnss_utils Eigen3::Eigen Threads::Threads)
   add_dependencies(gnss_imu_kalman_filter ${_rosidl_deps})
   install(TARGETS gnss_imu_kalman_filter DESTINATION lib/${PROJECT_NAME})
 elseif(BUILD_GNSS_IMU_KALMAN_FILTER)
-  message(WARNING "BUILD_GNSS_IMU_KALMAN_FILTER=ON but src/positioning/gnss_imu_kalman_filter.cpp not found.")
+  message(WARNING "BUILD_GNSS_IMU_KALMAN_FILTER=ON but examples/gnss_imu_kalman_filter/gnss_imu_kalman_filter.cpp not found.")
 endif()
 
 # gnss_visualizer
@@ -352,6 +376,125 @@ if(cv_bridge_FOUND AND image_transport_FOUND AND OpenCV_FOUND)
   install(TARGETS gnss_visualizer DESTINATION lib/${PROJECT_NAME})
 else()
   message(STATUS "Skipping gnss_visualizer: cv_bridge, image_transport, or OpenCV not found.")
+endif()
+
+# Tightly-coupled FGO examples (opt-in: they need GTSAM with the GNSS DD
+# factors, which are only on GTSAM's develop branch as of June 2026 - see
+# examples/tightly_coupled_fgo/README.md for build instructions).
+option(BUILD_GTSAM_FGO_EXAMPLES "Build tightly-coupled FGO examples (requires GTSAM develop)" OFF)
+if(BUILD_GTSAM_FGO_EXAMPLES)
+  find_package(GTSAM REQUIRED)
+  get_target_property(_gtsam_incs gtsam INTERFACE_INCLUDE_DIRECTORIES)
+  find_path(GTSAM_GNSS_FACTOR_DIR gtsam/navigation/PseudorangeFactor.h
+            PATHS ${_gtsam_incs} NO_DEFAULT_PATH)
+  if(NOT GTSAM_GNSS_FACTOR_DIR)
+    message(FATAL_ERROR
+      "GTSAM was found but lacks the GNSS DD factors "
+      "(gtsam/navigation/PseudorangeFactor.h). Build GTSAM from the develop "
+      "branch - see examples/tightly_coupled_fgo/README.md.")
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/tightly_coupled_fgo/gnss_fgo.cpp")
+    add_executable(gnss_fgo examples/tightly_coupled_fgo/gnss_fgo.cpp)
+    target_include_directories(gnss_fgo PUBLIC ${_gen_include})
+    ament_target_dependencies(gnss_fgo rclcpp std_msgs builtin_interfaces)
+    target_link_libraries(gnss_fgo gnss_utils gtsam Threads::Threads)
+    add_dependencies(gnss_fgo ${_rosidl_deps})
+    install(TARGETS gnss_fgo DESTINATION lib/${PROJECT_NAME})
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/tightly_coupled_fgo/gnss_imu_fgo.cpp")
+    add_executable(gnss_imu_fgo examples/tightly_coupled_fgo/gnss_imu_fgo.cpp)
+    target_include_directories(gnss_imu_fgo PUBLIC ${_gen_include})
+    ament_target_dependencies(gnss_imu_fgo rclcpp std_msgs sensor_msgs nav_msgs builtin_interfaces)
+    target_link_libraries(gnss_imu_fgo gnss_utils gtsam Threads::Threads)
+    add_dependencies(gnss_imu_fgo ${_rosidl_deps})
+    install(TARGETS gnss_imu_fgo DESTINATION lib/${PROJECT_NAME})
+  endif()
+
+  # Embed GTSAM's library directory in the installed FGO binaries so they run
+  # without LD_LIBRARY_PATH even when GTSAM lives in a non-system prefix
+  # (e.g. $HOME/gtsam-install). INSTALL_RPATH_USE_LINK_PATH picks up the absolute
+  # dir of the linked gtsam target, so this works wherever GTSAM was installed.
+  # `--disable-new-dtags` emits DT_RPATH instead of DT_RUNPATH: DT_RPATH is also
+  # searched for GTSAM's own transitive deps (libmetis-gtsam / libcephes-gtsam,
+  # which libgtsam.so carries no runpath for), whereas DT_RUNPATH would not
+  # cascade to them and the node would fail to load without LD_LIBRARY_PATH.
+  foreach(_fgo_exe gnss_fgo gnss_imu_fgo)
+    if(TARGET ${_fgo_exe})
+      set_target_properties(${_fgo_exe} PROPERTIES INSTALL_RPATH_USE_LINK_PATH ON)
+      target_link_options(${_fgo_exe} PRIVATE "-Wl,--disable-new-dtags")
+    endif()
+  endforeach()
+endif()
+
+# Tests (run locally with `colcon test`; CI wiring is handled separately)
+#
+# The whole block is guarded on the test/ DIRECTORY, not on the individual
+# files, so a packaging step that strips tests still configures; but once test/
+# is present, a MISSING FILE INSIDE IT is a hard error (see the comment on the
+# two core tests below). Those are different situations and only one of them is
+# an accident.
+if(BUILD_TESTING AND NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  message(STATUS
+    "test/ is not present - no unit tests will be built or run. It ships with "
+    "the package, so this means either a stripped-down copy or a working tree "
+    "where test/ has gone missing.")
+endif()
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  find_package(ament_cmake_gtest REQUIRED)
+
+  # Core matcher/preprocessor regressions are MANDATORY (not EXISTS-guarded):
+  # silently omitting a missing source file previously left only the FGO math
+  # test registered, hiding losslessness regressions.
+  ament_add_gtest(test_epoch_matcher test/test_epoch_matcher.cpp)
+  target_include_directories(test_epoch_matcher PUBLIC ${_gen_include})
+  target_link_libraries(test_epoch_matcher gnss_utils)
+  ament_target_dependencies(test_epoch_matcher rclcpp std_msgs builtin_interfaces)
+  add_dependencies(test_epoch_matcher ${_rosidl_deps})
+
+  ament_add_gtest(test_gnss_preprocessor test/test_gnss_preprocessor.cpp)
+  target_include_directories(test_gnss_preprocessor PUBLIC ${_gen_include})
+  target_link_libraries(test_gnss_preprocessor gnss_utils)
+  ament_target_dependencies(test_gnss_preprocessor rclcpp std_msgs builtin_interfaces)
+  add_dependencies(test_gnss_preprocessor ${_rosidl_deps})
+
+  # End-to-end verification of the GNSS/IMU/wheel-speed EKF: the real node is
+  # compiled in (main() guarded out) and driven through its ROS interfaces.
+  if(BUILD_GNSS_IMU_KALMAN_FILTER AND
+     EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_gnss_imu_ekf.cpp" AND
+     EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/gnss_imu_kalman_filter/gnss_imu_kalman_filter.cpp")
+    ament_add_gtest(test_gnss_imu_ekf
+      test/test_gnss_imu_ekf.cpp
+      examples/gnss_imu_kalman_filter/gnss_imu_kalman_filter.cpp)
+    if(TARGET test_gnss_imu_ekf)
+      target_compile_definitions(test_gnss_imu_ekf PRIVATE GNSS_IMU_KF_NO_MAIN)
+      target_include_directories(test_gnss_imu_ekf PUBLIC ${_gen_include}
+        "${CMAKE_CURRENT_SOURCE_DIR}/test")
+      target_link_libraries(test_gnss_imu_ekf gnss_utils Eigen3::Eigen Threads::Threads)
+      ament_target_dependencies(test_gnss_imu_ekf
+        rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs builtin_interfaces)
+      add_dependencies(test_gnss_imu_ekf ${_rosidl_deps})
+    endif()
+  endif()
+
+  # End-to-end FGO math tests; need the opt-in GTSAM examples.
+  if(BUILD_GTSAM_FGO_EXAMPLES)
+    foreach(_fgo_test test_gnss_fgo test_gnss_imu_fgo)
+      if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/${_fgo_test}.cpp")
+        ament_add_gtest(${_fgo_test} test/${_fgo_test}.cpp)
+      endif()
+      if(TARGET ${_fgo_test})
+        target_include_directories(${_fgo_test} PUBLIC ${_gen_include}
+          "${CMAKE_CURRENT_SOURCE_DIR}/examples/tightly_coupled_fgo")
+        target_link_libraries(${_fgo_test} gnss_utils gtsam)
+        ament_target_dependencies(${_fgo_test} rclcpp std_msgs builtin_interfaces)
+        add_dependencies(${_fgo_test} ${_rosidl_deps})
+        set_target_properties(${_fgo_test} PROPERTIES INSTALL_RPATH_USE_LINK_PATH ON)
+        target_link_options(${_fgo_test} PRIVATE "-Wl,--disable-new-dtags")
+      endif()
+    endforeach()
+  endif()
 endif()
 
 # Export

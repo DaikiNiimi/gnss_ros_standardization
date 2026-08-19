@@ -5,7 +5,6 @@
 #include <cstring>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -14,6 +13,7 @@
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/msg/gnss_ephemerides.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
+#include "gnss_ros_standardization/obs_converter.hpp"
 #include "gnss_ros_standardization/tcp_nmea_server.hpp"
 
 extern "C" {
@@ -38,7 +38,10 @@ class SppPntposNode : public rclcpp::Node {
         std::bind(&SppPntposNode::onObs, this, std::placeholders::_1));
 
     nav_sub_ = create_subscription<grs::GnssEphemerides>(
-        get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(1).transient_local(),
+        // depth 256 (not 1): ephemeris arrives as many per-satellite messages; a
+        // depth-1 transient_local latch keeps only the last satellite, starving a
+        // subscriber that matches after the initial burst (e.g. against a bag).
+        get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(256).transient_local(),
         std::bind(&SppPntposNode::onNav, this, std::placeholders::_1));
 
     gnss_sol_pub_ = create_publisher<grs::GnssSolution>(
@@ -126,6 +129,9 @@ class SppPntposNode : public rclcpp::Node {
     enable_l1_ = get_parameter("frequencies.enable_l1").as_bool();
     enable_l2_ = get_parameter("frequencies.enable_l2").as_bool();
     enable_l5_ = get_parameter("frequencies.enable_l5").as_bool();
+    frequency_mask_.l1 = enable_l1_;
+    frequency_mask_.l2 = enable_l2_;
+    frequency_mask_.l5 = enable_l5_;
 
     // nf must cover the highest enabled band; RTKLIB iterates idx in [0, nf).
     if (enable_l5_) opt_.nf = 3;
@@ -181,57 +187,8 @@ class SppPntposNode : public rclcpp::Node {
     RCLCPP_INFO_ONCE(get_logger(), "Ephemeris received. Ready for positioning.");
   }
 
-  // Guard against frequency collisions in code2idx(). The only true collision
-  // is BDS idx=0: B1I (1561 MHz) and B1C (1575 MHz) both map to idx=0. All
-  // other systems share a real physical frequency per idx, so accept any code.
-  static bool isPrimaryCode(int sys, uint8_t code, int idx) {
-    if (sys == SYS_CMP && idx == 0 && code != CODE_L2I) return false;
-    return true;
-  }
-
   void onObs(const grs::GnssObservations::SharedPtr in) {
-    const gtime_t t = gpst2time(static_cast<int>(in->week), in->tow);
-
-    struct Acc {
-      obsd_t o{};
-      bool inited{false};
-    };
-    std::unordered_map<int, Acc> satmap;
-
-    for (const auto& m : in->observations) {
-      const int sat = satid2no(m.satid.c_str());
-      if (sat <= 0 || sat > MAXSAT) continue;
-      const uint8_t code = m.code;
-      if (code == CODE_NONE) continue;
-      int prn = 0;
-      const int sys = satsys(sat, &prn);
-      const int idx = code2idx(sys, code);
-      if (idx < 0) continue;
-      if (!isPrimaryCode(sys, code, idx)) continue;
-
-      // Per-band enable filter. RTKLIB iterates idx in [0, opt_.nf), so a band
-      // with no populated P/L is treated as missing — but skipping ingestion
-      // is still cheaper and prevents accidental use of disabled bands.
-      if (idx == 0 && !enable_l1_) continue;
-      if (idx == 1 && !enable_l2_) continue;
-      if (idx == 2 && !enable_l5_) continue;
-      if (idx > 2) continue;
-
-      auto& acc = satmap[sat];
-      if (!acc.inited) {
-        acc.o = {};
-        acc.o.time = t;
-        acc.o.sat = static_cast<uint8_t>(sat);
-        acc.o.rcv = 1;
-        acc.inited = true;
-      }
-      acc.o.code[idx] = code;
-      if (m.p > 0.0) acc.o.P[idx] = m.p;
-      if (m.l != 0.0) acc.o.L[idx] = m.l;
-      if (m.d != 0.0) acc.o.D[idx] = static_cast<float>(m.d);
-      if (m.snr > 0.0) acc.o.SNR[idx] = static_cast<float>(m.snr);
-      acc.o.LLI[idx] = static_cast<uint8_t>(m.lli);
-    }
+    std::vector<obsd_t> obs = gnss_utils::buildObsEpoch(*in, nullptr, frequency_mask_);
 
     std::lock_guard<std::mutex> lk(nav_mtx_);
     if (nav_.n == 0 && nav_.ng == 0) {
@@ -239,17 +196,11 @@ class SppPntposNode : public rclcpp::Node {
       return;
     }
 
-    std::vector<obsd_t> obs;
-    obs.reserve(satmap.size());
-    for (auto& kv : satmap) obs.push_back(std::move(kv.second.o));
-
     if (obs.size() < 4) {
       RCLCPP_WARN(get_logger(),
                   "Not enough satellites observed. (Found %zu, need >= 4)", obs.size());
       return;
     }
-    std::sort(obs.begin(), obs.end(),
-              [](const obsd_t& a, const obsd_t& b) { return a.sat < b.sat; });
 
     sol_t sol{};
     ssat_t ssat[MAXSAT]{};
@@ -264,10 +215,11 @@ class SppPntposNode : public rclcpp::Node {
       return;
     }
 
-    publishSolution(obs, sol, ssat);
+    publishSolution(obs, sol, ssat, in->header.stamp);
   }
 
-  void publishSolution(const std::vector<obsd_t>& obs, const sol_t& sol, const ssat_t* ssat) {
+  void publishSolution(const std::vector<obsd_t>& obs, const sol_t& sol, const ssat_t* ssat,
+                       const builtin_interfaces::msg::Time& stamp) {
     int cnt_sys[7] = {};
     int cnt_frq[NFREQ] = {};
     for (const auto& ob : obs) {
@@ -321,7 +273,10 @@ class SppPntposNode : public rclcpp::Node {
         sat_breakdown, frq_breakdown, gnss_utils::solqToString(sol.stat).c_str());
 
     auto sol_msg = std::make_unique<grs::GnssSolution>();
-    sol_msg->header.stamp = this->now();
+    // Stamp with the measurement epoch (input observation header.stamp), not
+    // this->now(): the processing wall-clock breaks downstream time alignment
+    // under rosbag replay (see real_time_kinematic.cpp for the same fix).
+    sol_msg->header.stamp = stamp;
     sol_msg->header.frame_id = "gnss_link";
 
     int week = 0;
@@ -473,6 +428,7 @@ class SppPntposNode : public rclcpp::Node {
   bool enable_l1_{true};
   bool enable_l2_{true};
   bool enable_l5_{true};
+  gnss_utils::FrequencyMask frequency_mask_;
 
   double fixed_origin_ecef_[3]{0.0, 0.0, 0.0};
   bool fixed_origin_valid_{false};

@@ -33,7 +33,7 @@
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 
-// MALIB includes
+// RTKLIB includes
 #include "rtklib.h"
 
 using namespace std::chrono_literals;
@@ -88,8 +88,11 @@ public:
 
     obs_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssObservations>(
       obs_topic, 10, std::bind(&GnssVisualizer::obsCallback, this, std::placeholders::_1));
+    // depth 256 (not 1): ephemeris arrives as many per-satellite messages; a depth-1
+    // transient_local latch keeps only the last satellite, so a subscriber matching
+    // after the initial burst would see only one satellite.
     eph_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssEphemerides>(
-      nav_topic, rclcpp::QoS(1).transient_local(), std::bind(&GnssVisualizer::ephCallback, this, std::placeholders::_1));
+      nav_topic, rclcpp::QoS(256).transient_local(), std::bind(&GnssVisualizer::ephCallback, this, std::placeholders::_1));
     sol_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssSolution>(
       sol_topic, 10, std::bind(&GnssVisualizer::solCallback, this, std::placeholders::_1));
 

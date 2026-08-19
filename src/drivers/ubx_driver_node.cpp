@@ -3,13 +3,13 @@
 
 #include <chrono>
 #include <cstring>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include <sensor_msgs/msg/imu.hpp>
 
+#include "gnss_ros_standardization/decoder_common.hpp"
 #include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
@@ -17,7 +17,6 @@
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 using namespace std::chrono_literals;
-#include "gnss_ros_standardization/decoder_common.hpp"
 
 namespace ubx = gnss_ros_standardization::ubx;
 namespace ins = gnss_ros_standardization::ins_utils;
@@ -81,6 +80,10 @@ struct UbxConfig {
   std::string ephemeris_topic{"/gnss/ephemeris"};
   std::string solution_topic{"/gnss/nmea_solution"};
 
+  // RTCM relay (PC -> receiver) for on-chip RTK — see openRtcmRelay().
+  bool rtcm_relay_enabled{false};
+  std::string rtcm_relay_listen{"tcpsvr://:5556"};
+
   // ENU local origin settings
   bool auto_origin{true};
   double origin_latitude{0.0};   // populated from origin[0]
@@ -111,6 +114,7 @@ class UbxDriverNode : public rclcpp::Node {
       configureReceiver();
     }
 
+    openRtcmRelay();
     startPolling();
     RCLCPP_INFO(get_logger(), "UBX Driver initialized (rate: %d Hz)", config_.rate_hz);
   }
@@ -118,10 +122,10 @@ class UbxDriverNode : public rclcpp::Node {
   ~UbxDriverNode() override {
     try {
       strclose(&stream_);
+      relay_.close();
     } catch (...) {
     }
     free_raw(&raw_);
-    free_rtcm(&rtcm_);
   }
 
  private:
@@ -170,6 +174,8 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<std::string>("observation_topic", config_.observation_topic);
     declare_parameter<std::string>("ephemeris_topic", config_.ephemeris_topic);
     declare_parameter<std::string>("solution_topic", config_.solution_topic);
+    declare_parameter<bool>("rtcm_relay.enabled", config_.rtcm_relay_enabled);
+    declare_parameter<std::string>("rtcm_relay.listen", config_.rtcm_relay_listen);
     declare_parameter<bool>("auto_origin", config_.auto_origin);
     declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
 
@@ -215,6 +221,8 @@ class UbxDriverNode : public rclcpp::Node {
     config_.observation_topic = get_parameter("observation_topic").as_string();
     config_.ephemeris_topic = get_parameter("ephemeris_topic").as_string();
     config_.solution_topic = get_parameter("solution_topic").as_string();
+    config_.rtcm_relay_enabled = get_parameter("rtcm_relay.enabled").as_bool();
+    config_.rtcm_relay_listen = get_parameter("rtcm_relay.listen").as_string();
     config_.auto_origin = get_parameter("auto_origin").as_bool();
     {
       const auto v = get_parameter("origin").as_double_array();
@@ -236,7 +244,7 @@ class UbxDriverNode : public rclcpp::Node {
     is_usb_connection_ = (config_.stream_path.find("ttyACM") != std::string::npos);
 
     // Validate rate
-    gnss_utils::validatePublishRate(config_.rate_hz, /*fallback=*/5, get_logger());
+    gnss_utils::validatePublishRate(config_.rate_hz, /*fallback=*/5, /*max_hz=*/20, get_logger());
     
     // Log configuration
     RCLCPP_INFO(get_logger(), "Configuration loaded:");
@@ -266,7 +274,7 @@ class UbxDriverNode : public rclcpp::Node {
 
   void initializePublishers() {
     obs_pub_     = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
-    eph_pub_     = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(1).transient_local());
+    eph_pub_     = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
     sol_pub_     = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
     imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(config_.imu_topic, 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
@@ -321,23 +329,32 @@ class UbxDriverNode : public rclcpp::Node {
       RCLCPP_ERROR(get_logger(), "Failed to initialize raw decoder");
       throw std::runtime_error("init_raw failed");
     }
-    if (init_rtcm(&rtcm_) != 1) {
-      RCLCPP_ERROR(get_logger(), "Failed to initialize RTCM decoder");
-      throw std::runtime_error("init_rtcm failed");
-    }
   }
 
   void startPolling() {
     timer_ = create_wall_timer(kTimerInterval, std::bind(&UbxDriverNode::pollStream, this));
   }
 
+  // RTCM relay (RTKLIB STRSVR-style): host a TCP server for incoming
+  // base-station corrections; pollStream() writes them to the receiver serial.
+  // The driver stays the sole owner of the serial port — corrections arrive
+  // over TCP, not via a second serial opener.
+  void openRtcmRelay() {
+    if (!config_.rtcm_relay_enabled) return;
+    if (!relay_.open(get_logger(), config_.rtcm_relay_listen)) {
+      throw std::runtime_error("RTCM relay stropen failed");
+    }
+  }
+
   // Stream Management
 
-  void openStream() {
-    strinit(&stream_);
+  // Open `original` (scheme-prefixed, e.g. serial:// / tcpsvr:// / tcpcli://)
+  // into `s` as a read-write RTKLIB stream. Returns false on failure.
+  bool openStreamPath(stream_t& s, const std::string& original, const char* what) {
+    strinit(&s);
 
     int stream_type = STR_SERIAL;
-    std::string path = config_.stream_path;
+    std::string path = original;
 
     for (const auto& st : ubx::kStreamTypes) {
       if (path.substr(0, st.prefix.size()) == st.prefix) {
@@ -347,22 +364,29 @@ class UbxDriverNode : public rclcpp::Node {
       }
     }
 
-    // MALIB serial path format: device name without /dev/ prefix
+    // RTKLIB serial path format: device name without /dev/ prefix
     // e.g., "ttyACM0:115200" instead of "/dev/ttyACM0:115200"
     if (stream_type == STR_SERIAL && path.rfind("/dev/", 0) == 0) {
       path.erase(0, 5);
-      RCLCPP_DEBUG(get_logger(), "Adjusted serial path for MALIB: %s", path.c_str());
+      RCLCPP_DEBUG(get_logger(), "Adjusted serial path for RTKLIB: %s", path.c_str());
     }
 
     char path_buf[256];
     snprintf(path_buf, sizeof(path_buf), "%s", path.c_str());
 
-    if (stropen(&stream_, stream_type, STR_MODE_RW, path_buf) == 0) {
-      RCLCPP_ERROR(get_logger(), "Failed to open stream: %s", config_.stream_path.c_str());
-      throw std::runtime_error("stropen failed");
+    if (stropen(&s, stream_type, STR_MODE_RW, path_buf) == 0) {
+      RCLCPP_ERROR(get_logger(), "Failed to open %s stream: %s", what, original.c_str());
+      return false;
     }
 
-    RCLCPP_INFO(get_logger(), "Stream opened: %s", config_.stream_path.c_str());
+    RCLCPP_INFO(get_logger(), "%s stream opened: %s", what, original.c_str());
+    return true;
+  }
+
+  void openStream() {
+    if (!openStreamPath(stream_, config_.stream_path, "Receiver")) {
+      throw std::runtime_error("stropen failed");
+    }
   }
 
   // Receiver Configuration (Unified Entry Point)
@@ -888,7 +912,7 @@ class UbxDriverNode : public rclcpp::Node {
     strwrite(&stream_, frame.data(), frame.size());
   }
 
-  /// Send a legacy UBX command string (Gen 9). Uses MALIB's gen_ubx().
+  /// Send a legacy UBX command string (Gen 9). Uses RTKLIB's gen_ubx().
   bool sendLegacyCommand(const char* cmd, uint8_t expected_class, uint8_t expected_id) {
     uint8_t buff[256];
     int len = gen_ubx(cmd, buff);
@@ -900,7 +924,7 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_DEBUG(get_logger(), "Sending legacy: %s", cmd);
 
     int written = strwrite(&stream_, buff, len);
-    // MALIB's writeserial on Linux has a bug where write() return is not assigned,
+    // RTKLIB's writeserial on Linux has a bug where write() return is not assigned,
     // causing strwrite to always return 0. We treat 0 as success.
     if (written < 0) {
       RCLCPP_WARN(get_logger(), "strwrite error: %d", written);
@@ -999,7 +1023,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
   }
 
-  // UBX Mini-Framer (parallel to RTKLIB, for ESF-INS and NAV-ATT)
+  // UBX Mini-Framer (parallel to RTKLIB, for ESF and NAV blocks)
 
   void parseUbxByte(uint8_t byte) {
     switch (ubx_frm_state_) {
@@ -1036,73 +1060,50 @@ class UbxDriverNode : public rclcpp::Node {
     if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_HPPOSLLH)  handleNavHpPosLlh();
   }
 
-  // Sign-extend the lower 24 bits of a uint32 into an int32.
-  static int32_t signExtend24(uint32_t v) {
-    return (v & 0x00800000u) ? static_cast<int32_t>(v | 0xFF000000u)
-                             : static_cast<int32_t>(v & 0x00FFFFFFu);
-  }
-
-  // UBX-ESF-RAW: 4-byte reserved header + N × { data(u4) + sTtag(u4) }.
-  // data low 24 bits = signed measurement, high 8 bits = data type.
-  // Accumulate accel x/y/z + gyro x/y/z found in this message; publish if any axis was set.
+  // UBX-ESF-RAW: batched IMU samples. No GNSS time (sTtag only) — stamps stay
+  // host-clock; samples are spaced backwards by sTtag deltas (see
+  // ubx_decoder_node.cpp for the full rationale).
   void handleEsfRaw() {
-    constexpr int kHeaderLen = 4;
-    constexpr int kBlockLen  = 8;
-    const int n = (static_cast<int>(ubx_frm_payload_.size()) - kHeaderLen) / kBlockLen;
-    if (n <= 0) return;
+    const auto samples = ubx::esf_raw::parseEsfRawSamples(ubx_frm_payload_);
+    if (samples.empty()) return;
 
-    double accel[3] = {0, 0, 0};
-    double gyro[3]  = {0, 0, 0};
-    bool   has_accel[3] = {false, false, false};
-    bool   has_gyro[3]  = {false, false, false};
-    const double deg2rad = M_PI / 180.0;
-
-    for (int i = 0; i < n; ++i) {
-      const uint8_t* p = ubx_frm_payload_.data() + kHeaderLen + i * kBlockLen;
-      uint32_t data = 0;
-      std::memcpy(&data, p, 4);
-      const uint8_t type = static_cast<uint8_t>((data >> 24) & 0xFFu);
-      const int32_t val  = signExtend24(data);
-
-      switch (type) {
-        case ubx::esf_raw::TYPE_GYRO_X:
-          gyro[0] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[0] = true; break;
-        case ubx::esf_raw::TYPE_GYRO_Y:
-          gyro[1] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[1] = true; break;
-        case ubx::esf_raw::TYPE_GYRO_Z:
-          gyro[2] = val * ubx::esf_raw::GYRO_SCALE * deg2rad; has_gyro[2] = true; break;
-        case ubx::esf_raw::TYPE_ACCEL_X:
-          accel[0] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[0] = true; break;
-        case ubx::esf_raw::TYPE_ACCEL_Y:
-          accel[1] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[1] = true; break;
-        case ubx::esf_raw::TYPE_ACCEL_Z:
-          accel[2] = val * ubx::esf_raw::ACCEL_SCALE; has_accel[2] = true; break;
-        default: break;  // ignore other sensor types (temp, wheel speed, etc.)
-      }
+    const rclcpp::Time anchor = now();
+    const uint32_t last_sttag = samples.back().sttag;
+    // Sanity guard: a batch spanning > 1 s means a wrong tick constant or
+    // corrupted time tags — fall back to stamping the whole batch at arrival.
+    const double span_s =
+        (last_sttag - samples.front().sttag) * ubx::esf_raw::STTAG_TICK_S;
+    const bool spread_ok = span_s <= 1.0;
+    if (!spread_ok) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        "ESF-RAW sTtag span %.3f s exceeds 1 s — stamping batch at arrival time", span_s);
     }
 
-    if (!(has_accel[0] || has_accel[1] || has_accel[2] ||
-          has_gyro[0]  || has_gyro[1]  || has_gyro[2])) return;
+    for (const auto& s : samples) {
+      sensor_msgs::msg::Imu imu;
+      const double back_s =
+          spread_ok ? (last_sttag - s.sttag) * ubx::esf_raw::STTAG_TICK_S : 0.0;
+      imu.header.stamp    = anchor - rclcpp::Duration::from_seconds(back_s);
+      imu.header.frame_id = config_.frame_id;
 
-    sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
-    imu.header.frame_id = config_.frame_id;
+      // orientation: not provided by ESF-RAW — leave identity, mark unknown
+      imu.orientation_covariance[0] = -1.0;
 
-    // orientation: not provided by ESF-RAW — leave identity, mark unknown
-    imu.orientation_covariance[0] = -1.0;
+      imu.angular_velocity.x = s.gyro[0];
+      imu.angular_velocity.y = s.gyro[1];
+      imu.angular_velocity.z = s.gyro[2];
+      imu.linear_acceleration.x = s.accel[0];
+      imu.linear_acceleration.y = s.accel[1];
+      imu.linear_acceleration.z = s.accel[2];
 
-    imu.angular_velocity.x = gyro[0];
-    imu.angular_velocity.y = gyro[1];
-    imu.angular_velocity.z = gyro[2];
-    imu.linear_acceleration.x = accel[0];
-    imu.linear_acceleration.y = accel[1];
-    imu.linear_acceleration.z = accel[2];
+      // Values above are always provided by ESF-RAW; only their covariance is
+      // unknown -> all-zero, not "-1" (which claims the measurement is absent).
+      auto unk = ins::makeZeroCovariance();
+      std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
+      std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
-    auto unk = ins::makeUnknownCovariance();
-    std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
-    std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
-
-    imu_raw_pub_->publish(imu);
+      imu_raw_pub_->publish(imu);
+    }
   }
 
   void handleEsfIns() {
@@ -1149,11 +1150,15 @@ class UbxDriverNode : public rclcpp::Node {
 
   void pollStream() {
     uint8_t buffer[ubx::READ_BUFFER_SIZE];
-    
+
+    // RTCM relay: drain corrections from the TCP server to the receiver serial.
+    // Same poll thread as the read below, so no lock.
+    relay_.drainTo(get_logger(), *get_clock(), stream_);
+
     // Read loop to drain all available data from the stream
     while (rclcpp::ok()) {
       const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
-      
+
       if (bytes_read <= 0) {
         break; // No more data
       }
@@ -1166,7 +1171,7 @@ class UbxDriverNode : public rclcpp::Node {
           handleDecodeResult(result);
         }
 
-        // Parallel UBX mini-framer for ESF-INS and NAV-ATT
+        // Parallel UBX mini-framer (ESF / NAV blocks)
         parseUbxByte(byte);
 
         // Feed NMEA text parser
@@ -1252,10 +1257,8 @@ class UbxDriverNode : public rclcpp::Node {
         (config_.enable_nav_hpposecef ? COV_BIT_HPPOSECEF : uint8_t{0});
   }
 
-  // offset: iTOW position in the payload — 0 for most NAV-* messages,
-  // ubx::nav_hpposllh/nav_hpposecef::OFFSET_ITOW (4) for the HP messages.
-  // Reading the wrong offset breaks TOW epoch grouping and stalls publishing
-  // until the watchdog fires, so HP handlers must pass their OFFSET_ITOW.
+  // offset: iTOW position — 0 for most NAV-* payloads, OFFSET_ITOW (4) for the
+  // HP messages; the wrong offset breaks TOW grouping (stalls until watchdog).
   static uint32_t readItowMs(const uint8_t* p, size_t len, size_t offset = 0) {
     if (len < offset + 4) return UINT32_MAX;
     uint32_t v = 0;
@@ -1296,10 +1299,7 @@ class UbxDriverNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
-  // NAV-DOP: parsed into the persistent last_dop_ cache, NOT into pending_.
-  // Does NOT participate in completion and does NOT trigger flush. At flush
-  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
-  // enough (within 0..PVT_period after PVT) to populate the published solution.
+  // NAV-DOP: cached in last_dop_; applied at flush by applyDopWithStaleness().
   // NAV-DOP carries no GPS week → last_dop_.week = 0 (helper skips week check).
   void handleNavDop() {
     if (!config_.enable_nav_dop) return;
@@ -1421,11 +1421,9 @@ class UbxDriverNode : public rclcpp::Node {
     msg::GnssSolution ecef_direct = pending_.buf;
     binary_solution_ = pending_.buf;
 
-    // HPPOSLLH override (highest-priority LLH source): replace the NAV-PVT
-    // position before geometry derivation so the derived ECEF inherits the
-    // high-precision values. The accuracy fields refresh the diagonal-only
-    // covariance unless NAV-COV already provided the full 3x3 (signalled by a
-    // non-zero off-diagonal, same contract as parseNavPvt).
+    // HPPOSLLH override (highest-priority LLH source), applied before geometry
+    // derivation. Its accuracy fields refresh the covariance diagonal unless
+    // NAV-COV already provided the full 3x3 (non-zero off-diagonal).
     if (recv & COV_BIT_HPPOSLLH) {
       binary_solution_.latitude  = pending_.hp_llh.lat_deg;
       binary_solution_.longitude = pending_.hp_llh.lon_deg;
@@ -1481,8 +1479,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
     prev_pvt_tow_ms_ = pending_.tow_ms;
 
-    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
-    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    // DOP staleness gate (see gnss_utils::applyDopWithStaleness).
     gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
                                       binary_solution_.time_week,
                                       pending_.tow_ms, pvt_period_ms_);
@@ -1525,13 +1522,8 @@ class UbxDriverNode : public rclcpp::Node {
         return;
     }
 
-    // BINARY path: time_tow keeps the PVT epoch's own iTOW (set by
-    // parseNavPvt); raw_.time (RTKLIB observation-decode clock) supplies only
-    // the week number, which UBX NAV-* payloads do not carry. Overwriting tow
-    // with raw_.time would timestamp the position with the latest
-    // *observation* epoch instead of the solution's own epoch. NMEA path
-    // trusts time_week/time_tow already filled by NmeaParser from the sentence
-    // itself.
+    // BINARY: keep the epoch's own iTOW; raw_.time supplies only the GPS week
+    // (UBX NAV-* payloads carry none). NMEA: NmeaParser filled week/tow.
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
@@ -1638,9 +1630,7 @@ class UbxDriverNode : public rclcpp::Node {
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
 
-    // Use per-observation time, NOT raw_.time: RTKLIB advances raw_.time to
-    // the next epoch when input_*()==1 fires (the trigger is the next epoch's
-    // first byte); raw_.obs.data[*] still holds the just-completed epoch.
+    // obs.data[0].time, not raw_.time (already advanced to the next epoch).
     int week = 0;
     const gtime_t obs_time = raw_.obs.data[0].time;
     const double tow = time2gpst(obs_time, &week);
@@ -1709,10 +1699,12 @@ class UbxDriverNode : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;   // ESF-RAW (uncalibrated)
   rclcpp::TimerBase::SharedPtr timer_;
 
-  // MALIB structures
+  // RTCM relay (PC -> receiver): STRSVR-style TCP server -> serial
+  decoder_common::RtcmRelayServer relay_;
+
+  // RTKLIB structures
   stream_t stream_{};
   raw_t raw_{};
-  rtcm_t rtcm_{};
 
   // NMEA Parsing state
   gnss_utils::NmeaParser nmea_parser_;

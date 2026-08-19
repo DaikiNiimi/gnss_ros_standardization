@@ -2,7 +2,7 @@
 
 Decoder nodes receive a **binary GNSS byte stream** (via NTRIP, TCP, or Serial), parse the protocol using the embedded **RTKLIB (rtklibexplorer fork)** library, and publish standardized ROS 2 messages.
 
-Unlike the drivers in [`../drivers/`](../drivers/), decoders are **passive and do not configure the receiver**.
+Unlike the drivers in [`../drivers/`](../drivers/), decoders are **passive and do not configure the receiver** — this also holds when the RTCM relay below is enabled: correction bytes are forwarded verbatim. The single exception is the NovAtel decoder's dedicated correction port, which receives one `INTERFACEMODE` command over that port itself (never over the decoded-log port); see the relay section.
 
 ## Supported Decoders
 
@@ -24,7 +24,9 @@ All decoders accept a `stream_path` parameter specifying the source stream. The 
 |---|---|---|
 | **NTRIP** | `ntrip://user:pass@caster.example.com:2101/MOUNT` | Connects to an NTRIP caster mountpoint. |
 | **TCP Client** | `tcpcli://192.168.1.100:9000` | Connects to a TCP server broadcasting GNSS data. |
+| **TCP Server** | `tcpsvr://:5556` | Hosts a TCP server and accepts pushed data. |
 | **Serial** | `serial:///dev/ttyUSB0:115200` | Connects to a local serial port. |
+| **File** | `file:///path/to/log.bin` | Replays a recorded raw log. |
 
 ---
 
@@ -42,6 +44,40 @@ All decoders accept a `stream_path` parameter specifying the source stream. The 
 | `ephemeris.max_age_s` | `double` | `0.0` | Maximum age of ephemeris to keep in cache (seconds). `0.0` keeps all received ephemerides. |
 | `use_gps_timestamp` | `bool` | `false` | If `true`, the ROS message headers will use GPS/GPST time instead of the ROS system clock. |
 | `origin` | `double[]` | `[0.0, 0.0, 0.0]` | Fixed ECEF/ENU local origin `[Latitude (deg), Longitude (deg), Altitude (m)]` for ENU local coordinates. |
+| `rtcm_relay` | `string` | `""` (disabled) | Listen URI for incoming RTCM corrections, written back down the receiver stream for on-chip RTK (see below). On `rtcm_decoder_node` the direction is reversed: it is the *output* URI the decoded source bytes are forwarded to. |
+| `rtcm_relay_output` | `string` | `""` | *NovAtel decoder only.* OS device of the dedicated RTCMV3 correction port (e.g. `serial:///dev/ttyUSB2:230400`). Empty writes corrections to the main stream (not supported on NovAtel hardware). |
+| `rtcm_relay_correction_port` | `string` | `"THISPORT"` | *NovAtel decoder only.* `INTERFACEMODE` target, sent over `rtcm_relay_output` itself — leave `THISPORT`. |
+
+---
+
+## RTCM correction relay (receiver on-chip RTK)
+
+A decoder owns the receiver port read-only, so on single-port wiring (a u-blox USB
+cable, a lone UART to an OEM board) there is otherwise no path to feed RTK
+corrections. Set `rtcm_relay` to a listen URI and the decoder hosts a TCP server,
+writing any RTCM bytes pushed there down the receiver stream; the receiver then
+computes RTK on-chip and its Fix appears in the decoded PVT.
+
+```bash
+# Rover decoder hosts the correction server (u-blox example)
+ros2 run gnss_ros_standardization ubx_decoder_node --ros-args \
+  -p stream_path:="serial:///dev/ttyACM0:115200" -p rtcm_relay:="tcpsvr://:5556"
+# Correction source: decode a base stream to topics AND forward it
+ros2 run gnss_ros_standardization rtcm_decoder_node --ros-args \
+  -p stream_path:="ntrip://user:pass@caster:2101/MOUNT" -p rtcm_relay:="tcpcli://127.0.0.1:5556"
+```
+
+Recommended ports (match the drivers): **ubx 5556, sbf 5557, novatel 5558**. The
+receiver port must accept RTCMv3 input — set it up once:
+
+| Receiver | One-time setup |
+|---|---|
+| u-blox | include RTCM3 in the port's `inProtoMask` (F9P default already does) |
+| Septentrio | `setDataInOut, COM1, RTCMv3, +SBF` (WebUI or RxTools) |
+| NovAtel | needs a **dedicated** port (RTCMV3 rx cannot share the NOVATEL log port): point `rtcm_relay_output` at a second `/dev` device — the decoder sets it to RTCMV3 via `INTERFACEMODE THISPORT RTCMV3 NONE OFF`. Single-UART-only wiring cannot receive corrections. |
+
+The drivers offer the same relay for configured operation; see
+[`../drivers/`](../drivers/).
 
 ---
 

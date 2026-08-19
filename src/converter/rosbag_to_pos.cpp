@@ -37,6 +37,11 @@ using gnss_converter_io::deserializeRos;
 using gnss_converter_io::deriveOutputPath;
 using gnss_converter_io::normalizeBagUri;
 
+// Everything below is private to this translation unit. Each converter is a
+// separate executable, but they all declare a file-scope `struct Args`, and
+// identical names with different layouts at external linkage are an ODR
+// violation the moment anything links two of them (cppcheck flags it as one).
+namespace {
 struct Args {
   std::string bag_uri;
   std::string topic = "/gnss/solution";
@@ -173,6 +178,8 @@ static void printUsage(FILE* out) {
     "[--out <out.pos>] [--topic /gnss/solution] [--vel] [--pgm <name>] "
     "[--help] [--version]\n");
 }
+
+}  // namespace
 
 int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {

@@ -6,6 +6,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <sensor_msgs/msg/imu.hpp>
@@ -45,6 +46,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     initializePublishers();
     initializeDecoder();
     openStream();
+    openRtcmRelay();
     startPolling();
 
     RCLCPP_INFO(get_logger(), "NovAtel Decoder initialized (format: %s)", format_.c_str());
@@ -53,6 +55,8 @@ class NovatelDecoderNode : public rclcpp::Node {
   ~NovatelDecoderNode() override {
     try {
       strclose(&stream_);
+      relay_.close();
+      if (relay_out_open_) strclose(&relay_out_);
     } catch (...) {}
     free_raw(&raw_);
   }
@@ -77,6 +81,11 @@ class NovatelDecoderNode : public rclcpp::Node {
     declare_parameter<double>("ephemeris.max_age_s", 0.0);  // 0 = keep all
     declare_parameter<bool>("use_gps_timestamp", false);
     declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
+    // RTCM relay (opt-in, see openRtcmRelay): listen URI for corrections plus
+    // the dedicated RTCMV3 output port. See src/decoders/README.md.
+    declare_parameter<std::string>("rtcm_relay", "");
+    declare_parameter<std::string>("rtcm_relay_output", "");
+    declare_parameter<std::string>("rtcm_relay_correction_port", "THISPORT");
     use_gps_timestamp_ = get_parameter("use_gps_timestamp").as_bool();
     {
       const auto v = get_parameter("origin").as_double_array();
@@ -100,7 +109,7 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   void initializePublishers() {
     obs_pub_ = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(1).transient_local());
+    eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
     sol_pub_ = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
     imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_topic").as_string(), 10);
     imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
@@ -151,40 +160,75 @@ class NovatelDecoderNode : public rclcpp::Node {
   // Stream Management
 
   void openStream() {
-    const std::string stream_path = get_parameter("stream_path").as_string();
-    std::string path = stream_path;
-
-    int stream_type = 0;
-    bool matched = false;
-    for (const auto& def : novatel::kStreamTypes) {
-      if (path.rfind(def.prefix, 0) == 0) {
-        stream_type = def.type;
-        path.erase(0, def.prefix.size());
-        matched = true;
-        break;
-      }
-    }
-
-    if (!matched) {
-      RCLCPP_ERROR(get_logger(), "Unsupported stream path format: %s", stream_path.c_str());
-      throw std::runtime_error("Unsupported stream_path format");
-    }
-
-    if (stream_type == STR_SERIAL && path.rfind("/dev/", 0) == 0) {
-      path.erase(0, 5);
-    }
-
-    if (!stropen(&stream_, stream_type, STR_MODE_R, path.c_str())) {
-      RCLCPP_ERROR(get_logger(), "Failed to open stream: %s", stream_path.c_str());
+    // Main-port RW is only needed for the single-port relay fallback (no
+    // dedicated output); otherwise keep the passive read-only open.
+    const bool relay_to_main =
+        !get_parameter("rtcm_relay").as_string().empty() &&
+        get_parameter("rtcm_relay_output").as_string().empty();
+    if (!decoder_common::openStreamPath(get_logger(), stream_,
+                                        get_parameter("stream_path").as_string(),
+                                        relay_to_main ? STR_MODE_RW : STR_MODE_R,
+                                        "Input")) {
       throw std::runtime_error("stropen failed");
     }
+  }
 
-    RCLCPP_INFO(get_logger(), "Stream opened: %s", stream_path.c_str());
+  // RTCM relay (RTKLIB STRSVR-style): host a TCP server for incoming
+  // base-station corrections and write them to the receiver in pollStream().
+  // NovAtel: corrections go to a DEDICATED port (`rtcm_relay_output`), same
+  // design as novatel_driver_node — the port is put into RTCMV3 input mode by
+  // sending INTERFACEMODE over that very port (THISPORT), so the user never
+  // needs its NovAtel logical name and the main decoded-log port stays
+  // untouched (passive).
+  void openRtcmRelay() {
+    const std::string listen = get_parameter("rtcm_relay").as_string();
+    if (listen.empty()) return;
+    if (get_parameter("stream_path").as_string().rfind("file://", 0) == 0) {
+      RCLCPP_WARN(get_logger(),
+        "rtcm_relay is set but stream_path is a file:// stream — forwarded "
+        "corrections have no receiver to reach.");
+    }
+    if (!relay_.open(get_logger(), listen)) {
+      throw std::runtime_error("RTCM relay stropen failed");
+    }
+
+    const std::string output = get_parameter("rtcm_relay_output").as_string();
+    if (output.empty()) {
+      RCLCPP_WARN(get_logger(),
+        "rtcm_relay_output is empty: corrections go to the main port. NovAtel "
+        "cannot mix RTCM input with NOVATEL logs on one logical port — set "
+        "rtcm_relay_output to a second /dev device for on-chip RTK.");
+      return;
+    }
+    if (!decoder_common::openStreamPath(get_logger(), relay_out_, output,
+                                        STR_MODE_RW, "RTCM relay output")) {
+      throw std::runtime_error("RTCM relay output stropen failed");
+    }
+    relay_out_open_ = true;
+
+    // Put the correction port into RTCMV3 input mode over the port itself.
+    // If it is already in RTCMV3 (e.g. saved with SAVECONFIG), the command
+    // bytes are simply discarded by the receiver's RTCM parser — harmless.
+    const std::string correction_port =
+        get_parameter("rtcm_relay_correction_port").as_string();
+    const std::string cmd = std::string(novatel::CMD_INTERFACEMODE) + " " +
+                            correction_port + " RTCMV3 NONE OFF\r\n";
+    strwrite(&relay_out_, (uint8_t*)cmd.c_str(), static_cast<int>(cmd.size()));
+    std::this_thread::sleep_for(200ms);
+    RCLCPP_INFO(get_logger(),
+      "RTCM relay: '%s' -> dedicated port '%s' (set to RTCMV3 via INTERFACEMODE %s)",
+      listen.c_str(), output.c_str(), correction_port.c_str());
   }
 
   // Polling
 
   void pollStream() {
+    // RTCM relay: drain corrections from the TCP server and write them to the
+    // dedicated RTCMV3 port if configured, else the main stream (single-port
+    // fallback). Same poll thread as the read below, so no lock.
+    relay_.drainTo(get_logger(), *get_clock(),
+                   relay_out_open_ ? relay_out_ : stream_);
+
     uint8_t buffer[novatel::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
 
@@ -195,7 +239,7 @@ class NovatelDecoderNode : public rclcpp::Node {
       int result = input_oem4(&raw_, byte);
       handleDecodeResult(result);
 
-      // Parallel OEM4 mini-framer for CORRIMUDATA
+      // Parallel OEM4 mini-framer (IMU / PVT logs)
       parseOem4Byte(byte);
 
       // Feed NMEA text parser (NovAtel binary and NMEA are interleaved)
@@ -215,9 +259,10 @@ class NovatelDecoderNode : public rclcpp::Node {
 
     maybePublishHeartbeat();
     commitSourceLockIfDue();  // ensure grace finalizes even on idle stream
+    maybeWatchdogFlushPendingPvt();
   }
 
-  // OEM4 Mini-Framer (parallel to RTKLIB, for CORRIMUDATA)
+  // OEM4 Mini-Framer (parallel to RTKLIB, for IMU and PVT logs)
   //
   // OEM4 binary frame: SYNC(0xAA,0x44,0x12) HDRLEN(1) MSGID(2,LE) MSGTYPE(1)
   //                    PORT(1) MSGLEN(2,LE) ... rest of header ... BODY CRC32
@@ -274,14 +319,11 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (oem4_msg_id_ == novatel::ID_BESTXYZ)     handleBestXyz();
   }
 
-  // Solution source policy (grace-period detection):
-  //   Start in UNDETERMINED. Wait kGracePeriodSec to detect whether the stream
-  //   carries BESTPOS. If yes → BINARY (PVT wins when both are present). If no
-  //   PVT seen by grace expiry → NMEA. Deterministic regardless of stream
-  //   ordering between NMEA and binary frames.
+  // Solution source policy: publish nothing for kGracePeriodSec; binary PVT
+  // seen during grace → lock BINARY, else lock NMEA. Deterministic and
+  // PVT-preferred regardless of arrival order.
   enum class SolutionSource { UNDETERMINED, BINARY, NMEA };
-  // 1.0 s safely covers a 1 Hz PVT cadence worst-case. Higher PVT rates lock
-  // BINARY in milliseconds — grace only affects NMEA-only commit latency.
+  // 1.0 s covers a 1 Hz PVT cadence; higher rates lock BINARY in milliseconds.
   static constexpr double kGracePeriodSec = 1.0;
 
   void startGraceIfNeeded() {
@@ -304,13 +346,8 @@ class NovatelDecoderNode : public rclcpp::Node {
     }
   }
 
-  // PVT TOW Aggregation (mirrors SBF decoder pattern).
-  //
-  // TOW (GPS ms) is captured by the OEM4 mini-framer (oem4_gps_ms_). Each
-  // BEST*/PSRDOP handler aggregates into pending_ keyed on TOW; flushPending()
-  // applies the existing covariance-routing policy in one place.
-  // PSRDOP is tracked separately in a persistent cache (last_dop_) so it can
-  // survive Pending resets and be staleness-gated against the PVT cadence.
+  // PVT TOW aggregation: BEST* logs merge into pending_ keyed on the OEM4
+  // header TOW (oem4_gps_ms_); PSRDOP is cached separately (last_dop_).
   static constexpr uint8_t COV_BIT_VEL = 0x1;
   static constexpr uint8_t COV_BIT_XYZ = 0x2;
 
@@ -352,10 +389,8 @@ class NovatelDecoderNode : public rclcpp::Node {
       flushPending();
     }
     pending_.tow_ms = oem4_gps_ms_;
-    // BESTPOS/BESTVEL/PSRDOP/BESTXYZ bodies don't carry GPS time — the (week, ms)
-    // pair lives in the OEM4 header which only the mini-framer sees. Stamp the
-    // pending solution here so applyDopWithStaleness() (called from flushPending)
-    // gets a non-zero pvt_week to compare against last_dop_.week.
+    // BEST*/PSRDOP bodies carry no GPS time — (week, ms) comes from the OEM4
+    // header seen by the mini-framer.
     pending_.buf.time_week = oem4_gps_week_;
     pending_.buf.time_tow  = oem4_gps_ms_ / 1000.0;
   }
@@ -385,10 +420,8 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (pendingComplete()) flushPending();
   }
 
-  // PSRDOP: parsed into the persistent last_dop_ cache, NOT into pending_.
-  // Does NOT participate in completion and does NOT trigger flush. At flush
-  // time, applyDopWithStaleness() decides whether this cached DOP is fresh
-  // enough (within 0..PVT_period after PVT) to populate the published solution.
+  // PSRDOP: cached in last_dop_; applied at flush by applyDopWithStaleness()
+  // (does not gate epoch completion).
   void handlePsrDop() {
     startGraceIfNeeded();
     msg::GnssSolution scratch{};
@@ -403,10 +436,8 @@ class NovatelDecoderNode : public rclcpp::Node {
   }
 
   void handleBestXyz() {
-    // BESTXYZ provides native ECEF covariance diagonals for both position and
-    // velocity. Position/velocity values are intentionally NOT overwritten by
-    // the parser — BESTPOS/BESTVEL remain the single source of truth (BESTXYZ
-    // is the same internal solution expressed in ECEF).
+    // BESTXYZ contributes native ECEF covariance diagonals only —
+    // BESTPOS/BESTVEL remain the source of truth for pos/vel values.
     startGraceIfNeeded();
     if (isLateOrphan(COV_BIT_XYZ)) return;
     aggregateEpochBoundary();
@@ -441,8 +472,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     }
     prev_pvt_tow_ms_ = pending_.tow_ms;
 
-    // DOP staleness gate: populate from last_dop_ iff its timestamp is within
-    // [0, PVT_period] of this epoch; else NaN. Asymmetric — no future-DOP bleed.
+    // DOP staleness gate (see gnss_utils::applyDopWithStaleness).
     gnss_utils::applyDopWithStaleness(binary_solution_, last_dop_,
                                       binary_solution_.time_week,
                                       pending_.tow_ms, pvt_period_ms_);
@@ -464,11 +494,8 @@ class NovatelDecoderNode : public rclcpp::Node {
     }
   }
 
-  // Covariance rotation helpers. Operate on diagonal-only inputs; off-diagonal
-  // terms in the output are the rotated 3x3 of a diagonal source, not the true
-  // full covariance (BESTPOS and BESTXYZ both publish diagonals only).
-  // `has_bestxyz_this_epoch` decides the rotation direction per epoch (NOT a
-  // session-sticky flag) — see flushPending().
+  // Covariance rotation helpers (diagonal-only sources; BESTPOS/BESTXYZ publish
+  // diagonals). `has_bestxyz_this_epoch` picks the rotation direction per epoch.
   void rotatePosCovariance(msg::GnssSolution& s, bool has_bestxyz_this_epoch) {
     const double lat = s.latitude  * D2R;
     const double lon = s.longitude * D2R;
@@ -545,7 +572,9 @@ class NovatelDecoderNode : public rclcpp::Node {
     imu.linear_acceleration.y = -ny_acc * scale.accel / dt;
     imu.linear_acceleration.z =  z_acc  * scale.accel / dt;
 
-    auto unk = ins::makeUnknownCovariance();
+    // Values above are always provided by RAWIMU; only their covariance is
+    // unknown -> all-zero, not "-1" (which claims the measurement is absent).
+    auto unk = ins::makeZeroCovariance();
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
@@ -596,7 +625,9 @@ class NovatelDecoderNode : public rclcpp::Node {
     // orientation: not provided by CORRIMUDATA — leave identity, mark unknown
     imu.orientation_covariance[0] = -1.0;
 
-    auto unk = ins::makeUnknownCovariance();
+    // Values above are always provided by CORRIMUDATA; only their covariance
+    // is unknown -> all-zero, not "-1" (which claims the measurement is absent).
+    auto unk = ins::makeZeroCovariance();
     std::copy(unk.begin(), unk.end(), imu.angular_velocity_covariance.begin());
     std::copy(unk.begin(), unk.end(), imu.linear_acceleration_covariance.begin());
 
@@ -623,15 +654,8 @@ class NovatelDecoderNode : public rclcpp::Node {
   // Solution Publishing
 
   void publishSolution(msg::GnssSolution& sol) {
-    // Time/source policy:
-    //   BINARY path: the OEM4 header carries (week, ms), already written into
-    //                time_week/time_tow by aggregateEpochBoundary() — trust
-    //                them. raw_.time (RTKLIB observation-decode clock) is only
-    //                a fallback; using it unconditionally would timestamp the
-    //                position with the latest *observation* epoch instead.
-    //   NMEA  path: the NmeaParser has already populated time_week/time_tow
-    //                from the sentence itself, so reassemble gtime_t from those
-    //                instead of borrowing raw_.time (which may be stale).
+    // BINARY: the OEM4 header (week, ms) is already in time_week/time_tow —
+    // trust them; raw_.time is only a fallback. NMEA: NmeaParser filled them.
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
@@ -718,9 +742,7 @@ class NovatelDecoderNode : public rclcpp::Node {
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
 
-    // Use per-observation time, NOT raw_.time: RTKLIB advances raw_.time to
-    // the next epoch when input_*()==1 fires (the trigger is the next epoch's
-    // first byte); raw_.obs.data[*] still holds the just-completed epoch.
+    // obs.data[0].time, not raw_.time (already advanced to the next epoch).
     int week = 0;
     const gtime_t obs_time = raw_.obs.data[0].time;
     const double tow = time2gpst(obs_time, &week);
@@ -790,6 +812,12 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   stream_t stream_{};
   raw_t    raw_{};
+
+  // RTCM relay (PC -> receiver): STRSVR-style TCP server -> dedicated RTCMV3
+  // port (relay_out_) when rtcm_relay_output is set, else the main stream.
+  decoder_common::RtcmRelayServer relay_;
+  stream_t relay_out_{};
+  bool     relay_out_open_{false};
 
   // NMEA parsing state
   gnss_utils::NmeaParser nmea_parser_;

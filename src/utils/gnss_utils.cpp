@@ -91,6 +91,70 @@ bool nmeaUtcToGpsTime(int year, int month, int day, double hms,
   return true;
 }
 
+bool utcRosTimeToGpst(const rclcpp::Time& t_utc_ros, uint32_t& week, double& tow) {
+  gtime_t t_utc;
+  const int64_t ns = t_utc_ros.nanoseconds();
+  t_utc.time = static_cast<time_t>(ns / 1000000000LL);
+  t_utc.sec = static_cast<double>(ns % 1000000000LL) / 1e9;
+  const gtime_t t_gpst = utc2gpst(t_utc);
+  int w = 0;
+  const double t = time2gpst(t_gpst, &w);
+  if (w <= 0) return false;
+  week = static_cast<uint32_t>(w);
+  tow = t;
+  return true;
+}
+
+bool GnssEpochAligner::parseSource(const std::string& name, Source& out) {
+  if (name == "header") out = Source::Header;
+  else if (name == "tow_auto_offset") out = Source::TowAutoOffset;
+  else return false;
+  return true;
+}
+
+rclcpp::Time GnssEpochAligner::align(uint32_t week, double tow,
+                                     const rclcpp::Time& stamp,
+                                     std::string* warn) {
+  if (warn) warn->clear();
+  if (cfg_.source == Source::Header) return stamp;
+  // The RANGE matters, not just finiteness. gpst2time() happily accepts a tow
+  // of -1 or 604800 and returns a time one second before the week, or the
+  // first second of the next one; the measurement would then be applied a week
+  // away from where it belongs, and this function's contract ("on ANY fallback
+  // to Header, warn is set") would be broken by a path that never falls back.
+  // Same canonical range the epoch matcher rejects on
+  // (RoverBaseEpochMatcher::validTow).
+  if (week == 0 || !std::isfinite(tow) || tow < 0.0 || tow >= 604800.0) {
+    if (warn) *warn = "GNSS week/tow invalid - applying at header.stamp";
+    return stamp;
+  }
+  // All arithmetic in raw nanoseconds: gpstToUtcRosTime() returns a
+  // system-clock rclcpp::Time and mixing clock types in +/- throws.
+  const int64_t meas_ns =
+      gpstToUtcRosTime(gpst2time(static_cast<int>(week), tow)).nanoseconds();
+  const double d = (stamp.nanoseconds() - meas_ns) / 1e9;
+
+  // TowAutoOffset: sliding-window minimum of d_k. A backwards stamp step
+  // (bag replay restart) invalidates the history, so restart the window.
+  const double t_s = stamp.nanoseconds() / 1e9;
+  if (!offsets_.empty() && t_s < offsets_.back().first) offsets_.clear();
+  offsets_.emplace_back(t_s, d);
+  // size() > 1, not !empty(): the sample just pushed has age 0, so with a
+  // non-negative window the loop stops on its own - but offset_window_s is a
+  // plain ROS parameter (ekf.gnss_offset_window_s) with no validation, and a
+  // negative value would make `0 > window` true, empty the deque, and leave
+  // front() below dereferencing nothing. Keeping the newest sample makes that
+  // impossible whatever the configuration says.
+  while (offsets_.size() > 1 &&
+         t_s - offsets_.front().first > cfg_.offset_window_s) {
+    offsets_.pop_front();
+  }
+  double offset = offsets_.front().second;
+  for (const auto& p : offsets_) offset = std::min(offset, p.second);
+  return rclcpp::Time(meas_ns + static_cast<int64_t>(offset * 1e9),
+                      stamp.get_clock_type());
+}
+
 int canonicalGalCode(int code) {
   if (code & (1 << 8)) return (1 << 1) | (1 << 8);             // F/NAV
   if (code & (1 << 9)) return (1 << 0) | (1 << 2) | (1 << 9);  // I/NAV
@@ -449,12 +513,11 @@ void applyDopWithStaleness(gnss_ros_standardization::msg::GnssSolution& sol,
   sol.vdop = cache.vdop;
 }
 
-bool validatePublishRate(int& rate_hz, int fallback, const rclcpp::Logger& logger) {
+bool validatePublishRate(int& rate_hz, int fallback, int max_hz, const rclcpp::Logger& logger) {
   constexpr int kMin = 1;
-  constexpr int kMax = 20;
-  if (rate_hz < kMin || rate_hz > kMax) {
+  if (rate_hz < kMin || rate_hz > max_hz) {
     RCLCPP_WARN(logger, "publish/measurement rate %d Hz out of range [%d, %d] — clamping to %d Hz",
-                rate_hz, kMin, kMax, fallback);
+                rate_hz, kMin, max_hz, fallback);
     rate_hz = fallback;
     return false;
   }
@@ -499,7 +562,12 @@ int NmeaParser::parseInteger(const std::string& str) {
 double NmeaParser::parseCoordinate(const std::string& coord_str, const std::string& hem) {
   if (coord_str.empty() || hem.empty()) return 0.0;
 
-  double dot_pos = coord_str.find('.');
+  // std::size_t, not double. find() returns size_type, and npos is
+  // 2^64-1: routing it through a double makes the "not found" comparison
+  // depend on 2^64-1 and its double image round-tripping to the same value,
+  // and hands substr() a double to convert back. It happens to work for the
+  // short field an NMEA sentence carries, but nothing about it should.
+  const std::size_t dot_pos = coord_str.find('.');
   if (dot_pos == std::string::npos || dot_pos < 2) return 0.0;
 
   std::string deg_str = coord_str.substr(0, dot_pos - 2);
