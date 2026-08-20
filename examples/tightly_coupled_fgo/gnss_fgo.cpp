@@ -1143,23 +1143,20 @@ class GnssFgoNode : public rclcpp::Node {
     msg->pos_enu_org_ecef.x = origin[0];
     msg->pos_enu_org_ecef.y = origin[1];
     msg->pos_enu_org_ecef.z = origin[2];
-    // ENU reference lat/lon: the origin's when an origin is set, else the current
-    // position. The ENU displacement mean and its covariance MUST share this one
-    // reference so they describe the same axes (was: mean at origin, cov at the
-    // current position - a small but real inconsistency for a public API).
-    double enu_ref_lat = llh[0], enu_ref_lon = llh[1];
-    if (norm(origin, 3) > 0.0) {
-      double origin_llh[3];
-      ecef2pos(origin, origin_llh);
-      enu_ref_lat = origin_llh[0];
-      enu_ref_lon = origin_llh[1];
+    // The ENU position MEAN is anchored at the origin; every covariance and the
+    // velocity use the tangent plane at the CURRENT position. Those references
+    // are deliberately different - see gnss_fgo::EnuFrames for the contract and
+    // msg/GnssSolution.msg:71-86 for the definition. Do not "unify" them.
+    const gnss_fgo::EnuFrames enu = gnss_fgo::enuFrames(llh, origin);
+    if (enu.has_origin) {
+      const double origin_llh[3] = {enu.origin_lat, enu.origin_lon, 0.0};
       const double d_ecef[3] = {ecef[0] - origin[0], ecef[1] - origin[1],
                                 ecef[2] - origin[2]};
-      double enu[3];
-      ecef2enu(origin_llh, d_ecef, enu);
-      msg->pos_enu.x = enu[0];
-      msg->pos_enu.y = enu[1];
-      msg->pos_enu.z = enu[2];
+      double enu_pos[3];
+      ecef2enu(origin_llh, d_ecef, enu_pos);
+      msg->pos_enu.x = enu_pos[0];
+      msg->pos_enu.y = enu_pos[1];
+      msg->pos_enu.z = enu_pos[2];
     }
 
     double q_ecef[9];
@@ -1167,7 +1164,7 @@ class GnssFgoNode : public rclcpp::Node {
       for (int c = 0; c < 3; ++c) q_ecef[3 * r + c] = cov(r, c);
     }
     double q_enu[9];
-    gnss_utils::rotateCovariance(q_ecef, enu_ref_lat, enu_ref_lon, q_enu);
+    gnss_utils::rotateCovariance(q_ecef, enu.cur_lat, enu.cur_lon, q_enu);
     for (int i = 0; i < 9; ++i) msg->pos_enu_cov[i] = q_enu[i];
 
     // Doppler-derived rover velocity (ECEF + ENU), the same quantity that drives
@@ -1190,8 +1187,10 @@ class GnssFgoNode : public rclcpp::Node {
       for (int r = 0; r < 3; ++r) {
         for (int c = 0; c < 3; ++c) qv_ecef[3 * r + c] = ep.rover_vel_cov(r, c);
       }
+      // Same reference as vel_enu above (ecef2enu at `llh`), so the velocity
+      // and its covariance describe one set of axes.
       double qv_enu[9];
-      gnss_utils::rotateCovariance(qv_ecef, enu_ref_lat, enu_ref_lon, qv_enu);
+      gnss_utils::rotateCovariance(qv_ecef, enu.cur_lat, enu.cur_lon, qv_enu);
       for (int i = 0; i < 9; ++i) {
         msg->vel_cov_ecef[i] = qv_ecef[i];
         msg->vel_enu_cov[i] = qv_enu[i];

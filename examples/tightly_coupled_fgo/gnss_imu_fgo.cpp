@@ -50,6 +50,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <typeinfo>
 #include <vector>
@@ -204,7 +205,9 @@ class GnssImuFgoNode : public rclcpp::Node {
     intake_options.event_callbacks.message_lost_callback =
         [this](rclcpp::QOSMessageLostInfo& info) {
           n_obs_message_lost_ += info.total_count_change;
-          last_obs_loss_ctow_ = last_epoch_ctow_;
+          last_obs_loss_ctow_.store(
+              last_epoch_ctow_.load(std::memory_order_relaxed),
+              std::memory_order_relaxed);
         };
 
     // Deep, because a solve slower than the input period must not make the
@@ -349,13 +352,13 @@ class GnssImuFgoNode : public rclcpp::Node {
                 static_cast<unsigned long long>(batch_epochs_max_),
                 batch_hold_max_s_,
                 static_cast<unsigned long long>(batch_hold_max_epochs_));
-    if (n_late_epoch_suppressed_ > 0) {
+    if (slots_.suppressed() > 0) {
       RCLCPP_WARN(get_logger(),
                   "%llu epoch(s) arrived after their slot had been published "
                   "and were folded into the graph without re-publishing. Those "
                   "slots carry a dead-reckoned solution; the node is not "
                   "keeping up with the observation rate.",
-                  static_cast<unsigned long long>(n_late_epoch_suppressed_));
+                  static_cast<unsigned long long>(slots_.suppressed()));
     }
     if (n_coast_truncated_ > 0) {
       RCLCPP_WARN(get_logger(),
@@ -393,15 +396,17 @@ class GnssImuFgoNode : public rclcpp::Node {
     } else {
       RCLCPP_INFO(get_logger(), "No observation messages lost in transport.");
     }
+    const std::uint64_t n_rover_msgs =
+        n_rover_msgs_received_.load(std::memory_order_relaxed);
     RCLCPP_INFO(get_logger(),
                 "Epoch accounting: %llu rover message(s) received -> %llu "
                 "reached the estimator (%llu produced no epoch in the "
                 "preprocessor).",
-                static_cast<unsigned long long>(n_rover_msgs_received_),
+                static_cast<unsigned long long>(n_rover_msgs),
                 static_cast<unsigned long long>(n_epochs_in_),
                 static_cast<unsigned long long>(
-                    n_rover_msgs_received_ >= n_epochs_in_
-                        ? n_rover_msgs_received_ - n_epochs_in_ : 0));
+                    n_rover_msgs >= n_epochs_in_
+                        ? n_rover_msgs - n_epochs_in_ : 0));
     {
       using M = gnss_utils::RoverBaseEpochMatcher;
       const auto& c = preprocessor_->matcherCounters();
@@ -1016,8 +1021,10 @@ class GnssImuFgoNode : public rclcpp::Node {
     // necessarily processed): the decisive gate for the gap publisher - a grid
     // slot at or before this time has a real observation somewhere in the
     // pipeline, so synthesizing it would race (and duplicate) the real epoch.
-    latest_rover_ctow_ =
-        std::max(latest_rover_ctow_, msg->week * 604800.0 + msg->tow);
+    latest_rover_ctow_.store(
+        std::max(latest_rover_ctow_.load(std::memory_order_relaxed),
+                 msg->week * 604800.0 + msg->tow),
+        std::memory_order_relaxed);
     last_rover_arrival_imu_t_ = arrival_imu_t;
     preprocessor_->pushRoverObs(msg);
   }
@@ -1185,6 +1192,10 @@ class GnssImuFgoNode : public rclcpp::Node {
     // node publishes exactly one solution, including a DD-less one. A base
     // outage is therefore NOT this publisher's business.
     if (!gnss_interval_pinned_) { ++gap_exit_no_interval_; return; }
+    // ONE snapshot of the arrival front: read per use, the backlog guard and
+    // the slot loop below could arbitrate against different fronts.
+    const double latest_rover =
+        latest_rover_ctow_.load(std::memory_order_relaxed);
     if (!data_domain) {
       // Never coast past an epoch the pipeline is still holding: a non-empty
       // matcher queue means a real solution for an unpublished slot is still
@@ -1218,12 +1229,12 @@ class GnssImuFgoNode : public rclcpp::Node {
     // behind on a stream that IS arriving, so the graph will publish these
     // slots itself. The data-domain trigger skips it - there the slots are
     // known to have no observation, backlog or not.
-    if (!data_domain && latest_rover_ctow_ >
+    if (!data_domain && latest_rover >
         last_week_ * 604800.0 + last_tow_ + 1.5 * gnss_interval_s_) {
       ++gap_exit_backlog_;
       gap_backlog_max_s_ = std::max(
           gap_backlog_max_s_,
-          latest_rover_ctow_ - (last_week_ * 604800.0 + last_tow_));
+          latest_rover - (last_week_ * 604800.0 + last_tow_));
       return;
     }
     ++gap_reached_loop_;
@@ -1372,26 +1383,29 @@ class GnssImuFgoNode : public rclcpp::Node {
         ++week;
       }
       const double slot_ctow = week * 604800.0 + tow;
+      // Stop coasting once the dead-reckoned solution has outlived its value.
+      // An unbounded coast is not a service: it emits a confident-looking
+      // position that is only inertial drift, and in live operation (no bag to
+      // end the run) it would do so for as long as the observations stay away.
+      //
+      // BEFORE the claim: claiming commits the high-water mark, so breaking out
+      // afterwards would consume a slot without publishing it and silence the
+      // real epoch that later arrives for it.
+      if (last_dd_ctow_ > 0.0 && slot_ctow - last_dd_ctow_ > max_coast_s_) {
+        ++n_coast_truncated_;
+        break;
+      }
       // The slot must have no owner: never re-emit an epoch already published,
       // and never take a slot a received rover epoch will publish for. Without
       // the first test the loop re-marches the whole span from the last real
       // epoch on every call (measured once: 261 231 solutions over 17 263
       // distinct epochs, one slot emitted 108 times, a 331 MB output bag).
-      // latest_rover_ctow_ is the live path's "an epoch may still be in the
-      // pipeline" test; -1.0 disables just that clause for the data-domain
-      // path, which already has direct evidence.
-      if (!gnss_fgo::gapSlotIsFree(slot_ctow,
-                                   data_domain ? -1.0 : latest_rover_ctow_,
-                                   last_pub_ctow_))
+      // `latest_rover` (the snapshot taken once at the top of this call) is
+      // the live path's "an epoch may still be in the pipeline" test; -1.0
+      // disables just that clause for the data-domain path, which already has
+      // direct evidence.
+      if (!slots_.claim(slot_ctow, data_domain ? -1.0 : latest_rover))
         continue;
-      // Stop coasting once the dead-reckoned solution has outlived its value.
-      // An unbounded coast is not a service: it emits a confident-looking
-      // position that is only inertial drift, and in live operation (no bag to
-      // end the run) it would do so for as long as the observations stay away.
-      if (last_dd_ctow_ > 0.0 && slot_ctow - last_dd_ctow_ > max_coast_s_) {
-        ++n_coast_truncated_;
-        break;
-      }
       gnss_utils::PreprocessedEpoch fake;
       fake.week = week;
       fake.tow = tow;
@@ -1401,8 +1415,6 @@ class GnssImuFgoNode : public rclcpp::Node {
       const rclcpp::Time stamp(static_cast<int64_t>(t_pred * 1e9),
                                epoch_clock_type_);
       const Eigen::Vector3d pos(ant_ecef.x(), ant_ecef.y(), ant_ecef.z());
-      publishSolution(fake, stamp, pos, cov, pred.velocity(), vel_cov,
-                      grs::GnssSolution::STATUS_FLOAT, 0.0);
       // Odometry with the coasted pose; tangent covariance approximated by the
       // last posterior plus the preintegrated rotation/position blocks.
       Eigen::MatrixXd pose_cov(6, 6);
@@ -1416,6 +1428,19 @@ class GnssImuFgoNode : public rclcpp::Node {
             Eigen::Matrix3d::Identity() *
                 (kPredictFallbackPosStdM * kPredictFallbackPosStdM);
       }
+      // Dead reckoning has no joint posterior over the PREDICTED state (pred9
+      // is 9x9 and carries no bias block), so the antenna velocity covariance
+      // takes the block-diagonal fallback here.
+      gnss_fgo::AntennaVelocityCov avc;
+      avc.vel_nav = vel_cov;
+      avc.rot = pose_cov.topLeftCorner<3, 3>();
+      if (last_state_cov15_ok_)
+        avc.bias_gyro = last_state_cov15_.block<3, 3>(12, 12);
+      avc.sigma_gyr = last_imu_valid_ ? imu_sigma_gyr_ : 0.0;
+      const gnss_fgo::AntennaVelocity ant_vel = gnss_fgo::antennaVelocityNav(
+          pred.pose().rotation(), pred.velocity(), omegaBody(), lever_arm_, avc);
+      publishSolution(fake, stamp, pos, cov, ant_vel.v_nav, ant_vel.cov_nav,
+                      grs::GnssSolution::STATUS_FLOAT, 0.0);
       publishOdometry(stamp, pred.pose(), pose_cov, pred.velocity(), vel_cov);
       ++n_predicted_pub_;
       ++n_published_;
@@ -1484,9 +1509,10 @@ class GnssImuFgoNode : public rclcpp::Node {
            ms_marginal = 0.0;
     double ms_ar = 0.0, ms_hold = 0.0;
     // ms_hold covers BOTH the applyHolds update and the state re-fetch that
-    // follows it (2 calculateEstimate + 2 marginalCovariance). Split them,
+    // follows it (3 calculateEstimate + 1 jointMarginalCovariance). Split them,
     // because which one dominates decides whether merging the update into
-    // the next epoch is worth anything at all.
+    // the next epoch is worth anything at all - and because the re-fetch now
+    // runs on FIX epochs too, which is where holds actually change.
     double ms_hold_update = 0.0, ms_hold_refetch = 0.0;
     // The auto-offset estimate can step down between epochs; keep the epoch
     // chain strictly monotonic so the integration interval stays valid.
@@ -1740,7 +1766,7 @@ class GnssImuFgoNode : public rclcpp::Node {
     //     a-priori but not at the predicted state (prediction_fault), or
     //   - GNSS has been unusable long enough that the coast error is unbounded.
     const double ctow = ep.week * 604800.0 + ep.tow;
-    last_epoch_ctow_ = ctow;
+    last_epoch_ctow_.store(ctow, std::memory_order_relaxed);
     // ...and a third state that is NEITHER: the observations were fine but the
     // middleware dropped them. The coast error is then bounded by the real
     // elapsed time, the sky never went away, and the carried arcs are still
@@ -1751,7 +1777,8 @@ class GnssImuFgoNode : public rclcpp::Node {
     // middleware losing it and the matcher discarding it - because either one
     // means the sky was fine.
     const double last_delivery_gap_ctow =
-        std::max(last_obs_loss_ctow_, last_epoch_drop_ctow_);
+        std::max(last_obs_loss_ctow_.load(std::memory_order_relaxed),
+                 last_epoch_drop_ctow_);
     const bool recent_obs_loss =
         last_delivery_gap_ctow > 0.0 &&
         (ctow - last_delivery_gap_ctow) <= kReanchorGapS;
@@ -1870,7 +1897,7 @@ class GnssImuFgoNode : public rclcpp::Node {
       // term R*(w x l) to observe the body-origin velocity V(k).
       gtsam::Vector3 vel_enu = R_e_n.transpose() * ep.rover_vel_ecef;
       if (lever_arm_.norm() > 0.0 && last_imu_valid_) {
-        const Eigen::Vector3d w = last_imu_.gyr - prev_bias_.gyroscope();
+        const Eigen::Vector3d w = omegaBody();
         vel_enu -= predicted.pose().rotation().matrix() *
                    w.cross(Eigen::Vector3d(lever_arm_));
       }
@@ -1930,9 +1957,7 @@ class GnssImuFgoNode : public rclcpp::Node {
     // valid this epoch (use_imu) and the attitude has not just been re-anchored.
     if (use_imu && !reanchor) {
       const double speed = predicted.velocity().norm();
-      const Eigen::Vector3d omega_body =
-          last_imu_valid_ ? Eigen::Vector3d(last_imu_.gyr - prev_bias_.gyroscope())
-                          : Eigen::Vector3d::Zero();
+      const Eigen::Vector3d omega_body = omegaBody();
       // Velocity-direction attitude aiding. Uses the Doppler velocity gated
       // above, so an epoch whose Doppler was rejected supplies no heading
       // either. The IMU chain constrains the yaw RATE, not the absolute yaw, so
@@ -2028,6 +2053,11 @@ class GnssImuFgoNode : public rclcpp::Node {
     // gate's prediction (see the gate block in the next processEpoch).
     Eigen::MatrixXd state_cov15;
     bool state_cov15_ok = false;
+    // The bias belonging to the SAME posterior as pose/vel/state_cov15. Filled
+    // from ONE query in the hold block below, so the state carried forward can
+    // never pair a pre-hold pose with a post-hold bias.
+    gtsam::imuBias::ConstantBias epoch_bias;
+    bool epoch_bias_ok = false;
     // Built here (not below) because its joint marginal already CONTAINS the
     // X and V marginal blocks: taking them from it removes two per-epoch
     // marginalCovariance() solves, each of which repeats the same clique-tree
@@ -2246,37 +2276,82 @@ class GnssImuFgoNode : public rclcpp::Node {
         tryInitialize(ep, t_ros);  // re-anchor on THIS epoch (warm: no wait)
         return;
       }
-      // Re-read the now-tightened state only when this epoch PUBLISHES it. On a
-      // FIX epoch every published quantity comes from the integer-conditioned
-      // posterior instead (see the fixed_* swap below), so the two
-      // marginalCovariance calls here would spend ~100 ms in the tail
-      // refreshing values whose only consumers - prev_state_ and last_*_cov_ -
-      // are re-derived next epoch anyway. Holds form only after
-      // min_fix_to_hold consecutive fixes, so they change almost exclusively on
-      // FIX epochs: this skip drops most of the cost and none of the output.
-      if (hr == gnss_fgo::HoldResult::Success &&
-          status != grs::GnssSolution::STATUS_FIX) {
+      // Re-read the state whenever the hold update MOVED the graph (Success;
+      // NoChange is its own value), on FIX epochs TOO. The published FIX stays
+      // the analytical integer-conditioned position - pub_pos/pub_cov are not
+      // touched on that path - but everything CARRIED FORWARD must belong to
+      // ONE posterior. Skipping FIX, where holds almost always change, left
+      // prev_state_ pre-hold beside a separately re-queried post-hold bias.
+      //
+      // ONE jointMarginalCovariance rather than two marginalCovariance calls:
+      // the same clique-tree shortcut work, and it also yields the 15x15 the
+      // next epoch's gate needs, which neither branch used to refresh at all.
+      if (hr == gnss_fgo::HoldResult::Success) {
         try {
-          pose = smoother_->calculateEstimate<gtsam::Pose3>(xk);
-          vel = smoother_->calculateEstimate<gtsam::Vector3>(vk);
-          pose_cov = smoother_->marginalCovariance(xk);
-          vel_cov = smoother_->marginalCovariance(vk);
-          antennaFromPose(pose, pose_cov, pub_pos, pub_cov);
+          const gtsam::Pose3 post_pose =
+              smoother_->calculateEstimate<gtsam::Pose3>(xk);
+          const gtsam::Vector3 post_vel =
+              smoother_->calculateEstimate<gtsam::Vector3>(vk);
+          const auto post_bias =
+              smoother_->calculateEstimate<gtsam::imuBias::ConstantBias>(bk);
+          const gtsam::JointMarginal jm =
+              smoother_->getISAM2().jointMarginalCovariance({xk, vk, bk});
+          const std::array<gtsam::Key, 3> sk{xk, vk, bk};
+          const std::array<int, 3> dim{6, 3, 6};
+          const std::array<int, 3> off{0, 6, 9};
+          Eigen::MatrixXd post_cov15 = Eigen::MatrixXd::Zero(15, 15);
+          for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+              post_cov15.block(off[i], off[j], dim[i], dim[j]) =
+                  jm.at(sk[i], sk[j]);
+          if (!post_cov15.allFinite())
+            throw std::runtime_error("non-finite post-hold joint marginal");
+          // Commit as a unit - either the whole posterior is replaced or none
+          // of it is, so a throw halfway cannot leave a mixed state behind.
+          pose = post_pose;
+          vel = post_vel;
+          epoch_bias = post_bias;
+          epoch_bias_ok = true;
+          pose_cov = post_cov15.topLeftCorner<6, 6>();
+          vel_cov = post_cov15.block<3, 3>(6, 6);
+          state_cov15 = post_cov15;
+          state_cov15_ok = true;
+          // A FIX publishes the analytical integer-conditioned antenna, so only
+          // a FLOAT refreshes the published position from the tightened graph.
+          if (status != grs::GnssSolution::STATUS_FIX)
+            antennaFromPose(pose, pose_cov, pub_pos, pub_cov);
         } catch (const gtsam::IndeterminantLinearSystemException& e) {
           // The hold UPDATE succeeded; only this refresh QUERY failed
           // (numerically extreme conditioning on a long arc can break the
-          // marginal shortcut computation). Keep the pre-hold estimates and
-          // continue - reinitializing would discard every carried arc over a
-          // read-only failure. A genuinely corrupted graph still resets at
-          // the next epoch's update.
+          // marginal shortcut computation). Reinitializing would discard every
+          // carried arc over a read-only failure, and a genuinely corrupted
+          // graph still resets at the next epoch's update - so keep the
+          // pre-hold estimates, which are ONE consistent posterior, and
+          // invalidate the caches that would otherwise claim to be post-hold.
           RCLCPP_WARN(get_logger(),
                       "Post-hold estimate failed (%s) - keeping pre-hold "
                       "estimates.", e.what());
           dumpKeyDiagnostics(e.nearbyVariable());
+          state_cov15_ok = false;
         } catch (const std::exception& e) {
           RCLCPP_WARN(get_logger(),
                       "Post-hold estimate failed (%s) - keeping pre-hold "
                       "estimates.", e.what());
+          state_cov15_ok = false;
+        }
+        // epoch_bias_ok stays false: querying here would hand the POST-hold
+        // bias to the PRE-hold pose, the mixture this block exists to prevent.
+        // The previous epoch's bias is carried instead - stale, but a value of
+        // the same slowly-varying random-walk state.
+      } else {
+        // NoChange: the graph has not moved since pose/vel/state_cov15 were
+        // read above, so one bias query completes that same posterior.
+        try {
+          epoch_bias =
+              smoother_->calculateEstimate<gtsam::imuBias::ConstantBias>(bk);
+          epoch_bias_ok = true;
+        } catch (const std::exception&) {
+          // Keep the previous bias estimate on a degenerate query.
         }
       }
       ms_hold_refetch = ms_since(t_refetch);
@@ -2306,11 +2381,42 @@ class GnssImuFgoNode : public rclcpp::Node {
       odom_vel = fixed_vel;
       odom_vel_cov = fixed_vel_cov;
     }
-    publishSolution(ep, stamp_pub, pub_pos, pub_cov, odom_vel, odom_vel_cov,
-                    status, ratio);
-    publishOdometry(stamp_pub, odom_pose, odom_pose_cov, odom_vel,
-                    odom_vel_cov);
-    ++n_published_;
+    // GnssSolution names the ANTENNA phase center, Odometry the body origin:
+    // one state, two physical points, so the velocity is converted for the
+    // former and passed through for the latter.
+    gnss_fgo::AntennaVelocityCov avc;
+    avc.vel_nav = odom_vel_cov;
+    avc.rot = odom_pose_cov.topLeftCorner<3, 3>();
+    if (state_cov15_ok) avc.bias_gyro = state_cov15.block<3, 3>(12, 12);
+    avc.sigma_gyr = last_imu_valid_ ? imu_sigma_gyr_ : 0.0;
+    // The joint posterior describes the FLOAT state; a FIX publishes the
+    // integer-conditioned velocity, whose posterior is 3x3, so it takes the
+    // block-diagonal fallback. The gyro-bias block stays the float's - AR
+    // conditions the ambiguities, not the IMU bias.
+    if (status != grs::GnssSolution::STATUS_FIX) {
+      avc.joint = state_cov15;
+      avc.joint_ok = state_cov15_ok;
+    }
+    const gnss_fgo::AntennaVelocity ant_vel = gnss_fgo::antennaVelocityNav(
+        odom_pose.rotation(), odom_vel, omegaBody(), lever_arm_, avc);
+
+    // One decision for the whole epoch. A slot the gap publisher already filled
+    // is not re-published on EITHER topic - the epoch has still entered the
+    // graph above and improves every later epoch, it just produces no output.
+    if (slots_.claim(ctow)) {
+      publishSolution(ep, stamp_pub, pub_pos, pub_cov, ant_vel.v_nav,
+                      ant_vel.cov_nav, status, ratio);
+      publishOdometry(stamp_pub, odom_pose, odom_pose_cov, odom_vel,
+                      odom_vel_cov);
+      ++n_published_;
+    } else {
+      RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 10000,
+          "Epoch GPST %.3f arrived after its slot was already published "
+          "(%llu so far); folded into the graph but not re-published. A rising "
+          "count means the node is not keeping up with the observation rate.",
+          ctow, static_cast<unsigned long long>(slots_.suppressed()));
+    }
 
     // Health summary on a throttle as well as at shutdown. A node fed by a
     // live decoder may run for weeks and never reach its destructor, so a
@@ -2321,14 +2427,15 @@ class GnssImuFgoNode : public rclcpp::Node {
         "Health: %llu rover msg received, %llu epoch(s) solved, %llu "
         "dead-reckoned (%.1f%% of output), %llu coast truncation(s), "
         "%llu late epoch(s) not re-published.",
-        static_cast<unsigned long long>(n_rover_msgs_received_),
+        static_cast<unsigned long long>(
+            n_rover_msgs_received_.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(n_published_ - n_predicted_pub_),
         static_cast<unsigned long long>(n_predicted_pub_),
         n_published_ > 0 ? 100.0 * static_cast<double>(n_predicted_pub_) /
                                static_cast<double>(n_published_)
                          : 0.0,
         static_cast<unsigned long long>(n_coast_truncated_),
-        static_cast<unsigned long long>(n_late_epoch_suppressed_));
+        static_cast<unsigned long long>(slots_.suppressed()));
 
     // Context for the gap dead-reckoning publisher: rover grid interval,
     // week/tow anchor, base for the ENU origin, and the posterior pose cov.
@@ -2369,12 +2476,11 @@ class GnssImuFgoNode : public rclcpp::Node {
     if (state_cov15_ok) last_state_cov15_ = state_cov15;
     n_pred_since_epoch_ = 0;
 
+    // pose, vel, epoch_bias, pose_cov, vel_cov and state_cov15 above all come
+    // from ONE posterior (see the hold block) - never a pre-hold pose beside a
+    // post-hold bias.
     prev_state_ = gtsam::NavState(pose, vel);
-    try {
-      prev_bias_ = smoother_->calculateEstimate<gtsam::imuBias::ConstantBias>(bk);
-    } catch (const std::exception&) {
-      // Keep the previous bias estimate on a degenerate query.
-    }
+    if (epoch_bias_ok) prev_bias_ = epoch_bias;
     prev_t_ros_ = t_ros;
     // Keep the analytical fixed position out of the next epoch's elevation
     // mask / linearization prior. A wrong integer hypothesis would otherwise
@@ -2811,10 +2917,22 @@ class GnssImuFgoNode : public rclcpp::Node {
 
     const rclcpp::Time stamp(static_cast<int64_t>(t_ros * 1e9),
                              epoch_clock_type_);
-    publishSolution(ep, stamp, pos, cov, vel, vel_cov,
-                    grs::GnssSolution::STATUS_FLOAT, 0.0);
-    publishOdometry(stamp, pose, pose_cov, vel, vel_cov);
-    ++n_published_;
+    // Initialization posterior: separate marginals only, so the antenna
+    // velocity covariance takes the block-diagonal fallback.
+    gnss_fgo::AntennaVelocityCov avc;
+    avc.vel_nav = vel_cov;
+    avc.rot = pose_cov.topLeftCorner<3, 3>();
+    if (last_state_cov15_ok_)
+      avc.bias_gyro = last_state_cov15_.block<3, 3>(12, 12);
+    avc.sigma_gyr = last_imu_valid_ ? imu_sigma_gyr_ : 0.0;
+    const gnss_fgo::AntennaVelocity ant_vel = gnss_fgo::antennaVelocityNav(
+        pose.rotation(), vel, omegaBody(), lever_arm_, avc);
+    if (slots_.claim(ep.week * 604800.0 + ep.tow)) {
+      publishSolution(ep, stamp, pos, cov, ant_vel.v_nav, ant_vel.cov_nav,
+                      grs::GnssSolution::STATUS_FLOAT, 0.0);
+      publishOdometry(stamp, pose, pose_cov, vel, vel_cov);
+      ++n_published_;
+    }
   }
 
   // Diagnostic dump for an IndeterminantLinearSystemException: list every live
@@ -2867,37 +2985,26 @@ class GnssImuFgoNode : public rclcpp::Node {
     yaw_align_vote_.reset();
   }
 
-  // FRAMES OF THE COVARIANCE ARGUMENTS, because they differ and the difference
-  // has already produced one double-rotation bug:
-  //   pos_cov_ecef : ECEF. Published as-is.
-  //   vel_cov_enu  : ENU (nav-at-anchor). This function applies R_e_n itself,
-  //                  so passing an ECEF covariance rotates it twice.
+  // FRAMES AND PHYSICAL POINTS OF THE ARGUMENTS, because they differ and the
+  // difference has already produced one double-rotation bug:
+  //   pos_ecef / pos_cov_ecef       : ANTENNA phase center, ECEF, published
+  //                                   as-is; the ENU forms are derived here.
+  //   vel_ant_nav / vel_cov_ant_nav : ANTENNA phase center, NAV frame. This
+  //                                   function applies R_e_n itself, so an
+  //                                   ECEF argument would be rotated twice.
+  // Callers build the antenna velocity with gnss_fgo::antennaVelocityNav: the
+  // graph's V(k) is the BODY origin and belongs in Odometry, not here.
+  // Pure message formatter: it does NOT decide whether to publish. Slot
+  // ownership is settled by slots_.claim() in the caller, once, before any of
+  // this epoch's outputs are sent - so GnssSolution, Odometry and the publish
+  // counters can never disagree about whether the epoch produced output.
   void publishSolution(const gnss_utils::PreprocessedEpoch& ep,
                        const rclcpp::Time& stamp,
                        const Eigen::Vector3d& pos_ecef,
                        const Eigen::Matrix3d& pos_cov_ecef,
-                       const gtsam::Vector3& vel_enu,
-                       const Eigen::Matrix3d& vel_cov_enu, uint8_t status,
+                       const gtsam::Vector3& vel_ant_nav,
+                       const Eigen::Matrix3d& vel_cov_ant_nav, uint8_t status,
                        double ratio) {
-    // ONE SOLUTION PER EPOCH. The output is a function of the SLOT, not of the
-    // event that filled it: whichever path reaches a slot first owns it, and
-    // normally that is the real epoch. An observation arriving after the gap
-    // publisher has claimed its slot still enters the graph and improves every
-    // later epoch; it simply does not re-publish a slot the consumer already
-    // has, because the message contract offers no way to retract one.
-    const double pub_ctow = ep.week * 604800.0 + ep.tow;
-    if (pub_ctow <= last_pub_ctow_ + 1e-3) {
-      ++n_late_epoch_suppressed_;
-      RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 10000,
-          "Epoch GPST %.3f arrived after its slot was already published "
-          "(%llu so far); folded into the graph but not re-published. A rising "
-          "count means the node is not keeping up with the observation rate.",
-          pub_ctow,
-          static_cast<unsigned long long>(n_late_epoch_suppressed_));
-      return;
-    }
-    last_pub_ctow_ = pub_ctow;
     auto msg = std::make_unique<grs::GnssSolution>();
     // The aligned observation epoch time (not now()): keeps the solution's
     // header time tied to the measurement epoch, so a downstream time-aligned
@@ -2957,21 +3064,20 @@ class GnssImuFgoNode : public rclcpp::Node {
     msg->pos_enu_org_ecef.x = origin[0];
     msg->pos_enu_org_ecef.y = origin[1];
     msg->pos_enu_org_ecef.z = origin[2];
-    // ENU position mean and its covariance share ONE reference lat/lon (the
-    // origin's when set, else the current position); was mean@origin, cov@current.
-    double enu_ref_lat = llh[0], enu_ref_lon = llh[1];
-    if (norm(origin, 3) > 0.0) {
-      double origin_llh[3];
-      ecef2pos(origin, origin_llh);
-      enu_ref_lat = origin_llh[0];
-      enu_ref_lon = origin_llh[1];
+    // The ENU position MEAN is anchored at the origin; every covariance and the
+    // velocity use the tangent plane at the CURRENT antenna position. Those
+    // references are deliberately different - see gnss_fgo::EnuFrames for the
+    // contract and msg/GnssSolution.msg:71-86. Do not "unify" them.
+    const gnss_fgo::EnuFrames enu = gnss_fgo::enuFrames(llh, origin);
+    if (enu.has_origin) {
+      const double origin_llh[3] = {enu.origin_lat, enu.origin_lon, 0.0};
       const double d_ecef[3] = {ecef[0] - origin[0], ecef[1] - origin[1],
                                 ecef[2] - origin[2]};
-      double enu[3];
-      ecef2enu(origin_llh, d_ecef, enu);
-      msg->pos_enu.x = enu[0];
-      msg->pos_enu.y = enu[1];
-      msg->pos_enu.z = enu[2];
+      double enu_pos[3];
+      ecef2enu(origin_llh, d_ecef, enu_pos);
+      msg->pos_enu.x = enu_pos[0];
+      msg->pos_enu.y = enu_pos[1];
+      msg->pos_enu.z = enu_pos[2];
     }
 
     double q_ecef[9];
@@ -2979,27 +3085,36 @@ class GnssImuFgoNode : public rclcpp::Node {
       for (int c = 0; c < 3; ++c) q_ecef[3 * r + c] = pos_cov_ecef(r, c);
     }
     double q_enu[9];
-    gnss_utils::rotateCovariance(q_ecef, enu_ref_lat, enu_ref_lon, q_enu);
+    gnss_utils::rotateCovariance(q_ecef, enu.cur_lat, enu.cur_lon, q_enu);
     for (int i = 0; i < 9; ++i) msg->pos_enu_cov[i] = q_enu[i];
 
-    msg->vel_enu.x = vel_enu.x();
-    msg->vel_enu.y = vel_enu.y();
-    msg->vel_enu.z = vel_enu.z();
-    // Velocity is a nav-frame (ENU-at-anchor) vector; the ECEF mean AND its
-    // covariance use the SAME anchor rotation R_e_n (was: mean via R_e_n, cov via
-    // the current-position lat/lon - a different ENU frame).
+    // The antenna velocity arrives in the nav frame (ENU at the anchor). ECEF
+    // uses the anchor rotation; vel_enu / vel_enu_cov are then BOTH taken at
+    // the current antenna position, per the message contract, so the published
+    // velocity and its covariance describe one set of axes.
     const Eigen::Matrix3d R_e_n = ecef_T_nav_.rotation().matrix();
-    const Eigen::Vector3d vel_ecef = R_e_n * Eigen::Vector3d(vel_enu);
+    const Eigen::Vector3d vel_ecef = R_e_n * Eigen::Vector3d(vel_ant_nav);
     msg->vel_ecef.x = vel_ecef.x();
     msg->vel_ecef.y = vel_ecef.y();
     msg->vel_ecef.z = vel_ecef.z();
-    const Eigen::Matrix3d vel_cov_ecef = R_e_n * vel_cov_enu * R_e_n.transpose();
+    const Eigen::Matrix3d vel_cov_ecef =
+        R_e_n * vel_cov_ant_nav * R_e_n.transpose();
+    double qv_ecef[9];
     for (int r = 0; r < 3; ++r) {
       for (int c = 0; c < 3; ++c) {
-        msg->vel_enu_cov[3 * r + c] = vel_cov_enu(r, c);
         msg->vel_cov_ecef[3 * r + c] = vel_cov_ecef(r, c);
+        qv_ecef[3 * r + c] = vel_cov_ecef(r, c);
       }
     }
+    const double v_ecef[3] = {vel_ecef.x(), vel_ecef.y(), vel_ecef.z()};
+    double v_enu[3];
+    ecef2enu(llh, v_ecef, v_enu);
+    msg->vel_enu.x = v_enu[0];
+    msg->vel_enu.y = v_enu[1];
+    msg->vel_enu.z = v_enu[2];
+    double qv_enu[9];
+    gnss_utils::rotateCovariance(qv_ecef, enu.cur_lat, enu.cur_lon, qv_enu);
+    for (int i = 0; i < 9; ++i) msg->vel_enu_cov[i] = qv_enu[i];
 
     sol_pub_->publish(std::move(msg));
   }
@@ -3062,10 +3177,7 @@ class GnssImuFgoNode : public rclcpp::Node {
     // Angular velocity (body frame): the bias-corrected latest gyro, with the
     // gyro noise density as its covariance. Without this the twist.angular reads
     // as an authoritative zero with zero covariance, which a consumer would trust.
-    const Eigen::Vector3d omega_body =
-        last_imu_valid_
-            ? Eigen::Vector3d(last_imu_.gyr - prev_bias_.gyroscope())
-            : Eigen::Vector3d::Zero();
+    const Eigen::Vector3d omega_body = omegaBody();
     odom.twist.twist.angular.x = omega_body.x();
     odom.twist.twist.angular.y = omega_body.y();
     odom.twist.twist.angular.z = omega_body.z();
@@ -3076,20 +3188,30 @@ class GnssImuFgoNode : public rclcpp::Node {
     odom_pub_->publish(odom);
   }
 
+  // Bias-corrected body angular rate. ONE definition, shared by the Doppler
+  // lever-arm removal, the motion pseudo-measurements, the published antenna
+  // velocity and the Odometry twist.angular - so those four cannot disagree
+  // about how fast the body is turning. Solver-owned state; no lock needed.
+  Eigen::Vector3d omegaBody() const {
+    return last_imu_valid_
+               ? Eigen::Vector3d(last_imu_.gyr - prev_bias_.gyroscope())
+               : Eigen::Vector3d::Zero();
+  }
+
   // Lock order where both are needed: mtx_ then intake_mtx_. Intake takes
   // intake_mtx_ ONLY, so a solve holding mtx_ never blocks it.
   std::mutex mtx_;         // estimator state (smoother_, prev_*, pending_epochs_)
-  std::mutex intake_mtx_;  // preprocessor_ queues, latest_rover_ctow_
+  // preprocessor_ queues, and the read-modify-write of the atomic
+  // latest_rover_ctow_ / last_rover_arrival_imu_t_ pair against other intake.
+  std::mutex intake_mtx_;
   std::mutex imu_mtx_;
   // Debug-only base-arrival trace (see onBaseObs); null unless
   // debug.ar_dump_dir is set.
   std::FILE* base_trace_{nullptr};
-  // Dead-reckoning bounds (see publishPredictedGaps).
-  double last_pub_ctow_{-1.0};  // highest epoch ever published
-  // Epochs whose slot had already been published when they arrived. Used by the
-  // graph, not re-published (see publishSolution). A quality signal that the
-  // node is behind, not a defect.
-  std::uint64_t n_late_epoch_suppressed_{0};
+  // Slot ownership for BOTH publishers - the one place that decides whether an
+  // epoch produces output. Also the dead-reckoning high-water mark (see
+  // publishPredictedGaps).
+  gnss_fgo::EpochSlotArbiter slots_;
   double max_coast_s_{30.0};    // gap.max_coast_s
 
   std::uint64_t n_coast_truncated_{0};
@@ -3145,8 +3267,13 @@ class GnssImuFgoNode : public rclcpp::Node {
   // the epoch time of the most recent loss. The latter separates a TRANSPORT
   // gap from a real GNSS outage in the starvation trigger above.
   std::atomic<std::uint64_t> n_obs_message_lost_{0};
-  double last_obs_loss_ctow_{-1.0};
-  double last_epoch_ctow_{-1.0};
+  // These cross the intake/solver boundary in OPPOSITE directions: the
+  // message-lost event reads last_epoch_ctow_, which processEpoch writes, and
+  // last_obs_loss_ctow_ travels back to gate the re-anchor. Atomic rather than
+  // mutex-guarded because the solver reads them while holding mtx_, and taking
+  // intake_mtx_ there would let a long solve block intake.
+  std::atomic<double> last_obs_loss_ctow_{-1.0};
+  std::atomic<double> last_epoch_ctow_{-1.0};
   // Epochs the MATCHER discarded (queue overflow, late arrival, ...). These
   // never reach processEpoch, so they are the other way an epoch can go
   // missing without the middleware reporting anything lost.
@@ -3156,7 +3283,8 @@ class GnssImuFgoNode : public rclcpp::Node {
   // against the epochs that reached processEpoch, this separates "the message
   // never arrived" from "the preprocessor did not emit an epoch for it" -
   // which are different bugs with different fixes.
-  std::uint64_t n_rover_msgs_received_{0};
+  // Written on intake_group_, read on solver_group_ by the health log.
+  std::atomic<std::uint64_t> n_rover_msgs_received_{0};
   std::uint64_t n_epochs_emitted_{0};  // PreprocessedEpochs out of drainEpochs
   // One gap-triggered re-anchor per outage; cleared when DDs reach the graph.
   gnss_fgo::GapReanchorLatch gap_latch_;
@@ -3203,8 +3331,11 @@ class GnssImuFgoNode : public rclcpp::Node {
   std::uint64_t batch_epochs_max_{0}, batch_hold_max_epochs_{0};
   double batch_hold_max_s_{0.0};
   std::size_t batch_processed_{0};  // epochs handled by the current tick
-  // Guarded by intake_mtx_, written by intake only.
-  double latest_rover_ctow_{-1.0};  // newest RECEIVED rover obs [GPST cont. s]
+  // Newest RECEIVED rover obs [GPST cont. s]. Written on intake_group_ under
+  // intake_mtx_ (which serialises the read-modify-write), read on solver_group_
+  // without it. Gates gap slot ownership, so a stale read lets the gap
+  // publisher claim a slot the real epoch is about to fill.
+  std::atomic<double> latest_rover_ctow_{-1.0};
   // IMU watermark when the newest rover observation arrived; the anchor the
   // outage verdict measures silence from (see gapSlotIsUnobserved).
   double last_rover_arrival_imu_t_{

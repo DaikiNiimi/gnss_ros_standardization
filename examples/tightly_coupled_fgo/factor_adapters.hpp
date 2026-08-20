@@ -2519,6 +2519,50 @@ inline ConditionedNavState makeConditionedNavState(
   return out;
 }
 
+// --- GnssSolution ENU frame contract ----------------------------------------
+
+// WHICH TANGENT PLANE EACH ENU FIELD OF GnssSolution USES.
+//
+// The references are DELIBERATELY different, and this has been "unified" twice
+// by mistake, so it lives in one tested place. Per msg/GnssSolution.msg:71-86:
+//
+//   pos_enu     -> tangent plane at pos_enu_org_ecef (the ANCHOR), because a
+//                  local trajectory must accumulate against a fixed frame.
+//   pos_enu_cov -> tangent plane at the CURRENT receiver position.
+//   vel_enu     -> tangent plane at the CURRENT receiver position.
+//   vel_enu_cov -> tangent plane at the CURRENT receiver position.
+//
+// The covariance convention is the receiver one (u-blox NAV-COV NED, NovAtel
+// BESTPOS stddev, Septentrio PosCovGeodetic) and RTKLIB .pos sdn/sde/sdu, which
+// every other producer here already follows. The two planes differ by
+// baseline/R_earth; use pos_cov_ecef when strict frame consistency matters.
+struct EnuFrames {
+  // False when no origin is configured and no base station has been seen; the
+  // caller must then leave pos_enu at zero, having no frame to express it in.
+  bool has_origin{false};
+  double origin_lat{0.0}, origin_lon{0.0};  // anchors pos_enu ONLY
+  double cur_lat{0.0}, cur_lon{0.0};        // every covariance, and vel_enu
+};
+
+// `cur_llh` is the published position as {lat_rad, lon_rad, height}; the
+// origin is ECEF metres, all-zero meaning "not set".
+inline EnuFrames enuFrames(const double cur_llh[3], const double origin_ecef[3]) {
+  EnuFrames f;
+  f.cur_lat = cur_llh[0];
+  f.cur_lon = cur_llh[1];
+  const double n = std::sqrt(origin_ecef[0] * origin_ecef[0] +
+                             origin_ecef[1] * origin_ecef[1] +
+                             origin_ecef[2] * origin_ecef[2]);
+  if (n > 0.0) {
+    double origin_llh[3];
+    ecef2pos(origin_ecef, origin_llh);
+    f.has_origin = true;
+    f.origin_lat = origin_llh[0];
+    f.origin_lon = origin_llh[1];
+  }
+  return f;
+}
+
 }  // namespace gnss_fgo
 
 #endif  // EXAMPLES_TIGHTLY_COUPLED_FGO_FACTOR_ADAPTERS_HPP

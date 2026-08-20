@@ -27,6 +27,8 @@
 #include <gtsam/nonlinear/PriorFactor.h>
 #include <gtsam/nonlinear/Values.h>
 
+#include "gnss_ros_standardization/gnss_utils.hpp"
+
 #include "factor_adapters.hpp"
 #include "imu_factors.hpp"
 
@@ -3400,4 +3402,119 @@ TEST(SlotOwnership, TheSamePredicateGovernsBothPublishers) {
   EXPECT_FALSE(gf::gapSlotIsFree(500.2, rover, pub)) << "rover front owns it";
   EXPECT_FALSE(gf::gapSlotIsFree(500.4, rover, pub)) << "at the rover front";
   EXPECT_TRUE(gf::gapSlotIsFree(500.6, rover, pub)) << "beyond both: free";
+}
+
+// --- GnssSolution ENU frame contract ----------------------------------------
+//
+// msg/GnssSolution.msg deliberately anchors the position MEAN at
+// pos_enu_org_ecef while expressing every COVARIANCE and the velocity at the
+// CURRENT receiver position. That asymmetry looks like a bug and has been
+// "unified" twice; these tests pin it down.
+
+namespace {
+
+// ECEF of a geodetic point, for building origins far from the rover.
+Eigen::Vector3d ecefOf(double lat_deg, double lon_deg, double h) {
+  const double llh[3] = {lat_deg * D2R, lon_deg * D2R, h};
+  double r[3];
+  pos2ecef(llh, r);
+  return Eigen::Vector3d(r[0], r[1], r[2]);
+}
+
+}  // namespace
+
+// Acceptance criterion 1: with the origin and the current position deliberately
+// far apart, the covariance reference must follow the CURRENT position.
+TEST(EnuFrames, CovarianceUsesTheCurrentPositionNotTheOrigin) {
+  // Nagoya-ish rover, Tokyo-ish origin: ~260 km apart, so the two tangent
+  // planes differ by degrees and no tolerance can hide a mix-up.
+  const double cur_llh[3] = {35.15 * D2R, 136.97 * D2R, 50.0};
+  const Eigen::Vector3d org = ecefOf(35.68, 139.77, 40.0);
+  const double org_arr[3] = {org.x(), org.y(), org.z()};
+
+  const gf::EnuFrames f = gf::enuFrames(cur_llh, org_arr);
+  ASSERT_TRUE(f.has_origin);
+  EXPECT_DOUBLE_EQ(f.cur_lat, cur_llh[0]);
+  EXPECT_DOUBLE_EQ(f.cur_lon, cur_llh[1]);
+  EXPECT_NEAR(f.origin_lat, 35.68 * D2R, 1e-9);
+  EXPECT_NEAR(f.origin_lon, 139.77 * D2R, 1e-9);
+  // The two references are genuinely different - the whole point of the split.
+  EXPECT_GT(std::abs(f.cur_lon - f.origin_lon), 0.04);
+
+  // A covariance rotated at the current position must NOT equal one rotated at
+  // the origin, so a test on the node's output can tell them apart.
+  const double q_ecef[9] = {4.0, 1.0, 0.5, 1.0, 9.0, 0.25, 0.5, 0.25, 16.0};
+  double at_cur[9], at_org[9];
+  gnss_utils::rotateCovariance(q_ecef, f.cur_lat, f.cur_lon, at_cur);
+  gnss_utils::rotateCovariance(q_ecef, f.origin_lat, f.origin_lon, at_org);
+  double max_diff = 0.0;
+  for (int i = 0; i < 9; ++i)
+    max_diff = std::max(max_diff, std::abs(at_cur[i] - at_org[i]));
+  EXPECT_GT(max_diff, 0.1) << "the two tangent planes must be distinguishable";
+
+  // Trace is rotation-invariant either way: the difference is the axes, not the
+  // total uncertainty.
+  EXPECT_NEAR(at_cur[0] + at_cur[4] + at_cur[8],
+              q_ecef[0] + q_ecef[4] + q_ecef[8], 1e-9);
+}
+
+// Acceptance criterion 2: vel_enu and vel_enu_cov share one reference, which is
+// the current position - so a velocity vector and its error ellipse describe
+// the same axes.
+TEST(EnuFrames, VelocityMeanAndCovarianceShareTheCurrentPositionReference) {
+  const double cur_llh[3] = {35.15 * D2R, 136.97 * D2R, 50.0};
+  const Eigen::Vector3d org = ecefOf(35.68, 139.77, 40.0);
+  const double org_arr[3] = {org.x(), org.y(), org.z()};
+  const gf::EnuFrames f = gf::enuFrames(cur_llh, org_arr);
+
+  // A velocity purely along the local East axis at the CURRENT position.
+  const double e_enu[3] = {1.0, 0.0, 0.0};
+  double v_ecef[3];
+  enu2ecef(cur_llh, e_enu, v_ecef);
+
+  // Rotating it back with the frame the publisher uses returns pure East...
+  double back[3];
+  const double ref[3] = {f.cur_lat, f.cur_lon, 0.0};
+  ecef2enu(ref, v_ecef, back);
+  EXPECT_NEAR(back[0], 1.0, 1e-12);
+  EXPECT_NEAR(back[1], 0.0, 1e-12);
+  EXPECT_NEAR(back[2], 0.0, 1e-12);
+
+  // ...and the covariance of that same direction stays diagonal in East, which
+  // it would not if the covariance used the origin instead.
+  const double qv_ecef[9] = {
+      v_ecef[0] * v_ecef[0], v_ecef[0] * v_ecef[1], v_ecef[0] * v_ecef[2],
+      v_ecef[1] * v_ecef[0], v_ecef[1] * v_ecef[1], v_ecef[1] * v_ecef[2],
+      v_ecef[2] * v_ecef[0], v_ecef[2] * v_ecef[1], v_ecef[2] * v_ecef[2]};
+  double at_cur[9], at_org[9];
+  gnss_utils::rotateCovariance(qv_ecef, f.cur_lat, f.cur_lon, at_cur);
+  gnss_utils::rotateCovariance(qv_ecef, f.origin_lat, f.origin_lon, at_org);
+  EXPECT_NEAR(at_cur[0], 1.0, 1e-9) << "East-East";
+  EXPECT_NEAR(at_cur[4], 0.0, 1e-9) << "North-North";
+  EXPECT_NEAR(at_cur[8], 0.0, 1e-9) << "Up-Up";
+  // The origin-anchored rotation smears the same rank-1 covariance across all
+  // three axes - the observable symptom of the bug this pins down.
+  EXPECT_GT(at_org[4] + at_org[8], 1e-3);
+}
+
+TEST(EnuFrames, WithoutAnOriginEverythingFallsBackToTheCurrentPosition) {
+  const double cur_llh[3] = {35.15 * D2R, 136.97 * D2R, 50.0};
+  const double none[3] = {0.0, 0.0, 0.0};
+  const gf::EnuFrames f = gf::enuFrames(cur_llh, none);
+  EXPECT_FALSE(f.has_origin) << "the caller must leave pos_enu at zero";
+  EXPECT_DOUBLE_EQ(f.cur_lat, cur_llh[0]);
+  EXPECT_DOUBLE_EQ(f.cur_lon, cur_llh[1]);
+}
+
+TEST(EnuFrames, ACoincidentOriginMakesTheTwoReferencesAgree) {
+  // The degenerate case the "unify them" change was reasoning about: at zero
+  // baseline the distinction is invisible, which is why it survived review.
+  const Eigen::Vector3d p = ecefOf(35.15, 136.97, 50.0);
+  const double p_arr[3] = {p.x(), p.y(), p.z()};
+  double llh[3];
+  ecef2pos(p_arr, llh);
+  const gf::EnuFrames f = gf::enuFrames(llh, p_arr);
+  ASSERT_TRUE(f.has_origin);
+  EXPECT_NEAR(f.cur_lat, f.origin_lat, 1e-12);
+  EXPECT_NEAR(f.cur_lon, f.origin_lon, 1e-12);
 }

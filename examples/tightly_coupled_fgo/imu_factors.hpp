@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <deque>
 #include <iostream>
 #include <limits>
@@ -515,6 +516,92 @@ inline Eigen::Matrix3d gapVelocityCovarianceEnuFallback(
   return 0.5 * (out + out.transpose());
 }
 
+// --- Antenna phase-center velocity ------------------------------------------
+
+inline Eigen::Matrix3d skew3(const Eigen::Vector3d& v) {
+  Eigen::Matrix3d S;
+  S <<   0.0, -v.z(),  v.y(),
+       v.z(),    0.0, -v.x(),
+      -v.y(),  v.x(),    0.0;
+  return S;
+}
+
+// Covariance inputs for antennaVelocityNav.
+//
+// Prefer `joint`: the graph's own 15x15 posterior, which carries the
+// attitude/velocity/bias CROSS terms a sum of separate marginals cannot. The
+// block-diagonal fields are the fallback for callers that hold only separate
+// marginals - dead reckoning, the initialization publish, and a FIX epoch,
+// whose integer-conditioned posterior is 3x3. On a FIX epoch `bias_gyro` may
+// come from the FLOAT block: AR does not condition the IMU bias.
+struct AntennaVelocityCov {
+  Eigen::MatrixXd joint;  // 15x15 [rot(0:2) trans(3:5) vel(6:8) ba(9:11) bg(12:14)]
+  bool joint_ok{false};
+  Eigen::Matrix3d vel_nav{Eigen::Matrix3d::Zero()};    // fallback P_vv
+  Eigen::Matrix3d rot{Eigen::Matrix3d::Zero()};        // fallback P_theta_theta
+  Eigen::Matrix3d bias_gyro{Eigen::Matrix3d::Zero()};  // fallback P_bg_bg
+  // Gyro noise, in the same units the node feeds the Odometry angular-velocity
+  // covariance (imu.sigma_gyr used directly as a standard deviation).
+  double sigma_gyr{0.0};
+};
+
+struct AntennaVelocity {
+  Eigen::Vector3d v_nav{Eigen::Vector3d::Zero()};
+  Eigen::Matrix3d cov_nav{Eigen::Matrix3d::Zero()};
+};
+
+// Velocity of the GNSS antenna phase center, in the nav frame:
+//
+//   v_ant = v_body + R_nav_body * (omega_body x lever_arm)
+//
+// The exact inverse of the lever-arm removal the Doppler factor applies to
+// observe the body-origin V(k). `omega_body` must be bias-corrected and the
+// SAME rate the node publishes as the Odometry twist.angular, so the two
+// messages describe one rigid body. GnssSolution names the antenna for every
+// position and velocity field, Odometry the body origin: a vehicle turning in
+// place has |v_ant| = |omega| * |lever_arm| while v_body is zero.
+//
+// Covariance, with GTSAM's body-side perturbation R <- R*Exp(dtheta) and
+// omega = omega_meas - b_g:
+//
+//   d v_ant / d v      =  I
+//   d v_ant / d dtheta = -R * skew(omega x l)
+//   d v_ant / d b_g    =  R * skew(l)
+//
+// Gyro MEASUREMENT white noise enters through the same path as the bias and is
+// ALWAYS added: the graph has no state for it, so it is in no posterior block.
+inline AntennaVelocity antennaVelocityNav(const gtsam::Rot3& nRb,
+                                          const Eigen::Vector3d& v_body_nav,
+                                          const Eigen::Vector3d& omega_body,
+                                          const gtsam::Point3& lever_arm,
+                                          const AntennaVelocityCov& cov) {
+  AntennaVelocity out;
+  const Eigen::Vector3d l(lever_arm);
+  const Eigen::Matrix3d R = nRb.matrix();
+  const Eigen::Vector3d wxl = omega_body.cross(l);
+  out.v_nav = v_body_nav + R * wxl;
+
+  const Eigen::Matrix3d J_theta = -R * skew3(wxl);
+  const Eigen::Matrix3d M = R * skew3(l);  // = d v_ant / d b_g
+
+  Eigen::Matrix3d P;
+  if (cov.joint_ok && cov.joint.rows() == 15 && cov.joint.cols() == 15) {
+    Eigen::Matrix<double, 3, 15> J = Eigen::Matrix<double, 3, 15>::Zero();
+    J.block<3, 3>(0, 0) = J_theta;                        // rot
+    J.block<3, 3>(0, 6) = Eigen::Matrix3d::Identity();    // velocity
+    J.block<3, 3>(0, 12) = M;                             // gyro bias
+    P = J * cov.joint * J.transpose();
+  } else {
+    // No cross terms: a block-diagonal SUM, an approximation that can sit
+    // either side of the truth since the omitted correlation is signed.
+    P = cov.vel_nav + J_theta * cov.rot * J_theta.transpose() +
+        M * cov.bias_gyro * M.transpose();
+  }
+  P += M * M.transpose() * (cov.sigma_gyr * cov.sigma_gyr);
+  out.cov_nav = 0.5 * (P + P.transpose());
+  return out;
+}
+
 // --- Gap-publisher outage gate ----------------------------------------------
 
 // May the gap publisher synthesize the grid slot at `slot_ctow`?
@@ -536,6 +623,52 @@ inline bool gapSlotIsFree(double slot_ctow, double latest_rover_ctow,
     return false;
   return true;
 }
+
+// ONE EPOCH = ONE OUTPUT SLOT, decided in one place.
+//
+// The output is a function of the SLOT, not of the event that filled it:
+// whichever publisher reaches a slot first owns it, normally the real epoch. An
+// observation arriving after the gap publisher claimed its slot still enters
+// the graph and improves every later epoch; it simply does not re-publish a
+// slot the consumer already has, since the contract cannot retract one.
+//
+// claim() exists so that decision happens ONCE, before anything is sent, and
+// covers every output of the epoch as a unit - solution, odometry and counters.
+//
+// Not thread-safe by design: every caller runs on the solver callback group.
+class EpochSlotArbiter {
+ public:
+  // Take ownership of `slot_ctow` (continuous GPST seconds) if it is free.
+  // Returns true exactly once per slot; the caller publishes only then.
+  // `latest_rover_ctow` is the "an epoch may still be in the pipeline" test -
+  // pass -1.0 to skip it (the real-epoch path, which IS that epoch, and the
+  // data-domain gap path, which has direct evidence instead).
+  bool claim(double slot_ctow, double latest_rover_ctow = -1.0) {
+    if (!gapSlotIsFree(slot_ctow, latest_rover_ctow, last_pub_ctow_)) {
+      // Only a slot already published counts as suppression. Yielding to a
+      // rover epoch still in the pipeline is the gate working as intended.
+      if (last_pub_ctow_ >= 0.0 && slot_ctow <= last_pub_ctow_ + 1e-3)
+        ++n_suppressed_;
+      return false;
+    }
+    last_pub_ctow_ = slot_ctow;
+    return true;
+  }
+
+  // Highest slot ever published; negative until the first claim succeeds.
+  double lastPublished() const { return last_pub_ctow_; }
+
+  // Epochs that arrived after their slot had been published. A quality signal
+  // that the node is behind, not a defect.
+  std::uint64_t suppressed() const { return n_suppressed_; }
+
+  // Deliberately no reset(): the output high-water mark must survive a graph
+  // reset, or the node would re-publish slots the consumer already has.
+
+ private:
+  double last_pub_ctow_{-1.0};
+  std::uint64_t n_suppressed_{0};
+};
 
 // --- Rover epoch grid: interval, and the outage bound -----------------------
 
