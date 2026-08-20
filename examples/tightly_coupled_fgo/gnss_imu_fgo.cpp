@@ -1780,11 +1780,17 @@ class GnssImuFgoNode : public rclcpp::Node {
     //
     // That target is independentCodePosition (code-DD WLS, then SPP), NOT
     // ep.rover_ecef_apriori - a copy of this node's own last estimate, i.e. the
-    // drifted state the re-anchor exists to leave.
+    // drifted state the re-anchor exists to leave. With no satellites at all
+    // independentCodePosition falls back to exactly that a-priori, so the GAP
+    // trigger demands an independent target: anchoring the state to itself
+    // moves nothing while still re-keying every arc and dropping the holds.
+    // prediction_fault keeps the weaker test - there the DDs have already
+    // rejected the state, and breaking that lock is worth a stale target.
     const gnss_fgo::IndependentCodePosition anchor =
         gnss_fgo::independentCodePosition(ep, adapter_cfg_);
-    const bool reanchor = ecef_T_nav_.translation().norm() > 0.0 && anchor.ok &&
-                          (prediction_fault || gnss_returned);
+    const bool reanchor =
+        ecef_T_nav_.translation().norm() > 0.0 && anchor.ok &&
+        (prediction_fault || (gnss_returned && anchor.independent()));
     if (reanchor) {
       ++n_reanchor_;
       if (anchor.independent()) ++n_reanchor_independent_;

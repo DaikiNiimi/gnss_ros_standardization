@@ -699,7 +699,11 @@ class GnssFgoNode : public rclcpp::Node {
     // carried arc to move onto the previous float is a cost with no benefit.
     const gnss_fgo::IndependentCodePosition anchor =
         gnss_fgo::independentCodePosition(ep, adapter_cfg_);
-    const bool reanchor = (prediction_fault || gnss_starved) && anchor.ok;
+    // prediction_fault keeps the weaker test - there the DDs have already
+    // rejected the state, and breaking that lock is worth a stale target.
+    const bool reanchor =
+        anchor.ok &&
+        (prediction_fault || (gnss_starved && anchor.independent()));
     if (reanchor) {
       ++n_reanchor_;
       if (anchor.independent()) ++n_reanchor_independent_;
