@@ -1,18 +1,19 @@
-# Keplerian broadcast ephemeris (GPS, Galileo, QZSS, BeiDou, NavIC, SBAS).
+# Keplerian broadcast ephemeris (GPS, Galileo, QZSS, BeiDou, NavIC).
 # Field names and definitions follow RTKLIB's eph_t structure.
 
-string system        # constellation: "G"=GPS, "E"=Galileo, "J"=QZSS, "C"=BeiDou, "I"=NavIC, "S"=SBAS
+string system        # constellation: "G"=GPS, "E"=Galileo, "J"=QZSS, "C"=BeiDou, "I"=NavIC
 uint16 prn           # satellite PRN number within the constellation
 string satid         # combined ID string, e.g. "G01", "E05"
 uint32 week          # GPS week number of toe (uint32 to cover RTKLIB's extended week counter past the 1024-week rollover)
 
-uint8  sva           # SV accuracy index (URA index)
+int32  sva           # backend accuracy index; signed GPS URA_ED for CNAV
 uint16 code          # GPS: L2 code flag; Galileo: signal source
-uint8  iode          # issue of data ephemeris
+uint16 iode          # issue of data ephemeris; includes Galileo 10-bit IODnav
 uint16 iodc          # issue of data clock
 uint16 svh           # SV health flag (0 = healthy; Galileo packs up to 9 bits)
 
-# Reference times (seconds since GPS epoch, i.e. GPST)
+# Reference times (GPST seconds of week, not seconds since the GPS epoch).
+# week identifies toe; toc/ttr use the nearest week relative to toe.
 float64 toc          # clock reference time [s]
 float64 ttr          # transmission time [s]
 float64 toe          # ephemeris reference time [s]
@@ -48,3 +49,7 @@ float64[] tgd        # group delay differential [s] (array length depends on con
 # Receiver/format-specific flags (round-trip with RTKLIB eph_t)
 uint8 flag           # GPS/QZS: L2 P-data flag; other systems: unused
 uint8 fit            # GPS/QZS: fit interval [hours] (typically 4 or 6); 0 elsewhere
+
+# CNAV orbit-rate terms. Zero is also the backend default when absent.
+float64 adot          # semi-major axis rate [m/s], RTKLIB eph_t.Adot
+float64 ndot          # rate of mean motion difference [rad/s^2], eph_t.ndot

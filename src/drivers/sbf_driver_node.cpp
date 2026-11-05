@@ -1,4 +1,7 @@
-// SPDX-License-Identifier: MIT
+#include "gnss_ros_standardization/receiver_health.hpp"
+#include "gnss_ros_standardization/receiver_session.hpp"
+#include "gnss_ros_standardization/sbf_protocol.hpp"
+#include "gnss_ros_standardization/binary_framer.hpp"
 #include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
@@ -14,7 +17,6 @@
 #include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
-#include "gnss_ros_standardization/sbf_protocol.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
 using namespace std::chrono_literals;
@@ -25,7 +27,7 @@ namespace gnss_ros_standardization {
 namespace {
 
 constexpr auto kTimerInterval  = 10ms;
-constexpr double kPvtWatchdogTimeoutSec = 1.5;
+
 
 }  // namespace
 
@@ -46,7 +48,6 @@ struct SbfConfig {
   bool enable_gal_nav{true};
   bool enable_bds_nav{true};
   bool enable_qzs_nav{true};
-  bool enable_navic_nav{true};
 
   // Raw subframe blocks decoded by RTKLIB (GPSRawCA/GLORawCA/GALRawINAV+FNAV/BDSRaw/QZSRawL1CA/NAVICRaw)
   bool enable_gps_nav_raw{true};
@@ -89,10 +90,6 @@ struct SbfConfig {
   bool use_gps_timestamp{false};
 
   // ENU local origin
-  bool auto_origin{true};
-  double origin_latitude{0.0};
-  double origin_longitude{0.0};
-  double origin_altitude{0.0};
 };
 
 /// @brief ROS 2 driver node for Septentrio GNSS receivers
@@ -109,6 +106,7 @@ class SbfDriverNode : public rclcpp::Node {
     }
 
     openRtcmRelay();
+    if (config_.configure_on_startup && config_.enable_meas_epoch) receiver_health_.expectObservations(config_.publish_rate);
     startPolling();
     RCLCPP_INFO(get_logger(), "SBF Driver initialized");
   }
@@ -124,12 +122,19 @@ class SbfDriverNode : public rclcpp::Node {
  private:
   // Initialization
 
+  decoder_common::EpochFlushPolicy epoch_flush_;
+  SbfObservationCompletion observation_completion_;
+  wire::ReceiverHealth receiver_health_;
   void initializeParameters() {
+    receiver_health_.configure(5.0);
+    receiver_health_.limits(MAXOBS, NFREQ, NEXOBS, MAXPRNCMP);
+    observation_completion_.configure(0.2);
+    epoch_flush_.configure(0.05);
     declare_parameter<std::string>("stream_path",          config_.stream_path);
     // frame_id: ROS TF frame name attached to the GNSS antenna phase center.
     // Default "gnss_link" — override in launch to integrate with vehicle TF tree.
     declare_parameter<std::string>("frame_id",             config_.frame_id);
-    declare_parameter<int>        ("publish_rate",         config_.publish_rate);
+    declare_parameter<int>        ("rate_hz",         config_.publish_rate);
     declare_parameter<std::string>("receiver_port",        config_.receiver_port);
     declare_parameter<bool>       ("configure_on_startup", config_.configure_on_startup);
 
@@ -139,7 +144,6 @@ class SbfDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.gal_nav",            config_.enable_gal_nav);
     declare_parameter<bool>("messages.bds_nav",            config_.enable_bds_nav);
     declare_parameter<bool>("messages.qzs_nav",            config_.enable_qzs_nav);
-    declare_parameter<bool>("messages.navic_nav",          config_.enable_navic_nav);
     declare_parameter<bool>("messages.gps_nav_raw",        config_.enable_gps_nav_raw);
     declare_parameter<bool>("messages.glo_nav_raw",        config_.enable_glo_nav_raw);
     declare_parameter<bool>("messages.gal_nav_raw",        config_.enable_gal_nav_raw);
@@ -159,22 +163,20 @@ class SbfDriverNode : public rclcpp::Node {
     declare_parameter<bool>("messages.nmea_gsa",           config_.enable_nmea_gsa);
     declare_parameter<bool>("messages.nmea_gst",           config_.enable_nmea_gst);
 
-    declare_parameter<std::string>("observation_topic", config_.observation_topic);
-    declare_parameter<std::string>("ephemeris_topic",   config_.ephemeris_topic);
-    declare_parameter<std::string>("solution_topic",    config_.solution_topic);
-    declare_parameter<std::string>("imu_raw_topic",     config_.imu_raw_topic);
-    declare_parameter<bool>("rtcm_relay.enabled",       config_.rtcm_relay_enabled);
-    declare_parameter<std::string>("rtcm_relay.listen", config_.rtcm_relay_listen);
+    declare_parameter<std::string>("topics.observation", config_.observation_topic);
+    declare_parameter<std::string>("topics.ephemeris",   config_.ephemeris_topic);
+    declare_parameter<std::string>("topics.solution",    config_.solution_topic);
+    declare_parameter<std::string>("topics.imu_raw",     config_.imu_raw_topic);
+    declare_parameter<bool>("rtcm_input.enable",       config_.rtcm_relay_enabled);
+    declare_parameter<std::string>("rtcm_input.listen", config_.rtcm_relay_listen);
 
     declare_parameter<double>("ephemeris.snapshot_period_s", config_.ephemeris_snapshot_period_s);
     declare_parameter<double>("ephemeris.max_age_s",         config_.ephemeris_max_age_s);
     declare_parameter<bool>("use_gps_timestamp",             config_.use_gps_timestamp);
-    declare_parameter<bool>("auto_origin",                   config_.auto_origin);
-    declare_parameter<std::vector<double>>("origin",         {0.0, 0.0, 0.0});
 
     config_.stream_path          = get_parameter("stream_path").as_string();
     config_.frame_id             = get_parameter("frame_id").as_string();
-    config_.publish_rate         = get_parameter("publish_rate").as_int();
+    config_.publish_rate         = get_parameter("rate_hz").as_int();
     // Upper bound 200 Hz: getIntervalString maps 200->msec5, 100->msec10. The
     // receiver caps GNSS blocks at its licensed measurement rate on its own,
     // while ExtSensorMeas streams up to the IMU's native sample rate.
@@ -188,7 +190,6 @@ class SbfDriverNode : public rclcpp::Node {
     config_.enable_gal_nav           = get_parameter("messages.gal_nav").as_bool();
     config_.enable_bds_nav           = get_parameter("messages.bds_nav").as_bool();
     config_.enable_qzs_nav           = get_parameter("messages.qzs_nav").as_bool();
-    config_.enable_navic_nav         = get_parameter("messages.navic_nav").as_bool();
     config_.enable_gps_nav_raw       = get_parameter("messages.gps_nav_raw").as_bool();
     config_.enable_glo_nav_raw       = get_parameter("messages.glo_nav_raw").as_bool();
     config_.enable_gal_nav_raw       = get_parameter("messages.gal_nav_raw").as_bool();
@@ -208,28 +209,21 @@ class SbfDriverNode : public rclcpp::Node {
     config_.enable_nmea_gsa          = get_parameter("messages.nmea_gsa").as_bool();
     config_.enable_nmea_gst          = get_parameter("messages.nmea_gst").as_bool();
 
-    config_.observation_topic = get_parameter("observation_topic").as_string();
-    config_.ephemeris_topic   = get_parameter("ephemeris_topic").as_string();
-    config_.solution_topic    = get_parameter("solution_topic").as_string();
-    config_.imu_raw_topic     = get_parameter("imu_raw_topic").as_string();
-    config_.rtcm_relay_enabled = get_parameter("rtcm_relay.enabled").as_bool();
-    config_.rtcm_relay_listen  = get_parameter("rtcm_relay.listen").as_string();
+    config_.observation_topic = get_parameter("topics.observation").as_string();
+    config_.ephemeris_topic   = get_parameter("topics.ephemeris").as_string();
+    config_.solution_topic    = get_parameter("topics.solution").as_string();
+    config_.imu_raw_topic     = get_parameter("topics.imu_raw").as_string();
+    config_.rtcm_relay_enabled = get_parameter("rtcm_input.enable").as_bool();
+    config_.rtcm_relay_listen  = get_parameter("rtcm_input.listen").as_string();
 
     config_.ephemeris_snapshot_period_s = get_parameter("ephemeris.snapshot_period_s").as_double();
     config_.ephemeris_max_age_s         = get_parameter("ephemeris.max_age_s").as_double();
     config_.use_gps_timestamp           = get_parameter("use_gps_timestamp").as_bool();
-    config_.auto_origin                 = get_parameter("auto_origin").as_bool();
-    {
-      const auto v = get_parameter("origin").as_double_array();
-      if (v.size() == 3) {
-        config_.origin_latitude  = v[0];
-        config_.origin_longitude = v[1];
-        config_.origin_altitude  = v[2];
-      }
-    }
 
     eph_store_.setSnapshotPeriod(config_.ephemeris_snapshot_period_s);
     eph_store_.setMaxAge(config_.ephemeris_max_age_s);
+    constexpr int history_limit = 8;
+    eph_store_.setHistoryPerSatellite(static_cast<size_t>(history_limit));
 
     initPendingExpectedMasks();
 
@@ -268,24 +262,19 @@ class SbfDriverNode : public rclcpp::Node {
   }
 
   void initializePublishers() {
+    decoder_common::configureNmeaDate(*this, nmea_parser_);
     obs_pub_          = create_publisher<msg::GnssObservations>(config_.observation_topic, 10);
     eph_pub_          = create_publisher<msg::GnssEphemerides>(config_.ephemeris_topic, rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
     sol_pub_          = create_publisher<msg::GnssSolution>(config_.solution_topic, 10);
-    imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, 10);
+    imu_raw_pub_      = create_publisher<sensor_msgs::msg::Imu>(config_.imu_raw_topic, decoder_common::kImuPublisherDepth);
 
-    if (!config_.auto_origin) {
-      if (config_.origin_latitude == 0.0 && config_.origin_longitude == 0.0) {
-        RCLCPP_WARN(get_logger(),
-          "auto_origin=false but origin is [0,0,0] — falling back to auto (first fix)");
-      } else {
-        local_origin_pos_[0] = config_.origin_latitude  * (M_PI / 180.0);
-        local_origin_pos_[1] = config_.origin_longitude * (M_PI / 180.0);
-        local_origin_pos_[2] = config_.origin_altitude;
-        pos2ecef(local_origin_pos_, local_origin_ecef_);
-        has_local_origin_ = true;
-        RCLCPP_INFO(get_logger(), "ENU origin set from config: lat=%.6f lon=%.6f alt=%.2f",
-          config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
-      }
+    const auto origin = gnss_utils::declareLocalOrigin(*this);
+    if (origin.fixed) {
+      std::copy_n(origin.llh, 3, local_origin_pos_);
+      std::copy_n(origin.ecef, 3, local_origin_ecef_);
+      has_local_origin_ = true;
+      RCLCPP_INFO(get_logger(), "ENU origin set from config: lat=%.6f lon=%.6f alt=%.2f",
+        local_origin_pos_[0] * R2D, local_origin_pos_[1] * R2D, local_origin_pos_[2]);
     }
     logEnabledMessages();
   }
@@ -294,9 +283,9 @@ class SbfDriverNode : public rclcpp::Node {
     auto on = [](bool v) { return v ? "ON" : "OFF"; };
     RCLCPP_INFO(get_logger(), "Enabled messages:");
     RCLCPP_INFO(get_logger(), "  Observation  : MeasEpoch=%s", on(config_.enable_meas_epoch));
-    RCLCPP_INFO(get_logger(), "  Navigation   : GPS=%s GLO=%s GAL=%s BDS=%s QZS=%s NavIC=%s",
+    RCLCPP_INFO(get_logger(), "  Navigation   : GPS=%s GLO=%s GAL=%s BDS=%s QZS=%s",
       on(config_.enable_gps_nav), on(config_.enable_glo_nav), on(config_.enable_gal_nav),
-      on(config_.enable_bds_nav), on(config_.enable_qzs_nav), on(config_.enable_navic_nav));
+      on(config_.enable_bds_nav), on(config_.enable_qzs_nav));
     RCLCPP_INFO(get_logger(), "  Nav (raw)    : GPS=%s GLO=%s GAL=%s BDS=%s QZS=%s NavIC=%s",
       on(config_.enable_gps_nav_raw), on(config_.enable_glo_nav_raw), on(config_.enable_gal_nav_raw),
       on(config_.enable_bds_nav_raw), on(config_.enable_qzs_nav_raw), on(config_.enable_navic_nav_raw));
@@ -309,9 +298,9 @@ class SbfDriverNode : public rclcpp::Node {
       on(config_.enable_nmea_gsa), on(config_.enable_nmea_gst));
     RCLCPP_INFO(get_logger(), "  IMU          : ExtSensorMeas=%s", on(config_.enable_ext_sensor_meas));
     RCLCPP_INFO(get_logger(), "  GPS timestamp : %s", on(config_.use_gps_timestamp));
-    if (!config_.auto_origin && (config_.origin_latitude != 0.0 || config_.origin_longitude != 0.0)) {
+    if (has_local_origin_) {
       RCLCPP_INFO(get_logger(), "  ENU origin    : fixed (lat=%.6f lon=%.6f alt=%.2f)",
-        config_.origin_latitude, config_.origin_longitude, config_.origin_altitude);
+        local_origin_pos_[0] * R2D, local_origin_pos_[1] * R2D, local_origin_pos_[2]);
     } else {
       RCLCPP_INFO(get_logger(), "  ENU origin    : auto (first valid solution)");
     }
@@ -322,6 +311,7 @@ class SbfDriverNode : public rclcpp::Node {
       RCLCPP_ERROR(get_logger(), "Failed to initialize raw decoder");
       throw std::runtime_error("init_raw failed");
     }
+    std::strcpy(raw_.opt, "-EPHALL");
   }
 
   void startPolling() {
@@ -331,36 +321,11 @@ class SbfDriverNode : public rclcpp::Node {
   // Stream Management
 
   void openStream() {
-    std::string path = config_.stream_path;
-
-    int stream_type = STR_SERIAL;
-    bool matched = false;
-    for (const auto& def : sbf::kStreamTypes) {
-      if (path.rfind(def.prefix, 0) == 0) {
-        stream_type = def.type;
-        path.erase(0, def.prefix.size());
-        matched = true;
-        break;
-      }
-    }
-
-    if (!matched && path.rfind("/dev/", 0) == 0) {
-      stream_type = STR_SERIAL;
-    }
-
-    if (stream_type == STR_SERIAL && path.rfind("/dev/", 0) == 0) {
-      path.erase(0, 5);
-    }
-
-    strinit(&stream_);
-
-    if (!stropen(&stream_, stream_type, STR_MODE_RW, path.c_str())) {
-      RCLCPP_ERROR(get_logger(), "Failed to open stream: %s", config_.stream_path.c_str());
+    const auto path = config_.stream_path.find("://") == std::string::npos
+        ? "serial://" + config_.stream_path : config_.stream_path;
+    if (!decoder_common::openStreamPath(get_logger(), stream_, path, STR_MODE_RW, "Receiver"))
       throw std::runtime_error("stropen failed");
-    }
-
-    is_serial_connection_ = (stream_type == STR_SERIAL);
-    RCLCPP_INFO(get_logger(), "Stream opened: %s", config_.stream_path.c_str());
+    is_serial_connection_ = stream_.type == STR_SERIAL;
   }
 
   // RTCM relay (RTKLIB STRSVR-style): host a TCP server (or any RTKLIB stream)
@@ -377,12 +342,11 @@ class SbfDriverNode : public rclcpp::Node {
   // Receiver Configuration
 
   void sendCommand(const std::string& cmd) {
-    std::string full_cmd = cmd + "\r\n";
-    int written = strwrite(&stream_, (uint8_t*)full_cmd.c_str(), full_cmd.size());
-    if (written < 0 || (written == 0 && !is_serial_connection_)) {
-      RCLCPP_ERROR(get_logger(), "Failed to write command: %s", cmd.c_str());
-    }
-    std::this_thread::sleep_for(50ms);
+    if (cmd.empty()) return;
+    decoder_common::configureAscii(stream_, wire::Protocol::Sbf, cmd,
+        [this](uint8_t byte) {
+          parseSbfByte(byte);
+        });
   }
 
   void configureReceiver() {
@@ -404,23 +368,25 @@ class SbfDriverNode : public rclcpp::Node {
       std::string nmea_list = nmea_sentences[0];
       for (size_t i = 1; i < nmea_sentences.size(); ++i) nmea_list += "+" + nmea_sentences[i];
 
-      // Use Stream2 for NMEA on the same physical port (sec1 = 1 Hz)
+      // Use Stream2 for NMEA at the requested publish rate.
       std::string nmea_cmd = std::string(sbf::CMD_SET_NMEA_OUTPUT) + ", Stream2, " +
-                             config_.receiver_port + ", " + nmea_list + ", sec1";
+                             config_.receiver_port + ", " + nmea_list + ", " + interval_str;
       RCLCPP_INFO(get_logger(), "NMEA config: %s", nmea_cmd.c_str());
       sendCommand(nmea_cmd);
     }
 
     // --- SBF output (Stream1) ---
     std::vector<std::string> blocks;
-    if (config_.enable_meas_epoch)       blocks.push_back(sbf::BLOCK_MEASEPOCH);
+    if (config_.enable_meas_epoch) {
+      blocks.push_back(sbf::BLOCK_MEASEPOCH);
+      blocks.push_back("EndOfMeas");
+    }
     // Decoded *Nav blocks (receiver-assembled)
     if (config_.enable_gps_nav)          blocks.push_back(sbf::BLOCK_GPSNAV);
     if (config_.enable_glo_nav)          blocks.push_back(sbf::BLOCK_GLONAV);
     if (config_.enable_gal_nav)          blocks.push_back(sbf::BLOCK_GALNAV);
     if (config_.enable_bds_nav)          blocks.push_back(sbf::BLOCK_BDSNAV);
     if (config_.enable_qzs_nav)          blocks.push_back(sbf::BLOCK_QZSNAV);
-    if (config_.enable_navic_nav)        blocks.push_back(sbf::BLOCK_NAVICNAV);
     // Raw subframe blocks (decoded by RTKLIB)
     if (config_.enable_gps_nav_raw)      blocks.push_back(sbf::BLOCK_GPSNAV_RAW);
     if (config_.enable_glo_nav_raw)      blocks.push_back(sbf::BLOCK_GLONAV_RAW);
@@ -439,7 +405,7 @@ class SbfDriverNode : public rclcpp::Node {
     // OnChange produced no output on real hardware. With a single stream the
     // receiver caps each block individually — GNSS blocks at the licensed
     // measurement rate, ExtSensorMeas at the IMU's native sample rate — so
-    // publish_rate: 100 (msec10) yields e.g. GNSS 10 Hz + IMU 100 Hz, matching
+    // rate_hz: 100 (msec10) yields e.g. GNSS 10 Hz + IMU 100 Hz, matching
     // the WebUI Interval=10ms behavior.
     if (config_.enable_ext_sensor_meas)  blocks.push_back(sbf::BLOCK_EXTSENSORMEAS);
 
@@ -455,41 +421,36 @@ class SbfDriverNode : public rclcpp::Node {
       RCLCPP_WARN(get_logger(), "No SBF blocks enabled.");
     }
 
-    std::this_thread::sleep_for(200ms);
-
-    // Read and log receiver response. SBF binary may already be flowing on
-    // the same port — filter to printable ASCII (+CR/LF) so the log line
-    // isn't shredded by SBF sync bytes.
-    uint8_t resp[1024];
-    int n = strread(&stream_, resp, sizeof(resp) - 1);
-    if (n > 0) {
-      std::string response;
-      response.reserve(n);
-      for (int i = 0; i < n; ++i) {
-        const uint8_t b = resp[i];
-        if ((b >= 0x20 && b < 0x7F) || b == '\r' || b == '\n') {
-          response.push_back(static_cast<char>(b));
-        }
-      }
-      RCLCPP_INFO(get_logger(), "Receiver response: %s", response.c_str());
-
-      if (response.find("invalid") != std::string::npos ||
-          response.find("Error")   != std::string::npos) {
-        if (config_.enable_navic_nav || config_.enable_navic_nav_raw) {
-          RCLCPP_WARN(get_logger(), "Receiver rejected config with NavIC. Retrying without NavIC...");
-          config_.enable_navic_nav     = false;
-          config_.enable_navic_nav_raw = false;
-          configureReceiver();
-        } else {
-          RCLCPP_ERROR(get_logger(), "Receiver rejected configuration. Check port and settings.");
-        }
-      }
-    } else {
-      RCLCPP_WARN(get_logger(), "No response from receiver after configuration.");
-    }
+    RCLCPP_INFO(get_logger(), "Receiver acknowledged configuration commands; verify actual message types and rates");
   }
 
   // Polling
+
+  wire::StreamSession stream_session_;
+  wire::ReceiverTimeline receiver_timeline_;
+  void resetReceiverSession(bool disconnected) {
+    // Release validated pending data before retiring the old session. Partial
+    // wire frames and compressed references are never carried across sessions.
+    if (gnss_flush_sbf_observations(&raw_)==1) publishObservations();
+    observation_completion_.reset();
+    flushPending();
+    wire::resetRaw(raw_,STRFMT_SEPT);
+    if (disconnected) wire_framer_.reset();
+    receiver_health_.resetSession();
+    if (disconnected && config_.configure_on_startup)
+      RCLCPP_WARN(get_logger(), "Configuration is startup-only: if receiver settings were lost, restart this driver to reconfigure; ACK does not verify output");
+    receiver_timeline_.reset();
+    nmea_parser_.reset(); nmea_solution_=msg::GnssSolution(); binary_solution_=msg::GnssSolution();
+    pending_=decltype(pending_)(); last_dop_={};
+    prev_pvt_tow_ms_=UINT32_MAX; pvt_period_ms_=0;
+    last_flushed_week_=0; last_flushed_tow_ms_=UINT32_MAX;
+    eph_store_.clear(); publishSnapshot();
+    initPendingExpectedMasks();
+    esm_tow_ms_=UINT32_MAX; esm_wnc_=UINT16_MAX; esm_sensor_=UINT16_MAX;
+    esm_has_accel_=false; esm_has_gyro_=false;
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Receiver session reset: %s; waiting for fresh time/navigation references",
+                disconnected ? "connection lost" : "measurement rewind or clock reset");
+  }
 
   void pollStream() {
     // RTCM relay (STRSVR-style): drain corrections from the TCP server and write
@@ -497,46 +458,40 @@ class SbfDriverNode : public rclcpp::Node {
     relay_.drainTo(get_logger(), *get_clock(), stream_);
 
     uint8_t buffer[sbf::READ_BUFFER_SIZE];
+    for (int batch=0; batch<16 && rclcpp::ok(); ++batch) {
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
-
-    for (int i = 0; i < bytes_read; ++i) {
-      const uint8_t byte = buffer[i];
-
-      const int result = input_sbf(&raw_, byte);
-      handleDecodeResult(result);
-
-      // Parallel SBF mini-framer (ExtSensorMeas / PVT blocks)
-      parseSbfByte(byte);
-
-      // NMEA sentences (interleaved with SBF binary).
-      // SBF blocks ALSO start with '$' (sync1=0x24, sync2=0x40 = "$@"), so a
-      // plain `byte=='$'` capture-start would fire on every SBF block and
-      // shred any in-progress NMEA capture. Peek one byte after '$' and only
-      // start NMEA capture when the next byte is an ASCII uppercase letter
-      // (NMEA talker IDs: $GN, $GP, $IN, $BD, $QZ, …).
-      if (nmea_pending_dollar_) {
-        nmea_pending_dollar_ = false;
-        if (byte == sbf::SBF_SYNC2) {
-          // SBF block start — leave nmea_buffer_ untouched.
-        } else if (std::isupper(static_cast<unsigned char>(byte))) {
-          nmea_buffer_.clear();
-          nmea_buffer_.push_back('$');
-          nmea_buffer_.push_back(byte);
-        }
-        // Non-printable byte after '$' → noise; ignore.
-      } else if (byte == '$') {
-        nmea_pending_dollar_ = true;
-      } else if (!nmea_buffer_.empty()) {
-        nmea_buffer_.push_back(byte);
-        if (byte == '\n') {
-          handleNmeaSentence(nmea_buffer_);
-          nmea_buffer_.clear();
-        } else if (nmea_buffer_.size() > sbf::NMEA_MAX_LINE_LEN) {
-          nmea_buffer_.clear();
-        }
-      }
+    if (stream_session_.poll(stream_)) resetReceiverSession(true);
+    const auto wire_now = std::chrono::steady_clock::now();
+    receiver_health_.input(bytes_read);
+    receiver_health_.framing(wire_framer_);
+    receiver_health_.assemblyPending(raw_.obuf.n>0);
+    receiver_health_.pvtPending(pending_.blocks_received != 0);
+    receiver_health_.imuPending(esm_has_accel_ || esm_has_gyro_);
+    receiver_health_.report(get_logger());
+    if (bytes_read > 0) wire_last_input_ = wire_now;
+    else if (wire_now - wire_last_input_ > std::chrono::seconds(1)) {
+      wire_framer_.expire([this](const wire::Frame& f) { dispatchFrame(f); });
+      wire_last_input_ = wire_now;
+    }
+    if (wire_framer_.rejected() != wire_last_rejected_) {
+      wire_last_rejected_ = wire_framer_.rejected();
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "Rejected binary frame/header count: %llu",
+          static_cast<unsigned long long>(wire_last_rejected_));
     }
 
+
+    for (int i = 0; i < bytes_read; ++i) {
+      parseSbfByte(buffer[i]);
+    }
+    if (bytes_read < static_cast<int>(sizeof(buffer))) break;
+    }
+
+
+    if (observation_completion_.flushIfDue(raw_)) {
+      RCLCPP_DEBUG(get_logger(), "Publishing final MeasEpoch after observation quiet timeout");
+      publishObservations();
+    }
     maybePublishHeartbeat();
     maybeWatchdogFlushPendingPvt();
     warnIfBinaryStarvation();
@@ -546,39 +501,44 @@ class SbfDriverNode : public rclcpp::Node {
   // (no further blocks arriving), flush whatever we have.
   void maybeWatchdogFlushPendingPvt() {
     if (pending_.blocks_received == 0) return;
-    if ((now() - pending_.last_update).seconds() > kPvtWatchdogTimeoutSec) {
+    if (epoch_flush_.due()) {
       flushPending();
     }
   }
 
-  // SBF Mini-Framer (parallel to RTKLIB, for ExtSensorMeas and PVT blocks)
+  // SBF mixed stream decoder (shared boundary with RTKLIB, for ExtSensorMeas and PVT blocks)
+
+  void dispatchFrame(const wire::Frame& f) {
+      auto diagnostic_scope = receiver_health_.backendScope();
+      receiver_health_.frame((unsigned(f.cls)<<16)|f.id, f.revision);
+      receiver_health_.inspect(wire::Protocol::Sbf,f);
+      if (receiver_timeline_.frame(wire::Protocol::Sbf,f)) {
+        resetReceiverSession(false);
+        receiver_timeline_.frame(wire::Protocol::Sbf,f);
+      }
+      if (!gnss_ros_standardization::supportedSbfNavigation(f)) {
+        receiver_health_.unsupportedNavigation();
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+            "Unsupported SBF navigation model/layout: id=%u revision=%u length=%zu; retain the original receiver log",
+            f.id, f.revision, f.bytes.size());
+        return;
+      }
+      int result = 0;
+      for (uint8_t byte : f.bytes) {
+        const int status = input_sbf(&raw_, byte);
+        if (status != 0) result = status;
+        handleDecodeResult(status);
+      }
+      if (result >= 0) observation_completion_.decoded(f.id, raw_);
+      receiver_health_.assemblyPending(raw_.obuf.n>0);
+      sbf_id_ = f.id;
+      sbf_body_ = f.payload;
+      handleSbfBlock();
+  }
 
   void parseSbfByte(uint8_t byte) {
-    switch (sbf_state_) {
-      case 0: if (byte == sbf::SBF_SYNC1) sbf_state_ = 1; break;
-      case 1: sbf_state_ = (byte == sbf::SBF_SYNC2) ? 2 : (byte == sbf::SBF_SYNC1 ? 1 : 0); break;
-      case 2: sbf_state_ = 3; break;  // CRC LSB skip
-      case 3: sbf_state_ = 4; break;  // CRC MSB skip
-      case 4: sbf_id_ = byte; sbf_state_ = 5; break;
-      case 5:
-        sbf_id_ |= static_cast<uint16_t>(byte << 8);
-        sbf_id_ &= 0x1FFF;
-        sbf_state_ = 6;
-        break;
-      case 6: sbf_len_ = byte; sbf_state_ = 7; break;
-      case 7:
-        sbf_len_ |= static_cast<uint16_t>(byte << 8);
-        sbf_body_.clear();
-        sbf_body_pos_ = 0;
-        if (sbf_len_ <= 8) { handleSbfBlock(); sbf_state_ = 0; }
-        else { sbf_body_.reserve(sbf_len_ - 8); sbf_state_ = 8; }
-        break;
-      case 8:
-        sbf_body_.push_back(byte);
-        if (++sbf_body_pos_ >= sbf_len_ - 8) { handleSbfBlock(); sbf_state_ = 0; }
-        break;
-      default: sbf_state_ = 0;
-    }
+    wire_framer_.feed(byte, [this](const wire::Frame& f) { dispatchFrame(f); },
+        [this](const std::string& sentence) { handleNmeaSentence(sentence); });
   }
 
   void handleSbfBlock() {
@@ -614,7 +574,6 @@ class SbfDriverNode : public rclcpp::Node {
     uint8_t  blocks_received{0};
     uint8_t  blocks_expected{0};
     msg::GnssSolution buf{};
-    rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
 
   // Persistent DOP cache + PVT cadence tracking for the staleness gate.
@@ -638,9 +597,6 @@ class SbfDriverNode : public rclcpp::Node {
         (config_.enable_vel_cov_cartesian ? BLK_VEL_XYZ : uint8_t{0});
   }
 
-  bool pendingComplete() const {
-    return pending_.blocks_received == pending_.blocks_expected;
-  }
 
   template <typename ParseFn>
   void mergeBlock(uint8_t bit, ParseFn parse) {
@@ -663,10 +619,10 @@ class SbfDriverNode : public rclcpp::Node {
       flushPending();  // TOW boundary — flush previous epoch
     }
     pending_.tow_ms = tow;
-    if (!parse(p, len, pending_.buf)) return;
+    if (!parse(p, len, pending_.buf)) { GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return; }
     pending_.blocks_received |= bit;
-    pending_.last_update = now();
-    if (pendingComplete()) flushPending();
+    epoch_flush_.touch();
+    // Flush at the epoch boundary or shared quiet-period deadline.
   }
 
   void handlePvtGeodetic() {
@@ -701,7 +657,7 @@ class SbfDriverNode : public rclcpp::Node {
     const uint8_t* p   = sbf_body_.data();
     const size_t   len = sbf_body_.size();
     msg::GnssSolution scratch{};
-    if (!sbf::pvt::parseDop(p, len, scratch)) return;
+    if (!sbf::pvt::parseDop(p, len, scratch)) { GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return; }
     last_dop_.valid  = true;
     last_dop_.week   = sbf::pvt::getWeek(p, len);
     last_dop_.tow_ms = sbf::pvt::getTowMs(p, len);
@@ -717,6 +673,7 @@ class SbfDriverNode : public rclcpp::Node {
     const bool has_geo_pvt = recv & BLK_PVT_GEO;
     const bool has_xyz_pvt = recv & BLK_PVT_XYZ;
     if (!has_geo_pvt && !has_xyz_pvt) {
+      if (pending_.blocks_received) receiver_health_.pvtIncompleteDiscarded();
       pending_ = {};
       pending_.blocks_expected = expected;
       return;
@@ -828,25 +785,44 @@ class SbfDriverNode : public rclcpp::Node {
 
   void handleExtSensorMeas() {
     if (!config_.enable_ext_sensor_meas) return;
-    if (static_cast<int>(sbf_body_.size()) < sbf::ext_sensor_meas::MIN_BODY_LEN) return;
+    if (static_cast<int>(sbf_body_.size()) < sbf::ext_sensor_meas::MIN_BODY_LEN) { GNSS_RX_EVENT(GNSS_RX_LENGTH,1); return; }
 
     const uint8_t n         = sbf_body_[sbf::ext_sensor_meas::OFFSET_N];
     const uint8_t sb_length = sbf_body_[sbf::ext_sensor_meas::OFFSET_SB_LENGTH];
-    if (sb_length < sbf::ext_sensor_meas::SB_MIN_LEN) return;
-    if (static_cast<int>(sbf_body_.size()) < sbf::ext_sensor_meas::MIN_BODY_LEN + n * sb_length) return;
+    if (sb_length < sbf::ext_sensor_meas::SB_MIN_LEN) { GNSS_RX_EVENT(GNSS_RX_LENGTH,1); return; }
+    if (static_cast<int>(sbf_body_.size()) < sbf::ext_sensor_meas::MIN_BODY_LEN + n * sb_length) { GNSS_RX_EVENT(GNSS_RX_LENGTH,1); return; }
 
     uint32_t tow_ms = 0;
     std::memcpy(&tow_ms, sbf_body_.data(), 4);
 
-    if (tow_ms != esm_tow_ms_ && (esm_has_accel_ || esm_has_gyro_)) {
-      publishEsmAccum();
+    const uint16_t week = wire::u16(sbf_body_.data() + 4);
+    if (tow_ms != esm_tow_ms_ || week != esm_wnc_) {
+      if (esm_has_accel_ != esm_has_gyro_) GNSS_RX_EVENT(GNSS_RX_ASSEMBLY_REPLACED,1);
+      esm_has_accel_ = false; esm_has_gyro_ = false;
     }
     esm_tow_ms_ = tow_ms;
-    std::memcpy(&esm_wnc_, sbf_body_.data() + 4, 2);
+    esm_wnc_ = week;
 
     for (uint8_t i = 0; i < n; ++i) {
       const int base = sbf::ext_sensor_meas::OFFSET_SUBBLOCKS + i * sb_length;
       const uint8_t type = sbf_body_[base + sbf::ext_sensor_meas::SB_OFFSET_TYPE];
+
+      // S2 pp332-333: never combine different Source/SensorModel values.
+      // Unsupported sub-block types do not disturb an IMU pair in progress.
+      if (type != sbf::ext_sensor_meas::TYPE_ACCEL && type != sbf::ext_sensor_meas::TYPE_GYRO) {
+        GNSS_RX_EVENT(GNSS_RX_SELECTION,1); continue;
+      }
+      const uint16_t sensor = wire::u16(sbf_body_.data() + base);
+      if (sensor != esm_sensor_) {
+        if (esm_has_accel_ || esm_has_gyro_) GNSS_RX_EVENT(GNSS_RX_ASSEMBLY_REPLACED,1);
+        esm_has_accel_ = esm_has_gyro_ = false;
+        esm_sensor_ = sensor;
+      }
+      // Saturated or scrambled samples cannot be published as usable SI values.
+      if (sbf_body_[base + 3] & 0x06u) {
+        GNSS_RX_EVENT(GNSS_RX_QUALITY,1); GNSS_RX_EVENT(GNSS_RX_IMU_REJECT,1);
+        esm_has_accel_ = esm_has_gyro_ = false; continue;
+      }
 
       if (type == sbf::ext_sensor_meas::TYPE_ACCEL) {
         std::memcpy(&esm_accel_[0], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_X, 8);
@@ -858,17 +834,33 @@ class SbfDriverNode : public rclcpp::Node {
         std::memcpy(&esm_gyro_[1], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_Y, 8);
         std::memcpy(&esm_gyro_[2], sbf_body_.data() + base + sbf::ext_sensor_meas::SB_OFFSET_Z, 8);
         esm_has_gyro_ = true;
-      }
+      } else { GNSS_RX_EVENT(GNSS_RX_SELECTION,1); }
     }
 
+    if (esm_has_accel_ != esm_has_gyro_) GNSS_RX_EVENT(GNSS_RX_IMU_WAIT,1);
     if (esm_has_accel_ && esm_has_gyro_) publishEsmAccum();
   }
 
   void publishEsmAccum() {
+    if (!esm_has_accel_ || !esm_has_gyro_) return;
+    for (int i = 0; i < 3; ++i) {
+      if (!std::isfinite(esm_accel_[i]) || !std::isfinite(esm_gyro_[i]) ||
+          esm_accel_[i] == -2e10 || esm_gyro_[i] == -2e10) {
+        GNSS_RX_EVENT(GNSS_RX_VALUE,1); GNSS_RX_EVENT(GNSS_RX_IMU_REJECT,1);
+        esm_has_accel_ = esm_has_gyro_ = false; return;
+      }
+    }
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = (config_.use_gps_timestamp && esm_tow_ms_ != 0xFFFFFFFFu && esm_wnc_ != 0xFFFFu)
-        ? gnss_utils::gpstToUtcRosTime(gpst2time(adjgpsweek(static_cast<int>(esm_wnc_)), esm_tow_ms_ / 1000.0))
-        : now();
+    const bool esm_time_valid =
+        esm_tow_ms_ < 604800000u && esm_wnc_ > 0 && esm_wnc_ != 0xFFFFu;
+    const auto measurement_stamp = time_base_.stamp(
+        config_.use_gps_timestamp, esm_time_valid,
+        esm_time_valid ? gpst2time(static_cast<int>(esm_wnc_),
+                                   esm_tow_ms_ / 1000.0)
+                       : gtime_t{},
+        now(), get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+    imu.header.stamp = *measurement_stamp;
     imu.header.frame_id = config_.frame_id;
 
     // Orientation is not estimated by this message at all -> "-1" (field not provided).
@@ -885,9 +877,9 @@ class SbfDriverNode : public rclcpp::Node {
     imu.linear_acceleration.z = esm_accel_[2];
     std::copy(meas_unk.begin(), meas_unk.end(), imu.linear_acceleration_covariance.begin());
 
-    imu.angular_velocity.x = esm_gyro_[0];
-    imu.angular_velocity.y = esm_gyro_[1];
-    imu.angular_velocity.z = esm_gyro_[2];
+    imu.angular_velocity.x = esm_gyro_[0] * (M_PI / 180.0);
+    imu.angular_velocity.y = esm_gyro_[1] * (M_PI / 180.0);
+    imu.angular_velocity.z = esm_gyro_[2] * (M_PI / 180.0);
     std::copy(meas_unk.begin(), meas_unk.end(), imu.angular_velocity_covariance.begin());
 
     imu_raw_pub_->publish(imu);
@@ -909,9 +901,16 @@ class SbfDriverNode : public rclcpp::Node {
   }
 
   void handleDecodeResult(int result) {
+    receiver_health_.backendResult(result);
+    if (result < 0) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "Rejected receiver payload (invalid layout, time, version or content)");
+      return;
+    }
     switch (result) {
       case 1:  publishObservations(); break;
       case 2:  publishEphemerides();  break;
+      case 9:  publishIonosphere();   break;
       default: break;
     }
   }
@@ -946,68 +945,18 @@ class SbfDriverNode : public rclcpp::Node {
       }
     }
 
-    sol.header.stamp    = (config_.use_gps_timestamp && week_for_stamp > 0)
-                          ? gnss_utils::gpstToUtcRosTime(t_gpst) : now();
+    const auto measurement_stamp = time_base_.stamp(
+        config_.use_gps_timestamp, week_for_stamp > 0 && std::isfinite(sol.time_tow) && sol.time_tow >= 0 && sol.time_tow < 604800,
+        t_gpst, now(), get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+    sol.header.stamp = *measurement_stamp;
     sol.header.frame_id = config_.frame_id;
 
-    const bool has_fix =
-      sol.status == msg::GnssSolution::STATUS_FIX    ||
-      sol.status == msg::GnssSolution::STATUS_FLOAT  ||
-      sol.status == msg::GnssSolution::STATUS_SINGLE ||
-      sol.status == msg::GnssSolution::STATUS_DGPS;
-
-    if (has_fix) {
-      if (!has_local_origin_) {
-        local_origin_ecef_[0] = sol.pos_ecef.x;
-        local_origin_ecef_[1] = sol.pos_ecef.y;
-        local_origin_ecef_[2] = sol.pos_ecef.z;
-        ecef2pos(local_origin_ecef_, local_origin_pos_);
-        has_local_origin_ = true;
-        RCLCPP_INFO(get_logger(), "Set local ENU origin: lat=%.6f lon=%.6f alt=%.2f",
-          local_origin_pos_[0] * (180.0 / M_PI),
-          local_origin_pos_[1] * (180.0 / M_PI),
-          local_origin_pos_[2]);
-      }
-
-      sol.pos_enu_org_ecef.x = local_origin_ecef_[0];
-      sol.pos_enu_org_ecef.y = local_origin_ecef_[1];
-      sol.pos_enu_org_ecef.z = local_origin_ecef_[2];
-
-      double d_ecef[3] = {
-        sol.pos_ecef.x - local_origin_ecef_[0],
-        sol.pos_ecef.y - local_origin_ecef_[1],
-        sol.pos_ecef.z - local_origin_ecef_[2]
-      };
-      double enu[3] = {0};
-      ecef2enu(local_origin_pos_, d_ecef, enu);
-      sol.pos_enu.x = enu[0];
-      sol.pos_enu.y = enu[1];
-      sol.pos_enu.z = enu[2];
-
-      // vel_enu uses CURRENT-position frame (matches msg comment & receiver convention).
-      double vel_ecef[3] = {sol.vel_ecef.x, sol.vel_ecef.y, sol.vel_ecef.z};
-      double vel_enu[3] = {0};
-      const double cur_llh[3] = {sol.latitude * D2R, sol.longitude * D2R, sol.altitude};
-      ecef2enu(cur_llh, vel_ecef, vel_enu);
-      sol.vel_enu.x = vel_enu[0];
-      sol.vel_enu.y = vel_enu[1];
-      sol.vel_enu.z = vel_enu[2];
-    } else {
-      const double nan_d = std::numeric_limits<double>::quiet_NaN();
-      sol.pos_enu.x = nan_d;
-      sol.pos_enu.y = nan_d;
-      sol.pos_enu.z = nan_d;
-      sol.vel_enu.x = nan_d;
-      sol.vel_enu.y = nan_d;
-      sol.vel_enu.z = nan_d;
-      // Symmetric ECEF velocity wipe — if vel_enu is going to NaN, vel_ecef
-      // must follow. Defends against a parser leaving a stale vel_ecef (e.g.,
-      // NMEA RMC with empty speed/course coerced to 0 by parseDouble).
-      // pos_ecef is intentionally NOT wiped: GGA can carry a usable position
-      // even at STATUS_NONE on some receivers.
-      sol.vel_ecef.x = nan_d;
-      sol.vel_ecef.y = nan_d;
-      sol.vel_ecef.z = nan_d;
+    if (decoder_common::finalizeReceiverSolution(
+            sol, has_local_origin_, local_origin_ecef_, local_origin_pos_)) {
+      RCLCPP_INFO(get_logger(), "Set local ENU origin: lat=%.6f lon=%.6f alt=%.2f",
+                  local_origin_pos_[0] * R2D, local_origin_pos_[1] * R2D,
+                  local_origin_pos_[2]);
     }
 
     sol_pub_->publish(sol);
@@ -1017,6 +966,7 @@ class SbfDriverNode : public rclcpp::Node {
 
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
+    receiver_health_.observationCapacity(raw_.obs.n, MAXOBS);
 
     // obs.data[0].time, not raw_.time (already advanced to the next epoch).
     int week = 0;
@@ -1024,8 +974,11 @@ class SbfDriverNode : public rclcpp::Node {
     const double tow = time2gpst(obs_time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp    = (config_.use_gps_timestamp && week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
+    const auto measurement_stamp = time_base_.stamp(
+        config_.use_gps_timestamp, week > 0,
+        obs_time, now(), get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+    msg.header.stamp = *measurement_stamp;
     msg.header.frame_id = config_.frame_id;
     msg.week = static_cast<uint32_t>(week);
     msg.tow  = tow;
@@ -1034,12 +987,13 @@ class SbfDriverNode : public rclcpp::Node {
     for (int i = 0; i < raw_.obs.n; ++i) {
       const obsd_t& obs = raw_.obs.data[i];
       decoder_common::countSatellite(obs.sat, sat_count);
-      decoder_common::appendObservations(obs, msg.observations);
+      decoder_common::appendObservations(obs, msg.observations, &raw_.nav);
     }
 
     obs_pub_->publish(msg);
+    receiver_health_.published(msg.week, msg.tow, msg.observations.size());
 
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
       "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
@@ -1052,13 +1006,22 @@ class SbfDriverNode : public rclcpp::Node {
   // store, then publish a snapshot if anything changed.
   void publishEphemerides() {
     bool changed = false;
-    for (int i = 0; i < raw_.nav.n; ++i) {
-      changed = eph_store_.ingestEph(raw_.nav.eph[i]) || changed;
+    int prn = 0;
+    const int sys = satsys(raw_.ephsat, &prn);
+    if (sys == SYS_GLO && prn >= 1 && prn <= raw_.nav.ng) {
+      changed = eph_store_.ingestGeph(raw_.nav.geph[prn-1]);
+    } else if (raw_.ephsat > 0 && raw_.ephsat <= MAXSAT && sys != SYS_SBS) {
+      const int index = raw_.ephsat-1 + MAXSAT*raw_.ephset;
+      if (index >= 0 && index < raw_.nav.n)
+        changed = eph_store_.ingestEph(raw_.nav.eph[index]);
     }
-    for (int i = 0; i < raw_.nav.ng; ++i) {
-      changed = eph_store_.ingestGeph(raw_.nav.geph[i]) || changed;
-    }
+    changed = eph_store_.ingestIon(raw_.nav) || changed;
     if (changed) publishSnapshot();
+  }
+
+  // Broadcast ionosphere parameters (backend status 9): part of the snapshot.
+  void publishIonosphere() {
+    if (eph_store_.ingestIon(raw_.nav)) publishSnapshot();
   }
 
   // Heartbeat hook — call from the poll timer; emits a snapshot if the
@@ -1069,6 +1032,7 @@ class SbfDriverNode : public rclcpp::Node {
 
   void publishSnapshot() {
     auto msg = eph_store_.buildSnapshot(now());
+    receiver_health_.snapshotRejected(eph_store_.lastSnapshotRejected());
     eph_pub_->publish(msg);
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
       "Published ephemeris snapshot: GNSS=%zu GLO=%zu",
@@ -1086,8 +1050,18 @@ class SbfDriverNode : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr  imu_raw_pub_;       // ExtSensorMeas accel/gyro (uncalibrated)
   rclcpp::TimerBase::SharedPtr timer_;
 
+  wire::Framer wire_framer_{wire::Protocol::Sbf};
+  std::chrono::steady_clock::time_point wire_last_input_{std::chrono::steady_clock::now()};
+  uint64_t wire_last_rejected_{0};
   stream_t stream_{};
   raw_t    raw_{};
+
+  // One time base per session, latched at the first published message and
+  // never changed. Shared by EVERY topic this node publishes, which is what
+  // structurally guarantees the IMU and the GNSS topics cannot end up on
+  // different bases. See decoder_common::TimeBaseLatch.
+  decoder_common::TimeBaseLatch time_base_;
+
   bool is_serial_connection_{false};
 
   // RTCM relay (PC -> receiver): STRSVR-style TCP server -> serial
@@ -1100,9 +1074,10 @@ class SbfDriverNode : public rclcpp::Node {
   int                  sbf_body_pos_{0};
   std::vector<uint8_t> sbf_body_;
 
-  // ExtSensorMeas accumulator (TOW-based, collects accel + gyro 3-vectors)
+  // ExtSensorMeas accumulator, keyed by week/TOW and Source/SensorModel
   uint32_t esm_tow_ms_{0xFFFFFFFFu};
   uint16_t esm_wnc_{0xFFFFu};
+  uint16_t esm_sensor_{0xFFFFu};
   double   esm_accel_[3]{0.0, 0.0, 0.0};
   double   esm_gyro_[3]{0.0, 0.0, 0.0};
   bool     esm_has_accel_{false};
@@ -1110,8 +1085,6 @@ class SbfDriverNode : public rclcpp::Node {
 
   // NMEA parsing state
   gnss_utils::NmeaParser nmea_parser_;
-  std::string            nmea_buffer_;
-  bool                   nmea_pending_dollar_{false};  // saw '$', awaiting next byte to disambiguate from SBF '$@'
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
   SolutionSource         source_{SolutionSource::NMEA};
@@ -1132,7 +1105,13 @@ class SbfDriverNode : public rclcpp::Node {
 
 int main(int argc, char* argv[]) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<gnss_ros_standardization::SbfDriverNode>());
+  try {
+    rclcpp::spin(std::make_shared<gnss_ros_standardization::SbfDriverNode>());
+  } catch (const std::exception& error) {
+    RCLCPP_FATAL(rclcpp::get_logger("sbf_driver_node"), "Startup/runtime failure: %s", error.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   rclcpp::shutdown();
   return 0;
 }

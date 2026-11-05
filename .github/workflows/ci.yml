@@ -8,11 +8,13 @@ on:
 
 jobs:
   build:
-    name: Build (${{ matrix.ros_distro }})
+    name: Build (${{ matrix.ros_distro }}, shared=${{ matrix.shared }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        ros_distro: [humble, jazzy]
+        shared: ["ON", "OFF"]
         include:
           - ros_distro: humble
             ros_image: osrf/ros:humble-desktop
@@ -42,11 +44,61 @@ jobs:
       - name: Build
         run: |
           . /opt/ros/${{ matrix.ros_distro }}/setup.sh
-          colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
+          colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=${{ matrix.shared }}
 
-      - name: Test (lint)
+      - name: Unit and integration tests
         run: |
           . /opt/ros/${{ matrix.ros_distro }}/setup.sh
           . install/setup.sh
           colcon test --packages-select gnss_ros_standardization
           colcon test-result --verbose
+
+      - name: Installed C++ and Python consumer
+        run: |
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
+          . install/setup.sh
+          bash test/check_install.sh "$PWD/install/gnss_ros_standardization"
+
+  protocol-sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y g++ libgtest-dev
+      - name: ASan and UBSan protocol corpus
+        run: |
+          g++ -std=c++17 -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -Iinclude test/test_binary_framer.cpp -lgtest_main -lgtest -pthread -o /tmp/protocol-test
+          ASAN_OPTIONS=detect_leaks=1 /tmp/protocol-test
+
+  fgo:
+    env:
+      MAKEFLAGS: -j2
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+    runs-on: ubuntu-24.04
+    container: osrf/ros:jazzy-desktop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: |
+          apt-get update
+          apt-get install -y libeigen3-dev libboost-all-dev curl
+          . /opt/ros/jazzy/setup.sh
+          rosdep update
+          rosdep install --from-paths . --ignore-src -r -y
+      - name: Build pinned GTSAM
+        run: |
+          bash cmake/build_fgo_dependency.sh /tmp/fgo-dependency 2
+      - name: Build and test FGO
+        run: |
+          . /opt/ros/jazzy/setup.sh
+          colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_FGO_NODES=ON -DGTSAM_DIR=/tmp/fgo-dependency/install/lib/cmake/GTSAM
+          . install/setup.sh
+          colcon test --packages-select gnss_ros_standardization
+          colcon test-result --verbose
+      - name: Installed C++ and Python consumer with FGO build
+        run: |
+          . /opt/ros/jazzy/setup.sh
+          . install/setup.sh
+          bash test/check_install.sh "$PWD/install/gnss_ros_standardization"

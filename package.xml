@@ -4,30 +4,31 @@
   <name>gnss_ros_standardization</name>
   <version>1.0.0</version>
   <description>
-    Standardization of GNSS raw data handling for ROS2 with MALIB core.
-    Provides message definitions and tools (RTCM decoder, ROS bag -> RINEX converter).
+    GNSS raw observations and navigation data as ROS 2 topics, using RTKLIB.
+    Includes u-blox, Septentrio and NovAtel drivers and decoders, RTCM decoding,
+    RINEX and POS bag converters, and positioning examples.
   </description>
   <maintainer email="dai12.gnss@gmail.com">daiki</maintainer>
   <license>MIT</license>
+  <!-- Vendored RTKLIB, including configure-time modifications. -->
+  <license>BSD-2-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <!-- Messages -->
   <build_depend>rosidl_default_generators</build_depend>
-  <build_depend>std_msgs</build_depend>
-  <build_depend>geometry_msgs</build_depend>
-  <build_depend>builtin_interfaces</build_depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>builtin_interfaces</depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>builtin_interfaces</exec_depend>
   <member_of_group>rosidl_interface_packages</member_of_group>
 
   <!-- Nodes / tools -->
   <depend>rclcpp</depend>
   <depend>rcutils</depend>
   <build_depend>eigen3_cmake_module</build_depend>
+  <depend>eigen</depend>
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
   <exec_depend>rosbag2_storage_mcap</exec_depend>
@@ -36,13 +37,24 @@
   <depend>cv_bridge</depend>
   <depend>image_transport</depend>
 
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <!-- Pipeline launch files -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>ros2bag</exec_depend>
+
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_test</test_depend>
+  <test_depend>rclpy</test_depend>
+  <test_depend>rcl_interfaces</test_depend>
+  <test_depend>rosbag2_py</test_depend>
+  <test_depend>rosbag2_storage_mcap</test_depend>
+  <test_depend>rosbag2_storage_sqlite3</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
   </export>
+  <test_depend>rosgraph_msgs</test_depend>
 </package>
 
 

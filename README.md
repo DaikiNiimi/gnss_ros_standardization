@@ -1,138 +1,140 @@
 # gnss_ros_standardization
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![ROS 2](https://img.shields.io/badge/ROS%202-Humble%20%7C%20Jazzy-brightgreen)](https://docs.ros.org/en/humble/)
-
-## Overview
+[![ROS 2](https://img.shields.io/badge/ROS%202-Jazzy-brightgreen)](https://docs.ros.org/en/jazzy/)
 
 <p align="center">
-  <img src="fig/overview.svg" alt="Repository overview and scope" width="850">
+  <img src="fig/overview.svg" alt="Repository overview" width="850">
 </p>
 
-**gnss_ros_standardization** is an open-source ROS 2 package that standardizes
-GNSS raw-data handling for robotics and autonomous systems.
-
-The goal is to make GNSS raw observations and ephemeris uniformly accessible
-across receiver brands so that tight-coupling GNSS/IMU methods and multi-sensor
-fusion frameworks can be developed once and reused everywhere.
-
-- Subscribe to raw GNSS observations via standardized ROS 2 topics in robotics applications
-- Support diverse GNSS receivers and formats (u-blox, Septentrio, NovAtel, RTCM3)
-- Reproduce experiments across systems with consistent interfaces
+ROS 2 package that publishes GNSS raw observations and navigation data from
+u-blox, Septentrio, NovAtel and RTCM3 receivers as one common set of messages,
+with drivers, bag/RINEX converters and positioning nodes (SPP, RTK, EKF, FGO).
 
 ## Demo
-
-Hardware and ROS 2 node configuration used in the demo:
 
 <p align="center">
   <img src="fig/demo_setup.svg" alt="Hardware and ROS 2 node configuration" width="850">
 </p>
 
-Demo of real-time kinematic (RTK) positioning using this ROS 2 package:
-
 <p align="center">
   <img src="fig/rtk_demo.gif" alt="RTK positioning demo" width="800">
 </p>
 
-## Supported ROS 2 distributions
+## Supported receivers
 
-| Distribution | Ubuntu | Status |
-|---|---|---|
-| Humble Hawksbill (LTS) | 22.04 | Supported |
-| Jazzy Jalisco (LTS) | 24.04 | Supported |
-
-## Supported receivers (summary)
-
-| Receiver | Observations | Ephemeris | NMEA Solution | IMU measurement |
+| Receiver | Observations | Navigation | Receiver solution | IMU |
 |---|---|---|---|---|
-| u-blox (UBX) | ✓ | ✓ | ✓ | ✓ |
-| Septentrio (SBF) | ✓ | ✓ | ✓ | ✓ |
-| NovAtel (OEM4/6/7) | ✓ | ✓ | ✓ | ✓ |
-| RTCM3 (MSM4/7) | ✓ | ✓ | — | — |
+| u-blox (UBX) | RXM-RAWX, RXM-RAW | RXM-SFRBX, RXM-SFRB | NAV-PVT, NAV-HPPOSLLH, NAV-HPPOSECEF, NAV-POSECEF, NAV-VELECEF, NAV-COV, NAV-DOP, NMEA | ESF-RAW, ESF-INS |
+| Septentrio (SBF) | MeasEpoch, MeasExtra, Meas3 | GPS/GLO/GAL/BDS/QZS/NavIC Nav and raw navigation | PVTGeodetic, PVTCartesian, PosCov, VelCov, DOP, NMEA | ExtSensorMeas |
+| NovAtel (OEM4/6/7) | RANGE, RANGECMP | GPS/GLO/GAL/BDS/QZS/NavIC EPHEM, IONUTC | BESTPOS, BESTVEL, BESTXYZ, PSRDOP, NMEA | RAWIMUSX, CORRIMUDATA |
+| RTCM3 | MSM4–7, 1002, 1004, 1010, 1012 | 1019, 1020, 1041, 1042, 1044, 1045, 1046 | — | — |
+| RINEX 3 (file) | observation files | navigation files | — | — |
 
-Per-receiver protocol message tables (UBX message IDs, SBF block IDs,
-NovAtel log IDs, RTCM types) are shown in the component READMEs.
+Message IDs and topics per receiver: [decoders](src/decoders/README.md#decoded-messages).
 
-## Dependencies
+## Nodes
 
-- **OS**: Ubuntu 22.04 (Humble) or 24.04 (Jazzy)
-- **ROS 2**: Humble or Jazzy
-- **Build tool**: `colcon`
-- **ROS packages** (installed via `rosdep`):
-  `rclcpp`, `rcutils`, `std_msgs`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`,
-  `builtin_interfaces`, `rosbag2_cpp`, `rosbag2_storage`, `cv_bridge`,
-  `image_transport`
-- **System libraries**: Eigen3 ≥ 3.3 (`sudo apt install libeigen3-dev`)
-- **Third-party** (vendored as a git submodule):
-  [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB)
-  — RTKLIB by T. Takasu, demo5 fork by T. Everett (BSD 2-Clause)
-- **Optional** — only for the opt-in tightly-coupled FGO examples
-  (`-DBUILD_GTSAM_FGO_EXAMPLES=ON`): [GTSAM](https://github.com/borglab/gtsam)
-  (develop branch, BSD-3-Clause).
+| Group | Executables | Guide |
+|---|---|---|
+| Decoders (read a configured receiver) | `ubx_decoder_node`, `sbf_decoder_node`, `novatel_decoder_node`, `rtcm_decoder_node` | [decoders](src/decoders/README.md) |
+| Drivers (configure the receiver, then decode) | `ubx_driver_node`, `sbf_driver_node`, `novatel_driver_node` | [drivers](src/drivers/README.md) |
+| Converters | `rinex_to_rosbag`, `rosbag_to_rinex`, `pos_to_rosbag`, `rosbag_to_pos` | [converters](src/converter/README.md) |
+| Positioning | `single_point_positioning`, `real_time_kinematic`, `gnss_imu_kalman_filter`, `gnss_fgo`, `gnss_imu_fgo` | [positioning](src/positioning/README.md) |
+| Visualizer | `gnss_visualizer` | [visualizer](src/utils/README.md) |
+| Launch | `pipeline.launch.py` (logging, RTK, FGO, EKF, on-chip RTK) | [pipelines](launch/README.md) |
+
+Messages: [msg/README.md](msg/README.md).
 
 ## Installation
 
+Ubuntu 24.04, ROS 2 Jazzy:
+
 ```bash
+source /opt/ros/jazzy/setup.bash
 git clone --recursive https://github.com/DaikiNiimi/gnss_ros_standardization.git
 cd gnss_ros_standardization
 rosdep install --from-paths . --ignore-src -r -y
-colcon build
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 
-If you cloned the repository without `--recursive`, make sure to run `git submodule update --init --recursive`.
+If the clone omitted the RTKLIB submodule: `git submodule update --init --recursive`.
 
-### Optional: tightly-coupled FGO examples (GTSAM)
-
-The [tightly-coupled FGO examples](examples/tightly_coupled_fgo/) (`gnss_fgo`,
-`gnss_imu_fgo`) need [GTSAM](https://github.com/borglab/gtsam) built from its
-`develop` branch (the GNSS factors are not in a release tag yet). `rosdep`/`colcon`
-do not fetch it — build it once:
+### FGO nodes (optional, need GTSAM)
 
 ```bash
-git clone https://github.com/borglab/gtsam.git && cd gtsam && git checkout develop
-cmake -B build -DCMAKE_BUILD_TYPE=Release \
-  -DGTSAM_USE_SYSTEM_EIGEN=ON -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF \
-  -DGTSAM_BUILD_TESTS=OFF -DGTSAM_BUILD_UNSTABLE=OFF -DGTSAM_BUILD_PYTHON=OFF \
-  -DCMAKE_INSTALL_PREFIX=$HOME/gtsam-install
-cmake --build build -j"$(nproc)" && cmake --install build && cd ..
-
-colcon build --cmake-args -DBUILD_GTSAM_FGO_EXAMPLES=ON \
-  -DGTSAM_DIR=$HOME/gtsam-install/lib/cmake/GTSAM
+bash cmake/build_fgo_dependency.sh "$HOME/fgo-dependency" 2
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_FGO_NODES=ON \
+  -DGTSAM_DIR="$HOME/fgo-dependency/install/lib/cmake/GTSAM"
 ```
 
-`GTSAM_USE_SYSTEM_EIGEN=ON` and `GTSAM_BUILD_WITH_MARCH_NATIVE=OFF` are **required**
-(this package uses the system Eigen). The FGO binaries embed the GTSAM path via
-RPATH, so no `LD_LIBRARY_PATH` is needed at runtime.
+The script builds GTSAM (borglab/gtsam `develop`, commit
+`6f31b6df3b56b60ec82d3218b47a2163bb41dd34`) with the settings the FGO nodes need.
 
-## Components
+### Build options
 
-Each component has its own README with detailed information including message
-tables, parameter lists, and `ros2 run` examples.
-
-| Component | Purpose | README |
+| CMake option | Default | Builds |
 |---|---|---|
-| Decoders | Stream-only: NTRIP / TCP / Serial → ROS topics | [src/decoders/README.md](src/decoders/README.md) |
-| Drivers | Connect to receiver, configure outputs, decode | [src/drivers/README.md](src/drivers/README.md) |
-| Converters | RINEX ↔ rosbag and RTKLIB `.pos` ↔ rosbag | [src/converter/README.md](src/converter/README.md) |
-| Examples | SPP, RTK, loose-coupled GNSS/IMU EKF, tightly-coupled FGO (GTSAM) | [examples/README.md](examples/README.md) |
-| Messages | Public ROS message contract | [msg/README.md](msg/README.md) |
-| Tests & tools | Unit tests, and checks for a converted rosbag against its source files | [test/README.md](test/README.md) |
+| `BUILD_UBX_DECODER_NODE`, `BUILD_SBF_DECODER_NODE`, `BUILD_NOVATEL_DECODER_NODE`, `BUILD_RTCM_DECODER_NODE` | `ON` | decoders |
+| `BUILD_UBX_DRIVER_NODE`, `BUILD_SBF_DRIVER_NODE`, `BUILD_NOVATEL_DRIVER_NODE` | `ON` | drivers |
+| `BUILD_RINEX_WRITER_TOOL` | `ON` | `rosbag_to_rinex` |
+| `BUILD_SPP_NODE`, `BUILD_RTK_NODE`, `BUILD_EKF_NODE` | `ON` | SPP, RTK, EKF |
+| `BUILD_FGO_NODES` | `OFF` | `gnss_fgo`, `gnss_imu_fgo` |
+| `ENABLE_GLO`, `ENABLE_GAL`, `ENABLE_BDS`, `ENABLE_QZS`, `ENABLE_SBS`, `ENABLE_IRN` | `ON` | constellations compiled into RTKLIB |
 
-## Acknowledgements
+## Quick start
 
-This project uses [RTKLIB (rtklibexplorer fork)](https://github.com/rtklibexplorer/RTKLIB),
-maintained by Tim Everett, based on [RTKLIB](https://github.com/tomojitakasu/RTKLIB)
-by Tomoji Takasu, licensed under BSD 2-Clause.
+Read a receiver that already outputs raw observations and navigation data:
 
-The tightly-coupled FGO examples build on [GTSAM](https://github.com/borglab/gtsam)
-by the Borglab (Frank Dellaert et al.), licensed under BSD-3-Clause, using its
-[official GNSS double-difference factors](https://gtsam.org/2026/06/10/rtk-gnss-double-difference.html).
+```bash
+ros2 run gnss_ros_standardization ubx_decoder_node --ros-args \
+  -p stream_path:=serial:///dev/ttyACM0:115200
+ros2 topic echo /gnss/observation --once
+```
+
+Configure the receiver on startup instead:
+
+```bash
+ros2 run gnss_ros_standardization ubx_driver_node --ros-args \
+  --params-file config/ubx_driver.yaml
+```
+
+Logging, RTK, FGO and EKF with one command (settings in `config/site.yaml`):
+
+```bash
+ros2 launch gnss_ros_standardization pipeline.launch.py
+```
+
+A recorded binary log is read with `stream_path:=file:///absolute/path/log.ubx`.
+
+## Dataset
+
+[PPC-Dataset-ROS2](https://github.com/DaikiNiimi/PPC-Dataset-ROS2) provides the six
+vehicle runs (Nagoya and Tokyo) of the [PPC-Dataset](https://github.com/taroz/PPC-Dataset)
+as ROS 2 bags in this package's messages: rover and base observations, ephemerides,
+IMU and ground truth. Replay a run into a positioning node (from this repository's
+directory; [config/ppc/](config/ppc/) holds the settings of each city):
+
+```bash
+ros2 launch gnss_ros_standardization pipeline.launch.py pipeline:=rtk replay:=true \
+  params_file:=$PWD/config/ppc/tokyo_rtk.yaml &
+ros2 bag play /path/to/PPC-Dataset-ROS2/bags/tokyo_run1
+```
+
+## Documentation
+
+| Topic | Document |
+|---|---|
+| Message fields, time, frames, missing values | [topic contract](docs/TOPIC_DATA_CONTRACT.md), [messages](msg/README.md) |
+| Receiver messages | [decoders](src/decoders/README.md#decoded-messages), [drivers](src/drivers/README.md#output-messages) |
+| Parameter names | [parameter names](docs/PARAMETER_NAMES.md) |
+| Using the installed package from another package | [installed API](docs/INSTALLED_API.md) |
+| Tests | [tests](test/README.md) |
+| ROS 2 bags of the PPC dataset | [dataset](#dataset) |
 
 ## License
 
-Released under the [MIT License](LICENSE).
-
-## Contact
-
-Maintainer: Daiki Niimi (daiki.niimi@ruri.waseda.jp)
+MIT, see [LICENSE](LICENSE) (includes the RTKLIB notice). GTSAM, when used, has its
+own license. Maintainer: Daiki Niimi (`dai12.gnss@gmail.com`).

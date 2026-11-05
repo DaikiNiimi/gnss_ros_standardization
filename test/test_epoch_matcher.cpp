@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: MIT
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -20,6 +21,15 @@ ObsMsg::SharedPtr epoch(std::uint32_t week, double tow) {
   msg->week = week;
   msg->tow = tow;
   return msg;
+}
+
+TEST(ReleaseN2, WeekZeroIsInvalidOnBothStreams) {
+  Matcher matcher;
+  matcher.pushRover(epoch(0, 100));
+  matcher.pushBase(epoch(0, 100));
+  EXPECT_TRUE(matcher.flush().empty());
+  for (auto stream : {Matcher::Stream::Rover, Matcher::Stream::Base})
+    EXPECT_EQ(matcher.counters().dropped(stream, Matcher::DropReason::InvalidTimestamp), 1U);
 }
 
 TEST(EpochMatcher, RejectsInvalidConfiguration) {
@@ -60,7 +70,7 @@ TEST(EpochMatcher, SortsBothStreamsAndDeduplicates) {
             1U);
 }
 
-TEST(EpochMatcher, BoundedCallbackReorderCannotPublishNewerExactFirst) {
+TEST(EpochMatcher, ExactPairIsDecidedAtOnceAndAnOlderLateRoverIsCounted) {
   Matcher::Options opt;
   opt.reorder_window_s = 0.05;
   Matcher matcher(opt);
@@ -69,23 +79,55 @@ TEST(EpochMatcher, BoundedCallbackReorderCannotPublishNewerExactFirst) {
   matcher.pushRover(epoch(2200, 100.04));
   EXPECT_TRUE(matcher.drainMatches().empty());
   matcher.pushBase(epoch(2200, 100.04));
-  EXPECT_TRUE(matcher.drainMatches().empty());
+  const auto pairs = matcher.drainMatches();
+  ASSERT_EQ(pairs.size(), 1U) << "nothing better than an exact base can arrive";
+  EXPECT_EQ(pairs[0].kind, Matcher::PairKind::Exact);
 
-  // An older rover/base pair arrives 40 ms late, still inside the configured
-  // reorder window. Neither exact pair may publish out of order.
+  // A rover epoch older than one already decided cannot be published in order.
   matcher.pushRover(epoch(2200, 100.00));
   EXPECT_TRUE(matcher.drainMatches().empty());
-  matcher.pushBase(epoch(2200, 100.00));
-  EXPECT_TRUE(matcher.drainMatches().empty());
+  EXPECT_EQ(matcher.counters().dropped(
+                Matcher::Stream::Rover, Matcher::DropReason::LateArrival),
+            1U);
+}
 
-  matcher.pushRover(epoch(2200, 100.10));  // advances rover watermark
+TEST(EpochMatcher, AWaitingEpochHoldsEveryLaterOne) {
+  Matcher matcher;
+  for (double t : {95.0, 96.0, 97.0, 98.0, 99.0}) matcher.pushBase(epoch(2200, t));
+  matcher.pushRover(epoch(2200, 100.0));   // base(100) is due: waits
+  matcher.pushBase(epoch(2200, 101.0));    // exact for the NEXT epoch
+  EXPECT_TRUE(matcher.drainMatches().empty());
+  matcher.pushRover(epoch(2200, 101.0));
   const auto pairs = matcher.drainMatches();
   ASSERT_EQ(pairs.size(), 2U);
-  EXPECT_DOUBLE_EQ(pairs[0].rover->tow, 100.00);
-  EXPECT_DOUBLE_EQ(pairs[1].rover->tow, 100.04);
-  EXPECT_EQ(pairs[0].kind, Matcher::PairKind::Exact);
+  EXPECT_DOUBLE_EQ(pairs[0].rover->tow, 100.0);
+  EXPECT_EQ(pairs[0].kind, Matcher::PairKind::Aged);
+  EXPECT_DOUBLE_EQ(pairs[1].rover->tow, 101.0);
   EXPECT_EQ(pairs[1].kind, Matcher::PairKind::Exact);
-  EXPECT_EQ(matcher.pendingRoverCount(), 1U);
+}
+
+TEST(EpochMatcher, BaseCadenceDecidesAnAgedNewestEpochAtOnce) {
+  // A 5 Hz rover between 1 Hz base epochs: the next base is due after the
+  // rover epoch, so no closer base can come and nothing needs to wait.
+  Matcher matcher;
+  matcher.pushBase(epoch(2200, 99.0));
+  matcher.pushRover(epoch(2200, 99.4));
+  EXPECT_TRUE(matcher.drainMatches().empty()) << "one base: cadence unknown";
+  matcher.pushBase(epoch(2200, 100.0));
+  auto pairs = matcher.drainMatches();
+  ASSERT_EQ(pairs.size(), 1U) << "cadence 1 s: base(99.4) cannot exist";
+  EXPECT_DOUBLE_EQ(pairs[0].base->tow, 99.0);
+  matcher.pushRover(epoch(2200, 100.2));
+  pairs = matcher.drainMatches();
+  ASSERT_EQ(pairs.size(), 1U);
+  EXPECT_EQ(pairs[0].kind, Matcher::PairKind::Aged);
+  EXPECT_DOUBLE_EQ(pairs[0].base->tow, 100.0);
+  matcher.pushRover(epoch(2200, 101.0));   // on the base grid: base(101) due
+  EXPECT_TRUE(matcher.drainMatches().empty());
+  matcher.pushBase(epoch(2200, 101.0));
+  pairs = matcher.drainMatches();
+  ASSERT_EQ(pairs.size(), 1U);
+  EXPECT_EQ(pairs[0].kind, Matcher::PairKind::Exact);
 }
 
 TEST(EpochMatcher, UsesRobustMedianBaseCadence) {
@@ -174,6 +216,9 @@ TEST(EpochMatcher, ReportsBaseOutageDropsByReasonWhenUnmatchedDisabled) {
 
 TEST(EpochMatcher, QueueOverflowAndLateInputsAreNeverSilent) {
   Matcher::Options opt;
+  // P1-1: exercise deferred pre-navigation storage explicitly. Live intake
+  // decides on push; later base arrivals must not revise released pairs.
+  opt.decide_on_push = false;
   opt.queue_limit = 2;
   Matcher matcher(opt);
 
@@ -183,15 +228,12 @@ TEST(EpochMatcher, QueueOverflowAndLateInputsAreNeverSilent) {
   matcher.pushRover(epoch(2200, 99.0));   // older than terminal epoch
   matcher.pushRover(epoch(2200, 102.0));  // queued duplicate
 
-  // Base overflow evicts the end the rover cannot use. Here the rover queue
-  // holds 101/102 and the base is far AHEAD of it, so the front (200) is the
-  // one the rover will reach first and the BACK is evicted instead - see
-  // OverflowKeepsTheBaseTheLaggingRoverStillNeeds. Base 200 therefore survives
-  // and re-pushing it is a duplicate, not a late arrival.
-  matcher.pushBase(epoch(2200, 200.0));
-  matcher.pushBase(epoch(2200, 201.0));
-  matcher.pushBase(epoch(2200, 202.0));   // evicts base 202 (the back)
-  matcher.pushBase(epoch(2200, 200.0));   // still queued: duplicate
+  // The base queue is sized from the observed cadence (drop_ahead_s 2 s at
+  // 1 Hz needs 4 entries), not only queue_limit. Overflow evicts the front;
+  // the newest base is never the victim.
+  for (int i = 0; i <= 4; ++i) matcher.pushBase(epoch(2200, 200.0 + i));  // evicts 200
+  matcher.pushBase(epoch(2200, 201.0));   // still queued: duplicate
+  matcher.pushBase(epoch(2200, 200.0));   // behind the evicted front: late
 
   EXPECT_EQ(matcher.counters().dropped(
                 Matcher::Stream::Rover, Matcher::DropReason::QueueOverflow),
@@ -208,12 +250,15 @@ TEST(EpochMatcher, QueueOverflowAndLateInputsAreNeverSilent) {
   EXPECT_EQ(matcher.counters().dropped(
                 Matcher::Stream::Base, Matcher::DropReason::Duplicate),
             1U);
+  EXPECT_EQ(matcher.counters().dropped(
+                Matcher::Stream::Base, Matcher::DropReason::LateArrival),
+            1U);
 
   const auto events = matcher.takeDropEvents();
-  EXPECT_EQ(events.size(), 5U);
+  EXPECT_EQ(events.size(), 6U);
   EXPECT_TRUE(matcher.takeDropEvents().empty());
   EXPECT_EQ(matcher.pendingRoverCount(), 2U);
-  EXPECT_EQ(matcher.pendingBaseCount(), 2U);
+  EXPECT_EQ(matcher.pendingBaseCount(), 4U);
 }
 
 TEST(EpochMatcher, RejectsNonCanonicalOrNonFiniteTow) {
@@ -392,10 +437,11 @@ TEST(EpochMatcher, OverflowKeepsTheBaseTheLaggingRoverStillNeeds) {
   Matcher matcher(opt);
   const std::uint32_t week = 2200;
 
-  // The rover is stuck at 100.0 (the node is busy); base keeps arriving.
-  matcher.pushRover(epoch(week, 100.0));
+  // The rover waits at 100.5 with only base 100.0; base keeps arriving.
+  matcher.pushBase(epoch(week, 100.0));
+  matcher.pushRover(epoch(week, 100.5));
   (void)matcher.drainMatches();
-  for (int i = 0; i <= 20; ++i) matcher.pushBase(epoch(week, 100.0 + i));
+  for (int i = 1; i <= 20; ++i) matcher.pushBase(epoch(week, 100.0 + i));
 
   // Overflow happened, and it did NOT throw away base 100.0.
   EXPECT_GT(matcher.counters().dropped(Matcher::Stream::Base,
@@ -403,34 +449,36 @@ TEST(EpochMatcher, OverflowKeepsTheBaseTheLaggingRoverStillNeeds) {
             0U);
   const auto pairs = matcher.flush();
   ASSERT_EQ(pairs.size(), 1U);
-  EXPECT_EQ(pairs[0].kind, Matcher::PairKind::Exact)
-      << "the base epoch matching the lagging rover was evicted";
+  EXPECT_EQ(pairs[0].kind, Matcher::PairKind::Aged)
+      << "the base epoch the waiting rover needs was evicted";
   ASSERT_TRUE(pairs[0].hasBase());
   EXPECT_DOUBLE_EQ(pairs[0].base->tow, 100.0);
 }
 
 TEST(EpochMatcher, TheBaseStreamSettlesTheLastRoverBeforeAnOutage) {
   // During a rover outage the last rover epoch IS the newest, so the
-  // rover-only reorder rule never settles it and it would be held for the whole
-  // outage. The base stream keeps arriving and proves time has moved on.
+  // rover-only reorder rule never settles a waiting (aged) epoch and it would
+  // be held for the whole outage. The base stream keeps arriving and proves
+  // time has moved on.
   Matcher::Options opt;
   opt.emit_unmatched_rover = true;
   opt.drop_ahead_s = 2.0;
   Matcher matcher(opt);
   const std::uint32_t week = 2200;
 
+  for (double t : {97.0, 98.0, 99.0}) matcher.pushBase(epoch(week, t));
   matcher.pushRover(epoch(week, 100.0));
-  matcher.pushBase(epoch(week, 100.0));
-  EXPECT_TRUE(matcher.drainMatches().empty()) << "nothing proves time moved yet";
+  EXPECT_TRUE(matcher.drainMatches().empty()) << "base(100) is due: waits";
 
-  // Base keeps coming; the rover stream has stopped.
+  // Base(100) is lost; the base stream goes on, the rover stream has stopped.
   matcher.pushBase(epoch(week, 101.0));
-  EXPECT_TRUE(matcher.drainMatches().empty()) << "only 1 s past - still inside";
+  EXPECT_TRUE(matcher.drainMatches().empty()) << "still inside drop_ahead_s";
   matcher.pushBase(epoch(week, 102.0));
   const auto pairs = matcher.drainMatches();
   ASSERT_EQ(pairs.size(), 1U) << "held for the whole outage";
   EXPECT_DOUBLE_EQ(pairs[0].rover->tow, 100.0);
-  EXPECT_EQ(pairs[0].kind, Matcher::PairKind::Exact);
+  EXPECT_EQ(pairs[0].kind, Matcher::PairKind::Aged);
+  EXPECT_DOUBLE_EQ(pairs[0].base->tow, 99.0);
 }
 
 TEST(EpochMatcher, ADeepRoverQueueDoesNotPruneTheBaseItStillNeeds) {
@@ -439,6 +487,9 @@ TEST(EpochMatcher, ADeepRoverQueueDoesNotPruneTheBaseItStillNeeds) {
   // to be matched against, and it gets worse the deeper the queue - invisible
   // while the node keeps up, severe once it does not.
   Matcher::Options opt;
+  // P1-1: exercise deferred pre-navigation storage explicitly. Live intake
+  // decides on push; later base arrivals must not revise released pairs.
+  opt.decide_on_push = false;
   opt.emit_unmatched_rover = true;
   opt.queue_limit = 512;
   opt.max_tdiff_s = 5.0;
@@ -510,4 +561,206 @@ TEST(EpochMatcher, CadenceEstimateCostDoesNotGrowWithUptime) {
   for (int i = 0; i < 200; ++i)
     matcher.pushBase(epoch(week, 100100.0 + i * 0.2));
   EXPECT_NEAR(matcher.estimatedBaseInterval(), 0.2, 1e-6);
+}
+
+// R8-1: with history kept for max_tdiff_s, base_rate x max_tdiff_s above the
+// queue limit made overflow evict the NEWEST base, pairing rover epochs with a
+// base seconds older than the one that had arrived. Every pair must use the
+// newest base that had arrived when the epoch was decided.
+TEST(EpochMatcher, AnyBaseRateAndAgeLimitPairsWithTheNewestArrivedBase) {
+  const std::uint32_t week = 2200;
+  for (const double rover_hz : {1.0, 10.0}) {
+    for (const double base_hz : {1.0, 5.0, 10.0, 20.0}) {
+      for (const double latency : {0.0, 0.1, 0.5}) {
+        for (const double max_tdiff : {5.0, 10.0, 30.0}) {
+          Matcher::Options opt;
+          opt.emit_unmatched_rover = true;
+          opt.max_tdiff_s = max_tdiff;
+          Matcher matcher(opt);
+          // Arrival order: base(t) arrives at t + latency, rover(t) at t.
+          struct Ev { double arrival; bool base; double t; };
+          std::vector<Ev> ev;
+          for (int k = 0; k <= static_cast<int>(60 * rover_hz); ++k)
+            ev.push_back({100.0 + k / rover_hz, false, 100.0 + k / rover_hz});
+          for (int j = 0; j <= static_cast<int>(60 * base_hz); ++j)
+            ev.push_back({100.0 + j / base_hz + latency, true, 100.0 + j / base_hz});
+          std::stable_sort(ev.begin(), ev.end(),
+                           [](const Ev& a, const Ev& b) { return a.arrival < b.arrival; });
+          std::vector<Matcher::Pair> pairs;
+          for (const auto& e : ev) {
+            if (e.base) matcher.pushBase(epoch(week, e.t));
+            else matcher.pushRover(epoch(week, e.t));
+            for (auto& p : matcher.drainMatches()) pairs.push_back(std::move(p));
+          }
+          for (auto& p : matcher.flush()) pairs.push_back(std::move(p));
+
+          const std::string where = "rover " + std::to_string(rover_hz) + " Hz, base " +
+                                    std::to_string(base_hz) + " Hz, latency " +
+                                    std::to_string(latency) + ", max_tdiff " +
+                                    std::to_string(max_tdiff);
+          EXPECT_EQ(matcher.counters().dropped(Matcher::Stream::Base,
+                                               Matcher::DropReason::QueueOverflow),
+                    0U) << where;
+          ASSERT_EQ(pairs.size(), static_cast<std::size_t>(60 * rover_hz) + 1) << where;
+          for (const auto& p : pairs) {
+            // Only epochs decided before the first base arrived may lack one.
+            if (!p.hasBase()) {
+              EXPECT_LT(p.rover->tow + 1.0 / rover_hz, 100.0 + latency + 1e-6)
+                  << where << " tow " << p.rover->tow;
+              continue;
+            }
+            const double base_age_bound = latency + 1.0 / base_hz + 1e-6;
+            EXPECT_LE(p.age_s, base_age_bound) << where << " tow " << p.rover->tow;
+            if (latency == 0.0 && std::fabs(p.rover->tow * base_hz -
+                                            std::round(p.rover->tow * base_hz)) < 1e-6) {
+              EXPECT_EQ(p.kind, Matcher::PairKind::Exact) << where << " tow " << p.rover->tow;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Q-A1: an exact pair must not wait for the next rover epoch (one rover
+// interval of latency for nothing). Only an epoch with an older base waits.
+TEST(EpochMatcher, ExactPairIsReleasedWithoutWaitingForTheNextRover) {
+  Matcher matcher;
+  const std::uint32_t week = 2200;
+  matcher.pushBase(epoch(week, 100.0));
+  matcher.pushRover(epoch(week, 100.0));
+  const auto first = matcher.drainMatches();
+  ASSERT_EQ(first.size(), 1U);
+  EXPECT_EQ(first[0].kind, Matcher::PairKind::Exact);
+
+  matcher.pushRover(epoch(week, 101.0));   // base 101 not yet here
+  EXPECT_TRUE(matcher.drainMatches().empty());
+  matcher.pushBase(epoch(week, 101.0));
+  const auto second = matcher.drainMatches();
+  ASSERT_EQ(second.size(), 1U);
+  EXPECT_EQ(second[0].kind, Matcher::PairKind::Exact);
+}
+
+// A-4: at 20 Hz the GPST difference of adjacent epochs rounds to just below
+// 0.05 s, so whether the reorder window was reached depended on the epoch.
+TEST(EpochMatcher, TwentyHertzSettlesAfterOneRoverInterval) {
+  Matcher matcher;   // reorder_window_s 0.05
+  const std::uint32_t week = 2200;
+  matcher.pushBase(epoch(week, 100.0));
+  std::size_t released = 0;
+  for (int k = 1; k <= 40; ++k) {
+    matcher.pushRover(epoch(week, 100.0 + k / 20.0));
+    released += matcher.drainMatches().size();
+    EXPECT_EQ(released, static_cast<std::size_t>(k - 1)) << "epoch " << k;
+  }
+}
+
+TEST(EpochMatcher, ExplicitResetAllowsEarlierReplaySession) {
+  Matcher matcher;
+  matcher.pushRover(epoch(2300,100));matcher.pushBase(epoch(2300,100));
+  ASSERT_EQ(matcher.flush().size(),1u);
+  matcher.reset();
+  matcher.pushRover(epoch(2300,10));matcher.pushBase(epoch(2300,10));
+  const auto pairs=matcher.flush();ASSERT_EQ(pairs.size(),1u);
+  EXPECT_DOUBLE_EQ(pairs.front().rover->tow,10);
+}
+
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <thread>
+// Test harness worker: one solver owner woken by intake (not part of the package API).
+namespace gnss_utils {
+// One solver owner, woken only by intake. Notifications during a solve remain
+// pending; stopping wakes an idle worker and joins an in-flight solve.
+class EventWorker {
+public:
+  EventWorker() = default;
+  EventWorker(const EventWorker&) = delete;
+  EventWorker& operator=(const EventWorker&) = delete;
+  ~EventWorker() { stop(); }
+  void start(std::function<void()> work) {
+    thread_ = std::thread([this, work=std::move(work)] {
+      std::unique_lock<std::mutex> lock(mutex_);
+      while (true) {
+        cv_.wait(lock, [this]{return pending_ || stopping_;});
+        if (stopping_) return;
+        pending_=false;
+        lock.unlock(); work(); lock.lock();
+      }
+    });
+  }
+  void notify() {
+    { std::lock_guard<std::mutex> lock(mutex_); pending_=true; }
+    cv_.notify_one();
+  }
+  void stop() {
+    { std::lock_guard<std::mutex> lock(mutex_); stopping_=true; }
+    cv_.notify_one();
+    if (thread_.joinable()) thread_.join();
+  }
+private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  bool pending_{false}, stopping_{false};
+  std::thread thread_;
+};
+} // namespace gnss_utils
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
+
+TEST(ReleaseG2, SlowSolverDoesNotBlockIntakeOrChangeEpochPrior) {
+  using namespace std::chrono_literals;
+  auto replay=[](double hz, bool slow) {
+    Matcher::Options options;
+    options.emit_unmatched_rover=true;
+    Matcher matcher(options);
+    gnss_utils::EventWorker worker;
+    std::mutex intake, output_mutex;
+    std::condition_variable done;
+    std::vector<std::pair<double,double>> outputs;
+    std::deque<Matcher::Pair> tail;
+    double previous=1.;
+    const int count=static_cast<int>(2*hz)+1; // Includes three 1 Hz base-grid epochs.
+    worker.start([&] {
+      std::vector<Matcher::Pair> pairs;
+      {
+        std::lock_guard<std::mutex> lock(intake);
+        pairs=matcher.drainMatches();
+        while (!tail.empty()) { pairs.push_back(tail.front());tail.pop_front(); }
+      }
+      for (const auto& pair:pairs) {
+        // Synthetic state-dependent preprocessing immediately before each solve.
+        // Batching all aprioris at drain time would fail this equality test.
+        const double measurement=pair.rover->tow+previous;
+        if (slow) std::this_thread::sleep_for(300ms);
+        previous=measurement*.5;
+        { std::lock_guard<std::mutex> lock(output_mutex);
+          outputs.emplace_back(pair.age_s,previous); }
+        done.notify_all();
+      }
+    });
+    for (int i=0;i<count;++i) {
+      { std::lock_guard<std::mutex> lock(intake);
+        const double tow=100.+i/hz;
+        if (std::abs(tow-std::round(tow))<1e-8) matcher.pushBase(epoch(2300,tow));
+        matcher.pushRover(epoch(2300,tow)); }
+      worker.notify();
+      // Intake keeps running during the slow solve.
+      std::this_thread::sleep_for(5ms);
+    }
+    { std::lock_guard<std::mutex> lock(intake);
+      for (auto& pair:matcher.flush()) tail.push_back(std::move(pair)); }
+    worker.notify();
+    { std::unique_lock<std::mutex> lock(output_mutex);
+      EXPECT_TRUE(done.wait_for(lock,30s,[&]{return outputs.size()==static_cast<size_t>(count);})); }
+    worker.stop();
+    for (int i=0;i<int(outputs.size());++i)
+      if (std::abs(i/hz-std::round(i/hz))<1e-8) { EXPECT_DOUBLE_EQ(outputs[i].first,0.); }
+    return outputs;
+  };
+  for (double hz : {1.,5.,10.,20.}) EXPECT_EQ(replay(hz,false),replay(hz,true));
 }

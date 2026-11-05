@@ -15,7 +15,7 @@ novatel_driver_node:
 
     # GNSS log rate in Hz, 1-20. IMU logs (RAWIMUSX / CORRIMUDATA) are
     # independent of this, requested ONNEW at the IMU's native sample rate.
-    publish_rate: 10
+    rate_hz: 10
 
     # Receiver port to configure data output on (e.g., USB1, COM1, COM2)
     # This is used in the LOG command: LOG [receiver_port] [message] ONTIME [interval]
@@ -30,20 +30,21 @@ novatel_driver_node:
     use_gps_timestamp: false
 
     # Topic Names
-    observation_topic: "/gnss/observation"
-    ephemeris_topic: "/gnss/ephemeris"
-    solution_topic: "/gnss/nmea_solution"
-    imu_topic:     "/gnss/imu/data"      # CORRIMUDATA (calibrated)
-    imu_raw_topic: "/gnss/imu/data_raw"  # RAWIMUSX (uncalibrated)
+    topics:
+      observation: "/gnss/observation"
+      ephemeris: "/gnss/ephemeris"
+      solution: "/gnss/nmea_solution"
+      imu:     "/gnss/imu/data"      # CORRIMUDATA (calibrated)
+      imu_raw: "/gnss/imu/data_raw"  # RAWIMUSX (uncalibrated)
 
     # RTCM relay (PC -> receiver) for receiver on-chip RTK. See src/drivers/README.md.
-    # NovAtel requires `output` to be a SECOND /dev device (cannot mix RTCM
+    # NovAtel requires `receiver_stream` to be a SECOND /dev device (cannot mix RTCM
     # input with NOVATEL commands/logs on one logical port).
-    rtcm_relay:
-      enabled: false
+    rtcm_input:
+      enable: false
       listen: "tcpsvr://:5558"    # corrections come in here (TCP server)
-      output: ""                  # dedicated correction port, e.g. "serial:///dev/ttyUSB2:230400" (must differ from stream_path)
-      correction_port: "THISPORT" # INTERFACEMODE target, sent over `output` (leave THISPORT)
+      receiver_stream: ""                  # dedicated correction port, e.g. "serial:///dev/ttyUSB2:230400" (must differ from stream_path)
+      receiver_port: "THISPORT" # INTERFACEMODE target, sent over `receiver_stream` (leave THISPORT)
 
     # Message Configuration
     # Enable/Disable specific SBF blocks
@@ -84,9 +85,11 @@ novatel_driver_node:
       accel: 0.0
       gyro:  0.0
 
-    # ENU local origin settings
-    auto_origin: true              # false: use origin below; true: first valid fix
-    origin: [0.0, 0.0, 0.0]       # [lat_deg, lon_deg, alt_m (ellipsoidal)]
+    # ENU local origin: "auto" = first valid receiver solution | "fixed" = pos below
+    local_origin:
+      mode: "auto"
+      postype: "llh"                # "llh" | "ecef"
+      pos: [0.0, 0.0, 0.0]          # llh: [lat_deg, lon_deg, h_m (ellipsoidal)]; ecef: [x, y, z] m
 
     # Ephemeris publishing — snapshot-on-change + heartbeat
     # Topic always carries the full current state; logging this one topic is

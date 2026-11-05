@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+#include "gnss_ros_standardization/bag_io_utils.hpp"
 // Convert a ROS 2 bag containing GnssSolution messages to an RTKLIB .pos file.
 //
 // Output format: standard RTKLIB lat/lon/height .pos with GPST date column.
@@ -23,7 +23,6 @@
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
-#include "gnss_ros_standardization/bag_io_utils.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -58,6 +57,7 @@ static int statusToQ(uint8_t status) {
     case GnssSolution::STATUS_DGPS:   return 4;
     case GnssSolution::STATUS_SINGLE: return 5;
     case GnssSolution::STATUS_PPP:    return 6;
+    case GnssSolution::STATUS_DR:     return 7;
     default:                          return 0;
   }
 }
@@ -81,7 +81,7 @@ static Args parseArgs(int argc, char** argv) {
     else if (s == "--out")   a.out_path = next();
     else if (s == "--vel")   a.with_velocity = true;
     else if (s == "--pgm")   a.program_name = next();
-    else std::fprintf(stderr, "[warn] unknown arg %s\n", s.c_str());
+    else throw std::invalid_argument("unknown argument: " + s);
   }
   return a;
 }
@@ -181,7 +181,7 @@ static void printUsage(FILE* out) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--help" || a == "-h") { printUsage(stdout); return 0; }
@@ -194,7 +194,9 @@ int main(int argc, char** argv) {
       return 0;
     }
   }
-  rclcpp::init(argc, argv);
+  rclcpp::InitOptions init_options;
+  init_options.auto_initialize_logging(false);
+  rclcpp::init(argc, argv, init_options);
   Args args = parseArgs(argc, argv);
 
   if (args.bag_uri.empty()) {
@@ -220,11 +222,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  FILE* fp = std::fopen(args.out_path.c_str(), "w");
-  if (!fp) {
-    std::perror(args.out_path.c_str());
-    return 1;
-  }
+  gnss_converter_io::OutputTransaction output;
+  FILE* fp = output.open(args.out_path);
   writeHeader(fp, args.program_name, args.with_velocity);
 
   rclcpp::Serialization<GnssSolution> ser;
@@ -236,12 +235,20 @@ int main(int argc, char** argv) {
     if (msg->topic_name != args.topic) continue;
 
     GnssSolution sol;
-    if (!deserializeRos(*msg, ser, sol)) continue;
+    deserializeRos(*msg, ser, sol);
     if (writeEpoch(fp, sol, args.with_velocity)) ++n_written;
   }
 
-  std::fclose(fp);
+  output.commit();
   std::fprintf(stderr, "Wrote %zu epochs to %s\n", n_written, args.out_path.c_str());
   rclcpp::shutdown();
   return 0;
+}
+int main(int argc, char** argv) {
+  try { return run(argc, argv); }
+  catch (const std::exception& e) {
+    std::fprintf(stderr, "Conversion failed (destination preserved): %s\n", e.what());
+    if (rclcpp::ok()) rclcpp::shutdown();
+    return 1;
+  }
 }

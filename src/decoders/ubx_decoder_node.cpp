@@ -1,4 +1,6 @@
-// SPDX-License-Identifier: MIT
+#include "gnss_ros_standardization/receiver_health.hpp"
+#include "gnss_ros_standardization/receiver_session.hpp"
+#include "gnss_ros_standardization/binary_framer.hpp"
 #include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
@@ -30,7 +32,7 @@ namespace {
 constexpr auto kTimerInterval = 10ms;
 
 /// Watchdog timeout for incomplete PVT epochs (seconds)
-constexpr double kPvtWatchdogTimeoutSec = 1.5;
+
 
 }  // namespace
 
@@ -65,52 +67,56 @@ class UbxDecoderNode : public rclcpp::Node {
  private:
   // Initialization
 
+  decoder_common::EpochFlushPolicy epoch_flush_;
+  wire::ReceiverHealth receiver_health_;
   void initializeParameters() {
+    receiver_health_.configure(5.0);
+    receiver_health_.limits(MAXOBS, NFREQ, NEXOBS, MAXPRNCMP);
+    epoch_flush_.configure(0.05);
+    const double tick_s = declare_parameter<double>("imu.sttag_tick_s", ubx::esf_raw::STTAG_TICK_S);
+    if (!std::isfinite(tick_s) || tick_s <= 0.0 || tick_s >= 1.0)
+      throw std::invalid_argument("imu.sttag_tick_s must be finite and in (0, 1)");
+    imu_clock_ = ins::SensorTickClock(ins::SensorTickClock::Config{tick_s, 1ull << 32});
+    RCLCPP_INFO(get_logger(), "ESF-RAW uses estimated time: tick=%.9g s, GNSS anchor expiry=2 s", tick_s);
+
     declare_parameter<std::string>("stream_path", "serial:///dev/ttyACM0:115200");
     // frame_id: ROS TF frame name attached to the GNSS antenna phase center.
     // Default "gnss_link" — override in launch to integrate with vehicle TF tree.
     declare_parameter<std::string>("frame_id", "gnss_link");
-    declare_parameter<std::string>("observation_topic", "/gnss/observation");
-    declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
-    declare_parameter<std::string>("solution_topic", "/gnss/nmea_solution");
-    declare_parameter<std::string>("imu_topic",     "/gnss/imu/data");
-    declare_parameter<std::string>("imu_raw_topic", "/gnss/imu/data_raw");
+    declare_parameter<std::string>("topics.observation", "/gnss/observation");
+    declare_parameter<std::string>("topics.ephemeris", "/gnss/ephemeris");
+    declare_parameter<std::string>("topics.solution", "/gnss/nmea_solution");
+    declare_parameter<std::string>("topics.imu",     "/gnss/imu/data");
+    declare_parameter<std::string>("topics.imu_raw", "/gnss/imu/data_raw");
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
     declare_parameter<double>("ephemeris.max_age_s", 0.0);  // 0 = keep all
     declare_parameter<bool>("use_gps_timestamp", false);
-    declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
     // RTCM relay listen URI (opt-in, see openRtcmRelay). Empty = disabled.
-    declare_parameter<std::string>("rtcm_relay", "");
+    declare_parameter<std::string>("rtcm_input.listen", "");
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
+    constexpr int history_limit = 8;
+    eph_store_.setHistoryPerSatellite(static_cast<size_t>(history_limit));
 
     frame_id_ = get_parameter("frame_id").as_string();
     use_gps_timestamp_ = get_parameter("use_gps_timestamp").as_bool();
-    {
-      const auto v = get_parameter("origin").as_double_array();
-      if (v.size() == 3) {
-        origin_latitude_  = v[0];
-        origin_longitude_ = v[1];
-        origin_altitude_  = v[2];
-      }
-    }
   }
 
   void initializePublishers() {
-    obs_pub_     = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
-    eph_pub_     = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
-    sol_pub_     = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
-    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_topic").as_string(), 10);
-    imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
+    decoder_common::configureNmeaDate(*this, nmea_parser_);
+    obs_pub_     = create_publisher<msg::GnssObservations>(get_parameter("topics.observation").as_string(), 10);
+    eph_pub_     = create_publisher<msg::GnssEphemerides>(get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
+    sol_pub_     = create_publisher<msg::GnssSolution>(get_parameter("topics.solution").as_string(), 10);
+    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("topics.imu").as_string(), decoder_common::kImuPublisherDepth);
+    imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("topics.imu_raw").as_string(), decoder_common::kImuPublisherDepth);
 
-    if (origin_latitude_ != 0.0 || origin_longitude_ != 0.0) {
-      local_origin_pos_[0] = origin_latitude_  * (M_PI / 180.0);
-      local_origin_pos_[1] = origin_longitude_ * (M_PI / 180.0);
-      local_origin_pos_[2] = origin_altitude_;
-      pos2ecef(local_origin_pos_, local_origin_ecef_);
+    const auto origin = gnss_utils::declareLocalOrigin(*this);
+    if (origin.fixed) {
+      std::copy_n(origin.llh, 3, local_origin_pos_);
+      std::copy_n(origin.ecef, 3, local_origin_ecef_);
       has_local_origin_ = true;
       RCLCPP_INFO(get_logger(), "ENU origin set from config: lat=%.6f lon=%.6f alt=%.2f",
-        origin_latitude_, origin_longitude_, origin_altitude_);
+        local_origin_pos_[0] * R2D, local_origin_pos_[1] * R2D, local_origin_pos_[2]);
     }
     logConfiguration();
   }
@@ -119,19 +125,25 @@ class UbxDecoderNode : public rclcpp::Node {
     auto on = [](bool v) { return v ? "ON" : "OFF"; };
     RCLCPP_INFO(get_logger(), "Configuration:");
     RCLCPP_INFO(get_logger(), "  GPS timestamp : %s", on(use_gps_timestamp_));
-    if (origin_latitude_ != 0.0 || origin_longitude_ != 0.0) {
+    if (has_local_origin_) {
       RCLCPP_INFO(get_logger(), "  ENU origin    : fixed (lat=%.6f lon=%.6f alt=%.2f)",
-        origin_latitude_, origin_longitude_, origin_altitude_);
+        local_origin_pos_[0] * R2D, local_origin_pos_[1] * R2D, local_origin_pos_[2]);
     } else {
       RCLCPP_INFO(get_logger(), "  ENU origin    : auto (first valid solution)");
     }
   }
 
   void initializeDecoder() {
+    const auto rawx_layout = declare_parameter<std::string>("rawx_layout", "auto");
+    const char* layout_option = ubx::rawxLayoutOption(rawx_layout);
     if (init_raw(&raw_, STRFMT_UBX) != 1) {
       RCLCPP_ERROR(get_logger(), "Failed to initialize raw decoder");
       throw std::runtime_error("init_raw failed");
     }
+    // Preserve RAWX sigId (e.g. L2 CL=2L, L2 CM=2S), rather than labelling
+    // individual signals as combined 2X/5X measurements. resetRaw keeps options.
+    std::strcpy(raw_.opt, "-EPHALL -MULTICODE");
+    std::strcat(raw_.opt, layout_option);
   }
 
   void startPolling() {
@@ -143,7 +155,7 @@ class UbxDecoderNode : public rclcpp::Node {
   void openStream() {
     // The RTCM relay writes corrections back down this stream, so it needs a
     // read-write open; without relay keep the passive read-only open.
-    const int mode = get_parameter("rtcm_relay").as_string().empty()
+    const int mode = get_parameter("rtcm_input.listen").as_string().empty()
                      ? STR_MODE_R : STR_MODE_RW;
     if (!decoder_common::openStreamPath(get_logger(), stream_,
                                         get_parameter("stream_path").as_string(),
@@ -158,7 +170,7 @@ class UbxDecoderNode : public rclcpp::Node {
   // receiver command is sent; the port's inProtoMask must already include
   // RTCM3 (F9P default) — see src/decoders/README.md.
   void openRtcmRelay() {
-    const std::string listen = get_parameter("rtcm_relay").as_string();
+    const std::string listen = get_parameter("rtcm_input.listen").as_string();
     if (listen.empty()) return;
     if (get_parameter("stream_path").as_string().rfind("file://", 0) == 0) {
       RCLCPP_WARN(get_logger(),
@@ -170,6 +182,31 @@ class UbxDecoderNode : public rclcpp::Node {
     }
   }
 
+  wire::StreamSession stream_session_;
+  wire::ReceiverTimeline receiver_timeline_;
+  void resetReceiverSession(bool disconnected) {
+    // Release validated pending data before retiring the old session. Partial
+    // wire frames and compressed references are never carried across sessions.
+    flushPending();
+    wire::resetRaw(raw_,STRFMT_UBX);
+    if (disconnected) wire_framer_.reset();
+    receiver_health_.resetSession();
+    receiver_timeline_.reset();
+    nmea_parser_.reset(); nmea_solution_=msg::GnssSolution(); binary_solution_=msg::GnssSolution();
+    pending_=decltype(pending_)(); last_dop_={};
+    prev_pvt_tow_ms_=UINT32_MAX; pvt_period_ms_=0;
+    last_flushed_week_=0; last_flushed_tow_ms_=UINT32_MAX;
+    eph_store_.clear(); publishSnapshot();
+    source_=SolutionSource::UNDETERMINED; grace_started_=false; saw_binary_during_grace_=false;
+    imu_clock_.reset(); gnss_anchor_.reset(); imu_offset_clock_.reset();
+    last_raw_imu_ns_=-1; has_gnss_anchor_=false; imu_gps_warned_=false;
+    gnss_anchor_offset_s_=0; gnss_anchor_arrival_ns_=0;
+    has_nav_clock_=false; last_nav_clock_={}; pvt_time_valid_=false; nav_time_ref_.reset(); observation_time_ref_.reset();
+    imu_clock_drift_reported_=false;
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Receiver session reset: %s; waiting for fresh time/navigation references",
+                disconnected ? "connection lost" : "measurement rewind or clock reset");
+  }
+
   void pollStream() {
     // RTCM relay: drain corrections from the TCP server and write them to the
     // receiver stream. Same poll thread as the read below, so no lock.
@@ -177,30 +214,27 @@ class UbxDecoderNode : public rclcpp::Node {
 
     uint8_t buffer[ubx::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
+    if (stream_session_.poll(stream_)) resetReceiverSession(true);
+    const auto wire_now = std::chrono::steady_clock::now();
+    receiver_health_.input(bytes_read);
+    receiver_health_.framing(wire_framer_);
+    receiver_health_.pvtPending(pending_.has_pvt || pending_.cov_received);
+    receiver_health_.report(get_logger());
+    if (bytes_read > 0) wire_last_input_ = wire_now;
+    else if (wire_now - wire_last_input_ > std::chrono::seconds(1)) {
+      wire_framer_.expire([this](const wire::Frame& f) { dispatchFrame(f); });
+      wire_last_input_ = wire_now;
+    }
+    if (wire_framer_.rejected() != wire_last_rejected_) {
+      wire_last_rejected_ = wire_framer_.rejected();
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "Rejected binary frame/header count: %llu",
+          static_cast<unsigned long long>(wire_last_rejected_));
+    }
+
 
     for (int i = 0; i < bytes_read; ++i) {
-      uint8_t byte = buffer[i];
-
-      // Feed RTKLIB for UBX binary parsing (obs/eph)
-      const int result = input_ubx(&raw_, byte);
-      handleDecodeResult(result);
-
-      // Parallel UBX mini-framer (ESF / NAV blocks)
-      parseUbxByte(byte);
-
-      // Feed NMEA text parser
-      if (byte == '$') {
-        nmea_buffer_.clear();
-        nmea_buffer_.push_back(byte);
-      } else if (!nmea_buffer_.empty()) {
-        nmea_buffer_.push_back(byte);
-        if (byte == '\n') {
-          handleNmeaSentence(nmea_buffer_);
-          nmea_buffer_.clear();
-        } else if (nmea_buffer_.size() > ubx::NMEA_MAX_LINE_LEN) {
-          nmea_buffer_.clear();
-        }
-      }
+      parseUbxByte(buffer[i]);
     }
 
     maybePublishHeartbeat();
@@ -208,48 +242,33 @@ class UbxDecoderNode : public rclcpp::Node {
     maybeWatchdogFlushPendingPvt();
   }
 
-  // UBX Mini-Framer (parallel to RTKLIB, for ESF and NAV blocks)
+  // UBX mixed stream decoder (shared boundary with RTKLIB, for ESF and NAV blocks)
+
+  void dispatchFrame(const wire::Frame& f) {
+      auto diagnostic_scope = receiver_health_.backendScope();
+      receiver_health_.frame((unsigned(f.cls)<<16)|f.id, f.revision);
+      receiver_health_.inspect(wire::Protocol::Ubx,f,std::strstr(raw_.opt,"-RAWX0")!=nullptr);
+      if (receiver_timeline_.frame(wire::Protocol::Ubx,f)) {
+        resetReceiverSession(false);
+        receiver_timeline_.frame(wire::Protocol::Ubx,f);
+      }
+      for (uint8_t byte : f.bytes) {
+        const int status = input_ubx(&raw_, byte);
+        // A successfully decoded RAW/RAWX dates the receiver even with zero
+        // observations. Do not refresh from unrelated, weekless messages.
+        if (status==1 && f.cls==2 && (f.id==0x15 || f.id==0x10))
+          observation_time_ref_.update(raw_.time);
+        handleDecodeResult(status);
+      }
+      ubx_cls_ = f.cls;
+      ubx_id_ = static_cast<uint8_t>(f.id);
+      ubx_payload_ = f.payload;
+      handleUbxFrame();
+  }
 
   void parseUbxByte(uint8_t byte) {
-    switch (ubx_state_) {
-      case 0:
-        if (byte == ubx::SYNC1) ubx_state_ = 1;
-        break;
-      case 1:
-        ubx_state_ = (byte == ubx::SYNC2) ? 2 : (byte == ubx::SYNC1 ? 1 : 0);
-        break;
-      case 2:
-        ubx_cls_   = byte;
-        ubx_state_ = 3;
-        break;
-      case 3:
-        ubx_id_    = byte;
-        ubx_state_ = 4;
-        break;
-      case 4:
-        ubx_len_   = byte;
-        ubx_state_ = 5;
-        break;
-      case 5:
-        ubx_len_  |= static_cast<uint16_t>(byte << 8);
-        ubx_payload_.clear();
-        ubx_pos_   = 0;
-        ubx_state_ = (ubx_len_ == 0) ? 7 : 6;
-        break;
-      case 6:
-        ubx_payload_.push_back(byte);
-        if (++ubx_pos_ >= ubx_len_) ubx_state_ = 7;
-        break;
-      case 7:  // CK_A (skip)
-        ubx_state_ = 8;
-        break;
-      case 8:  // CK_B (skip), frame complete
-        handleUbxFrame();
-        ubx_state_ = 0;
-        break;
-      default:
-        ubx_state_ = 0;
-    }
+    wire_framer_.feed(byte, [this](const wire::Frame& f) { dispatchFrame(f); },
+        [this](const std::string& sentence) { handleNmeaSentence(sentence); });
   }
 
   void handleUbxFrame() {
@@ -257,6 +276,7 @@ class UbxDecoderNode : public rclcpp::Node {
     if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_INS) handleEsfIns();
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_PVT)     handleNavPvt();
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_DOP)     handleNavDop();
+    if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_CLOCK)   handleNavClock();
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_COV)     handleNavCov();
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_POSECEF) handleNavPosEcef();
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_VELECEF) handleNavVelEcef();
@@ -273,7 +293,7 @@ class UbxDecoderNode : public rclcpp::Node {
 
   void startGraceIfNeeded() {
     if (!grace_started_) {
-      grace_start_ = now();
+      grace_start_ = std::chrono::steady_clock::now();
       grace_started_ = true;
     }
   }
@@ -281,7 +301,7 @@ class UbxDecoderNode : public rclcpp::Node {
   void commitSourceLockIfDue() {
     if (source_ != SolutionSource::UNDETERMINED) return;
     if (!grace_started_) return;
-    const bool elapsed = (now() - grace_start_).seconds() >= kGracePeriodSec;
+    const bool elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - grace_start_).count() >= kGracePeriodSec;
     if (saw_binary_during_grace_) {
       source_ = SolutionSource::BINARY;
       RCLCPP_INFO(get_logger(), "Solution source locked: BINARY (PVT detected during grace)");
@@ -303,6 +323,8 @@ class UbxDecoderNode : public rclcpp::Node {
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
     bool has_pvt{false};
+    bool has_pos_cov{false};
+    bool has_vel_cov{false};
     uint8_t cov_received{0};
     uint8_t cov_ever_seen{0};
     msg::GnssSolution buf{};
@@ -312,10 +334,11 @@ class UbxDecoderNode : public rclcpp::Node {
     // arrival order.
     ubx::nav_hpposllh::Result hp_llh{};
     double hp_ecef[3]{0.0, 0.0, 0.0};
-    rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
 
   gnss_utils::DopCache last_dop_;
+  ubx::nav_clock::Result last_nav_clock_{};
+  bool has_nav_clock_{false};
   uint32_t prev_pvt_tow_ms_{UINT32_MAX};
   uint32_t pvt_period_ms_{0};
 
@@ -332,10 +355,6 @@ class UbxDecoderNode : public rclcpp::Node {
     return v;
   }
 
-  bool pendingComplete() const {
-    return pending_.has_pvt &&
-           pending_.cov_received == pending_.cov_ever_seen;
-  }
 
   // Epoch-gap diagnostic: learns the nominal cadence as the smallest positive
   // epoch delta seen so far, and warns when a delta exceeds 2.5x that cadence —
@@ -365,7 +384,7 @@ class UbxDecoderNode : public rclcpp::Node {
         tow == last_flushed_tow_ms_ &&
         (week == 0 || week == last_flushed_week_)) {
       pending_.cov_ever_seen |= cov_bit;
-      return true;
+      GNSS_RX_EVENT(GNSS_RX_DUPLICATE_INPUT,1); return true;
     }
     return false;
   }
@@ -379,16 +398,29 @@ class UbxDecoderNode : public rclcpp::Node {
     }
     pending_.tow_ms = tow;
     if (!ubx::pvt::parseNavPvt(ubx_payload_.data(), ubx_payload_.size(),
-                               pending_.buf)) {
-      return;
+                               pending_.buf, pending_.has_pos_cov, pending_.has_vel_cov)) {
+      GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return;
     }
     pending_.has_pvt = true;
-    pending_.last_update = now();
+    nav_time_ref_.reset();  // Do not retain a previous epoch's UTC validity.
+    const auto* utc = ubx_payload_.data();
+    if (ubx::pvt::navPvtTimeIsValid(utc, ubx_payload_.size())) {
+      const int year = wire::u16(utc + 4);
+      uint32_t week=0; double tow=0;
+      if (gnss_utils::nmeaUtcToGpsTime(year,utc[6],utc[7],
+          utc[8]*10000.+utc[9]*100.+utc[10],week,tow)) {
+        nav_time_ref_.update(gpst2time(static_cast<int>(week),tow));
+      }
+    }
+    // NAV-PVT's own time-validity flags, kept for the GNSS time anchor.
+    pvt_time_valid_ =
+        ubx::pvt::navPvtTimeIsValid(ubx_payload_.data(), ubx_payload_.size());
+    epoch_flush_.touch();
     saw_binary_during_grace_ = true;
     warnOnEpochGap("NAV-PVT", tow * 1e-3,
                    pvt_gap_last_tow_s_, pvt_gap_min_period_s_);
     commitSourceLockIfDue();
-    if (pendingComplete()) flushPending();
+    // Flush at the epoch boundary or shared quiet-period deadline.
   }
 
   // NAV-DOP: cached in last_dop_; applied at flush by applyDopWithStaleness().
@@ -399,7 +431,7 @@ class UbxDecoderNode : public rclcpp::Node {
     msg::GnssSolution scratch{};
     if (!ubx::nav_dop::parseNavDop(ubx_payload_.data(), ubx_payload_.size(),
                                    scratch)) {
-      return;
+      GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return;
     }
     last_dop_.valid  = true;
     last_dop_.week   = 0;       // NAV-DOP has no week field
@@ -408,7 +440,24 @@ class UbxDecoderNode : public rclcpp::Node {
     last_dop_.pdop   = scratch.pdop;
     last_dop_.hdop   = scratch.hdop;
     last_dop_.vdop   = scratch.vdop;
-    saw_binary_during_grace_ = true;
+    commitSourceLockIfDue();
+  }
+
+  // NAV-CLOCK: the receiver's own clock solution (iTOW + clkB, the clock's
+  // bias against GPS time, + tAcc). Not part of the published solution; it is
+  // kept as the preferred anchor for tying the free-running ESF-RAW sTtag
+  // timeline to GPS time, because it states the clock model rather than only
+  // the epoch. tAcc gates it: the Integration manual warns that iTOW values
+  // may not be valid.
+  void handleNavClock() {
+    startGraceIfNeeded();
+    ubx::nav_clock::Result r{};
+    if (!ubx::nav_clock::parseNavClock(ubx_payload_.data(), ubx_payload_.size(),
+                                       r)) {
+      GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return;
+    }
+    last_nav_clock_ = r;
+    has_nav_clock_ = true;
     commitSourceLockIfDue();
   }
 
@@ -422,14 +471,15 @@ class UbxDecoderNode : public rclcpp::Node {
     pending_.tow_ms = tow;
     if (!ubx::nav_cov::parseNavCov(ubx_payload_.data(), ubx_payload_.size(),
                                    pending_.buf)) {
-      return;
+      GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return;
     }
+    pending_.has_pos_cov |= ubx_payload_[5] == 1;
+    pending_.has_vel_cov |= ubx_payload_[6] == 1;
     pending_.cov_received |= COV_BIT_COV;
     pending_.cov_ever_seen |= COV_BIT_COV;
-    pending_.last_update = now();
-    saw_binary_during_grace_ = true;
+    epoch_flush_.touch();
     commitSourceLockIfDue();
-    if (pendingComplete()) flushPending();
+    // Flush at the epoch boundary or shared quiet-period deadline.
   }
 
   void handleNavPosEcef() {
@@ -442,14 +492,13 @@ class UbxDecoderNode : public rclcpp::Node {
     pending_.tow_ms = tow;
     if (!ubx::nav_posecef::parseNavPosEcef(ubx_payload_.data(), ubx_payload_.size(),
                                            pending_.buf)) {
-      return;
+      GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return;
     }
     pending_.cov_received  |= COV_BIT_POSECEF;
     pending_.cov_ever_seen |= COV_BIT_POSECEF;
-    pending_.last_update = now();
-    saw_binary_during_grace_ = true;
+    epoch_flush_.touch();
     commitSourceLockIfDue();
-    if (pendingComplete()) flushPending();
+    // Flush at the epoch boundary or shared quiet-period deadline.
   }
 
   void handleNavVelEcef() {
@@ -462,14 +511,13 @@ class UbxDecoderNode : public rclcpp::Node {
     pending_.tow_ms = tow;
     if (!ubx::nav_velecef::parseNavVelEcef(ubx_payload_.data(), ubx_payload_.size(),
                                            pending_.buf)) {
-      return;
+      GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return;
     }
     pending_.cov_received  |= COV_BIT_VELECEF;
     pending_.cov_ever_seen |= COV_BIT_VELECEF;
-    pending_.last_update = now();
-    saw_binary_during_grace_ = true;
+    epoch_flush_.touch();
     commitSourceLockIfDue();
-    if (pendingComplete()) flushPending();
+    // Flush at the epoch boundary or shared quiet-period deadline.
   }
 
   void handleNavHpPosEcef() {
@@ -483,14 +531,13 @@ class UbxDecoderNode : public rclcpp::Node {
     pending_.tow_ms = tow;
     if (!ubx::nav_hpposecef::parseNavHpPosEcef(ubx_payload_.data(), ubx_payload_.size(),
                                                pending_.hp_ecef)) {
-      return;
+      GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return;
     }
     pending_.cov_received  |= COV_BIT_HPPOSECEF;
     pending_.cov_ever_seen |= COV_BIT_HPPOSECEF;
-    pending_.last_update = now();
-    saw_binary_during_grace_ = true;
+    epoch_flush_.touch();
     commitSourceLockIfDue();
-    if (pendingComplete()) flushPending();
+    // Flush at the epoch boundary or shared quiet-period deadline.
   }
 
   void handleNavHpPosLlh() {
@@ -504,20 +551,20 @@ class UbxDecoderNode : public rclcpp::Node {
     pending_.tow_ms = tow;
     if (!ubx::nav_hpposllh::parseNavHpPosLlh(ubx_payload_.data(), ubx_payload_.size(),
                                              pending_.hp_llh)) {
-      return;
+      GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return;
     }
     pending_.cov_received  |= COV_BIT_HPPOSLLH;
     pending_.cov_ever_seen |= COV_BIT_HPPOSLLH;
-    pending_.last_update = now();
-    saw_binary_during_grace_ = true;
+    epoch_flush_.touch();
     commitSourceLockIfDue();
-    if (pendingComplete()) flushPending();
+    // Flush at the epoch boundary or shared quiet-period deadline.
   }
 
   void flushPending() {
     const uint8_t ever_seen = pending_.cov_ever_seen;
     const uint8_t recv      = pending_.cov_received;
     if (!pending_.has_pvt) {
+      if (pending_.cov_received) receiver_health_.pvtIncompleteDiscarded();
       pending_ = {};
       pending_.cov_ever_seen = ever_seen;
       return;
@@ -528,15 +575,12 @@ class UbxDecoderNode : public rclcpp::Node {
 
     // HPPOSLLH override (highest-priority LLH source), applied before geometry
     // derivation. Its accuracy fields refresh the covariance diagonal unless
-    // NAV-COV already provided the full 3x3 (non-zero off-diagonal).
+    // NAV-COV already provided the full 3x3 (explicit valid NAV-COV block).
     if (recv & COV_BIT_HPPOSLLH) {
       binary_solution_.latitude  = pending_.hp_llh.lat_deg;
       binary_solution_.longitude = pending_.hp_llh.lon_deg;
       binary_solution_.altitude  = pending_.hp_llh.alt_m;
-      const bool pos_cov_from_nav_cov =
-          binary_solution_.pos_enu_cov[1] != 0.0 ||
-          binary_solution_.pos_enu_cov[2] != 0.0 ||
-          binary_solution_.pos_enu_cov[5] != 0.0;
+      const bool pos_cov_from_nav_cov = pending_.has_pos_cov;
       if (!pos_cov_from_nav_cov) {
         const double h_var_per_axis =
             pending_.hp_llh.hacc_m * pending_.hp_llh.hacc_m * 0.5;
@@ -601,38 +645,166 @@ class UbxDecoderNode : public rclcpp::Node {
 
   void maybeWatchdogFlushPendingPvt() {
     if (!pending_.has_pvt && !pending_.cov_received) return;
-    if ((now() - pending_.last_update).seconds() > kPvtWatchdogTimeoutSec) {
+    if (epoch_flush_.due()) {
       flushPending();
+    }
+  }
+
+  // ---- GNSS time anchor for the ESF-RAW timeline -------------------------
+  //
+  // ESF-RAW carries no GNSS time, and u-blox publishes no field tying sTtag to
+  // it: the Interface Description leaves sTtag's Scale and Unit blank, and
+  // ESF-MEAS's calibTtag - the one field that would give receiver local time -
+  // is specified as "Always set to zero" on this hardware. So the only way to
+  // put the IMU on GPS time is the documented practice of enabling ESF-RAW
+  // alongside NAV-PVT / NAV-CLOCK and ESTIMATING the offset from them.
+  //
+  // The estimate is the same one GnssEpochAligner already makes and is tested
+  // on: the sliding-window minimum of (host arrival - GPS time of the epoch),
+  // which is the host/GPS clock difference plus the receiver's minimum output
+  // latency. Subtracting it from the sTtag timeline lands the IMU on UTC(GPST),
+  // the same base the GNSS topics use when use_gps_timestamp is set.
+  //
+  // What this does NOT remove is that minimum latency difference: GNSS epochs
+  // and IMU samples do not leave the receiver with the same delay, and u-blox
+  // documents neither. NAV-CLOCK's clkB does not help here - it is the
+  // receiver clock's bias against GPS time, not its output latency, and sTtag
+  // has no documented relation to that clock either. What NAV-CLOCK does add
+  // is tAcc, a quality gate on the epoch's time. Expect an O(10-100 ms)
+  // systematic offset in ABSOLUTE terms; what a fusion node consumes - the
+  // IMU/GNSS relative alignment - is what this fixes.
+  void feedGnssAnchor(int week, double tow, const rclcpp::Time& arrival) {
+    if (week <= 0 || !std::isfinite(tow) || tow < 0.0 || tow >= 604800.0) { GNSS_RX_EVENT(GNSS_RX_TIME,1); return; }
+    if (!gnss_utils::isRosTimeRepresentable(gpst2time(week,tow))) { GNSS_RX_EVENT(GNSS_RX_TIME,1); return; }
+    // NAV-CLOCK tAcc gate: the Integration manual warns that iTOW values may
+    // not be valid, so do not anchor on an epoch the receiver itself calls
+    // uncertain. 1 ms is generous - a receiver with time has tAcc in the tens
+    // of nanoseconds - so this only excludes genuinely bad time.
+    if (has_nav_clock_ && last_nav_clock_.time_acc_s > 1e-3) { GNSS_RX_EVENT(GNSS_RX_TIME,1); return; }
+    const rclcpp::Time aligned =
+        gnss_anchor_.align(static_cast<uint32_t>(week), tow, arrival);
+    const int64_t meas_ns =
+        gnss_utils::gpstToUtcRosTime(gpst2time(week, tow)).nanoseconds();
+    const double offset_s = (aligned.nanoseconds() - meas_ns) / 1e9;
+    if (has_gnss_anchor_ && std::fabs(offset_s - gnss_anchor_offset_s_) > 1.0) {
+      imu_offset_clock_.reset(); last_raw_imu_ns_ = -1;
+      RCLCPP_WARN(get_logger(), "GNSS anchor discontinuity: resetting estimated IMU time");
+    }
+    gnss_anchor_offset_s_ = offset_s;
+    has_gnss_anchor_ = true;
+    gnss_anchor_arrival_ns_ = arrival.nanoseconds();
+    gnss_anchor_steady_ = std::chrono::steady_clock::now();
+  }
+
+  /// Map a host-clock ESF-RAW stamp onto UTC(GPST) using that offset.
+  ins::SlewedTimeOffset imu_offset_clock_;
+  int64_t last_raw_imu_ns_{-1};
+  rclcpp::Time imuHostToGps(const rclcpp::Time& host) {
+    return imu_offset_clock_.map(host, gnss_anchor_offset_s_);
+  }
+
+  // STTAG_TICK_S is not a documented constant: the ZED-F9R Interface
+  // Description leaves both Scale and Unit blank for sTtag, so the value in
+  // ubx_protocol.hpp is an assumption that a firmware or product change could
+  // invalidate silently. The offset estimate drifting against the host clock
+  // measures (nominal_tick / true_tick - 1) directly, which turns that
+  // invisible failure into a log line. Report once when the window first
+  // fills, then only while it stays implausible.
+  void reportImuClockDrift() {
+    if (!imu_clock_.windowFilled()) return;
+    const double ppm = imu_clock_.driftRate() * 1e6;
+
+    // A "drift" of whole percent is not a clock error at all: it means the
+    // stream is not real-time paced, which is normal when replaying a
+    // recorded log through file:// (minutes of receiver time handed over in
+    // seconds). The tick constant cannot be judged against a clock that is
+    // not running at wall speed, so say so rather than cry wolf.
+    constexpr double kNotRealTimePpm = 50000.0;  // 5 %
+    if (std::fabs(ppm) > kNotRealTimePpm) {
+      if (!imu_clock_drift_reported_) {
+        imu_clock_drift_reported_ = true;
+        RCLCPP_INFO(get_logger(),
+          "ESF-RAW stream is not real-time paced (%.0f %% off wall speed) — "
+          "offline replay assumed; the sTtag tick diagnostic is skipped.",
+          ppm / 1e4);
+      }
+      return;
+    }
+
+    if (!imu_clock_drift_reported_) {
+      imu_clock_drift_reported_ = true;
+      RCLCPP_INFO(get_logger(),
+        "ESF-RAW sTtag clock: %.1f ppm vs the host clock", ppm);
+    }
+    if (std::fabs(ppm) > 100.0) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 30000,
+        "ESF-RAW sTtag clock drifting at %.0f ppm vs the host — "
+        "imu.sttag_tick_s may be wrong for this receiver/firmware; measured tick %.12g s.",
+        ppm, get_parameter("imu.sttag_tick_s").as_double() * (1.0 + imu_clock_.driftRate()));
     }
   }
 
   // UBX-ESF-RAW: batched IMU samples, one Imu published per sTtag sample set
   // (see ubx::esf_raw::parseEsfRawSamples). ESF-RAW carries no GNSS time —
-  // only the receiver-internal sTtag — so stamps stay host-clock based even
-  // with use_gps_timestamp: the read time anchors the newest sample and
-  // earlier samples are spaced backwards by sTtag deltas, keeping per-sample
-  // dt accurate for downstream integration.
+  // only the receiver-internal sTtag — so the topic is host-clock based.
+  //
+  // The sTtag is mapped through ins::SensorTickClock rather than used to
+  // spread samples backwards from the read time. The old scheme anchored each
+  // batch at now() and walked backwards by the batch span, which discarded
+  // the receiver clock BETWEEN batches: whenever the arrival gap was shorter
+  // than the batch span — routine with a 10 ms poll and ~10 ms batches, and
+  // guaranteed when several frames land in one strread() — the next batch's
+  // first sample was stamped before the previous batch's last. Measured on a
+  // synthetic 100 Hz file:// replay: 25.8 % of intervals did not advance, and
+  // dt ranged down to -30 ms. The clock keeps one monotone timeline instead,
+  // and removes the minimum observed transport latency along the way.
+  ubx::EsfRawAssembler esf_assembler_;
   void handleEsfRaw() {
-    const auto samples = ubx::esf_raw::parseEsfRawSamples(ubx_payload_);
+    const auto samples = esf_assembler_.push(ubx_payload_);
+    receiver_health_.imuPending(esf_assembler_.pending());
+    if (esf_assembler_.pending()) GNSS_RX_EVENT(GNSS_RX_IMU_WAIT,1);
+    if (ubx_payload_.size()<4 || (ubx_payload_.size()-4)%8) { GNSS_RX_EVENT(GNSS_RX_LENGTH,1); GNSS_RX_EVENT(GNSS_RX_IMU_REJECT,1); }
     if (samples.empty()) return;
 
-    const rclcpp::Time anchor = now();
-    const uint32_t last_sttag = samples.back().sttag;
-    // Sanity guard: a batch spanning > 1 s means a wrong tick constant or
-    // corrupted time tags — fall back to stamping the whole batch at arrival.
-    const double span_s =
-        (last_sttag - samples.front().sttag) * ubx::esf_raw::STTAG_TICK_S;
-    const bool spread_ok = span_s <= 1.0;
-    if (!spread_ok) {
+    const rclcpp::Time arrival = now();
+    std::string clock_warn;
+    const auto stamps = ins::stampBatch(
+        imu_clock_, samples, [](const ubx::esf_raw::Sample& s) {
+          return static_cast<uint64_t>(s.sttag);
+        }, arrival, &clock_warn);
+    if (!clock_warn.empty() && clock_warn.find("clamped") == std::string::npos) {
+      imu_offset_clock_.reset(); last_raw_imu_ns_ = -1;
+    }
+    if (!clock_warn.empty()) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-        "ESF-RAW sTtag span %.3f s exceeds 1 s — stamping batch at arrival time", span_s);
+        "ESF-RAW sTtag clock re-seeded: %s", clock_warn.c_str());
+    }
+    reportImuClockDrift();
+
+    // use_gps_timestamp applies to this topic too, so the IMU can never sit
+    // on a different base from the GNSS topics of the same node. Without an
+    // anchor yet, GPS mode withholds IMU samples until a fresh anchor exists.
+    if (use_gps_timestamp_ && !has_gnss_anchor_ && !imu_gps_warned_) {
+      imu_gps_warned_ = true;
+      RCLCPP_WARN(get_logger(),
+        "use_gps_timestamp is set but no GNSS epoch has anchored the ESF-RAW "
+        "timeline yet — enable UBX-NAV-PVT, UBX-NAV-CLOCK or RXM-RAWX so the "
+        "IMU can be put on GPS time.");
     }
 
-    for (const auto& s : samples) {
+    for (size_t i = 0; i < samples.size(); ++i) {
+      const auto& s = samples[i];
       sensor_msgs::msg::Imu imu;
-      const double back_s =
-          spread_ok ? (last_sttag - s.sttag) * ubx::esf_raw::STTAG_TICK_S : 0.0;
-      imu.header.stamp    = anchor - rclcpp::Duration::from_seconds(back_s);
+      const auto measurement_stamp = time_base_.stampPrecomputed(
+          use_gps_timestamp_, has_gnss_anchor_ &&
+          arrival.nanoseconds() >= gnss_anchor_arrival_ns_ &&
+          arrival.nanoseconds() - gnss_anchor_arrival_ns_ <= 2000000000LL &&
+          std::chrono::steady_clock::now()-gnss_anchor_steady_ <= std::chrono::seconds(2), has_gnss_anchor_ ? imuHostToGps(stamps[i]) : stamps[i], stamps[i],
+          get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+      if (measurement_stamp->nanoseconds() <= last_raw_imu_ns_) { GNSS_RX_EVENT(GNSS_RX_TIME,1); continue; }
+      last_raw_imu_ns_ = measurement_stamp->nanoseconds();
+      imu.header.stamp = *measurement_stamp;
       imu.header.frame_id = frame_id_;
 
       imu.orientation_covariance[0] = -1.0;
@@ -655,7 +827,7 @@ class UbxDecoderNode : public rclcpp::Node {
   }
 
   void handleEsfIns() {
-    if (static_cast<int>(ubx_payload_.size()) < ubx::esf_ins::MIN_LEN) return;
+    if (static_cast<int>(ubx_payload_.size()) < ubx::esf_ins::MIN_LEN) { GNSS_RX_EVENT(GNSS_RX_LENGTH,1); return; }
 
     // Validity bits in bitfield0 (bytes 0-3)
     uint32_t bitfield0 = 0;
@@ -675,8 +847,21 @@ class UbxDecoderNode : public rclcpp::Node {
     // Scale: angular rate 1e-3 deg/s → rad/s; acceleration 1e-2 m/s²
     const double deg2rad = M_PI / 180.0;
 
+    // U2 pp278-279 / U3 pp71-72 define version 1 with this layout.
+    // Keep legacy version 0 compatibility; do not accept unknown versions.
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = now();
+    if (!ang_valid || !acc_valid || (ubx_payload_[0] > 1)) {
+      GNSS_RX_EVENT(ubx_payload_[0]>1 ? GNSS_RX_VERSION : GNSS_RX_QUALITY,1); return;
+    }
+    const double tow = wire::u32(ubx_payload_.data() + ubx::esf_ins::OFFSET_ITOW) * 1e-3;
+    int week = 0;
+    const gtime_t ref = nav_time_ref_.get().time != 0 ? nav_time_ref_.get() : observation_time_ref_.get();
+    const bool valid_time = decoder_common::resolveGpsWeekForTow(ref, tow, week);
+    const auto measurement_stamp = time_base_.stamp(
+        use_gps_timestamp_, valid_time, valid_time ? gpst2time(week, tow) : gtime_t{},
+        now(), get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+    imu.header.stamp = *measurement_stamp;
     imu.header.frame_id = frame_id_;
 
     // orientation: not provided by ESF-INS — leave identity, mark unknown
@@ -685,13 +870,13 @@ class UbxDecoderNode : public rclcpp::Node {
     imu.angular_velocity.x = xAngRate_raw * 1e-3 * deg2rad;
     imu.angular_velocity.y = yAngRate_raw * 1e-3 * deg2rad;
     imu.angular_velocity.z = zAngRate_raw * 1e-3 * deg2rad;
-    auto ang_cov = ang_valid ? ins::makeDiagCovariance(1e-4, 1e-4, 1e-4) : ins::makeUnknownCovariance();
+    auto ang_cov = ang_valid ? ins::makeZeroCovariance() : ins::makeUnknownCovariance();
     std::copy(ang_cov.begin(), ang_cov.end(), imu.angular_velocity_covariance.begin());
 
     imu.linear_acceleration.x = xAccel_raw * 1e-2;
     imu.linear_acceleration.y = yAccel_raw * 1e-2;
     imu.linear_acceleration.z = zAccel_raw * 1e-2;
-    auto acc_cov = acc_valid ? ins::makeDiagCovariance(1e-3, 1e-3, 1e-3) : ins::makeUnknownCovariance();
+    auto acc_cov = acc_valid ? ins::makeZeroCovariance() : ins::makeUnknownCovariance();
     std::copy(acc_cov.begin(), acc_cov.end(), imu.linear_acceleration_covariance.begin());
 
     imu_pub_->publish(imu);
@@ -709,9 +894,16 @@ class UbxDecoderNode : public rclcpp::Node {
   }
 
   void handleDecodeResult(int result) {
+    receiver_health_.backendResult(result);
+    if (result < 0) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "Rejected receiver payload (invalid layout, time, version or content)");
+      return;
+    }
     switch (result) {
       case 1:  publishObservations(); break;
       case 2:  publishEphemerides();  break;
+      case 9:  publishIonosphere();   break;
       default: break;
     }
   }
@@ -724,23 +916,10 @@ class UbxDecoderNode : public rclcpp::Node {
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
-      const double raw_tow = time2gpst(raw_.time, &week_for_stamp);
-      if (week_for_stamp > 0) {
-        if (sol.time_tow > 0.0) {
-          // Week-rollover guard: iTOW vs raw_tow more than half a week apart
-          // means the two clocks straddle a GPS week boundary.
-          if      (sol.time_tow - raw_tow >  302400.0) week_for_stamp -= 1;
-          else if (sol.time_tow - raw_tow < -302400.0) week_for_stamp += 1;
-          sol.time_week = static_cast<uint32_t>(week_for_stamp);
-          t_gpst = gpst2time(week_for_stamp, sol.time_tow);
-        } else {
-          // iTOW unavailable (exact week-start epoch) — previous behavior.
-          sol.time_week = static_cast<uint32_t>(week_for_stamp);
-          sol.time_tow  = raw_tow;
-          t_gpst = raw_.time;
-        }
-      } else {
-        t_gpst = raw_.time;
+      const gtime_t ref = nav_time_ref_.get().time != 0 ? nav_time_ref_.get() : observation_time_ref_.get();
+      if (decoder_common::resolveGpsWeekForTow(ref, sol.time_tow, week_for_stamp)) {
+        sol.time_week = static_cast<uint32_t>(week_for_stamp);
+        t_gpst = gpst2time(week_for_stamp, sol.time_tow);
       }
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
     } else {
@@ -751,57 +930,29 @@ class UbxDecoderNode : public rclcpp::Node {
       }
     }
 
-    sol.header.stamp    = (use_gps_timestamp_ && week_for_stamp > 0)
-                          ? gnss_utils::gpstToUtcRosTime(t_gpst) : now();
+    // Anchor the ESF-RAW timeline from the solution epoch too. Gated on
+    // NAV-PVT's own `valid` flags: the Integration manual warns that "iTOW
+    // values may not be valid" and points at NAV-PVT precisely because it
+    // reports that.
+    const rclcpp::Time sol_arrival = now();
+    if (source_ == SolutionSource::BINARY && week_for_stamp > 0 &&
+        pvt_time_valid_) {
+      feedGnssAnchor(week_for_stamp, sol.time_tow, sol_arrival);
+    }
+
+    const auto measurement_stamp = time_base_.stamp(
+        use_gps_timestamp_, week_for_stamp > 0 &&
+        (source_ != SolutionSource::BINARY || pvt_time_valid_),
+        t_gpst, sol_arrival, get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+    sol.header.stamp = *measurement_stamp;
     sol.header.frame_id = frame_id_;
 
-    if (sol.status == msg::GnssSolution::STATUS_FIX ||
-        sol.status == msg::GnssSolution::STATUS_FLOAT ||
-        sol.status == msg::GnssSolution::STATUS_SINGLE ||
-        sol.status == msg::GnssSolution::STATUS_DGPS) {
-
-      if (!has_local_origin_) {
-        local_origin_ecef_[0] = sol.pos_ecef.x;
-        local_origin_ecef_[1] = sol.pos_ecef.y;
-        local_origin_ecef_[2] = sol.pos_ecef.z;
-        ecef2pos(local_origin_ecef_, local_origin_pos_);
-        has_local_origin_ = true;
-        RCLCPP_INFO(get_logger(), "Set local ENU origin: lat=%.6f, lon=%.6f, alt=%.2f",
-                    local_origin_pos_[0] * (180.0/M_PI), local_origin_pos_[1] * (180.0/M_PI), local_origin_pos_[2]);
-      }
-
-      sol.pos_enu_org_ecef.x = local_origin_ecef_[0];
-      sol.pos_enu_org_ecef.y = local_origin_ecef_[1];
-      sol.pos_enu_org_ecef.z = local_origin_ecef_[2];
-
-      double ecef[3] = {
-        sol.pos_ecef.x - local_origin_ecef_[0],
-        sol.pos_ecef.y - local_origin_ecef_[1],
-        sol.pos_ecef.z - local_origin_ecef_[2]
-      };
-      double enu[3] = {0};
-      ecef2enu(local_origin_pos_, ecef, enu);
-
-      sol.pos_enu.x = enu[0];
-      sol.pos_enu.y = enu[1];
-      sol.pos_enu.z = enu[2];
-
-      // vel_enu uses CURRENT-position frame (matches msg comment & receiver convention).
-      double vel_ecef[3] = {sol.vel_ecef.x, sol.vel_ecef.y, sol.vel_ecef.z};
-      double vel_enu[3] = {0};
-      const double cur_llh[3] = {sol.latitude * D2R, sol.longitude * D2R, sol.altitude};
-      ecef2enu(cur_llh, vel_ecef, vel_enu);
-
-      sol.vel_enu.x = vel_enu[0];
-      sol.vel_enu.y = vel_enu[1];
-      sol.vel_enu.z = vel_enu[2];
-    } else {
-      sol.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
-      sol.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
-      sol.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
-      sol.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
-      sol.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
-      sol.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
+    if (decoder_common::finalizeReceiverSolution(
+            sol, has_local_origin_, local_origin_ecef_, local_origin_pos_)) {
+      RCLCPP_INFO(get_logger(), "Set local ENU origin: lat=%.6f lon=%.6f alt=%.2f",
+                  local_origin_pos_[0] * R2D, local_origin_pos_[1] * R2D,
+                  local_origin_pos_[2]);
     }
 
     sol_pub_->publish(sol);
@@ -811,6 +962,7 @@ class UbxDecoderNode : public rclcpp::Node {
 
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
+    receiver_health_.observationCapacity(raw_.obs.n, MAXOBS);
 
     // obs.data[0].time, not raw_.time (already advanced to the next epoch).
     int week = 0;
@@ -820,9 +972,18 @@ class UbxDecoderNode : public rclcpp::Node {
     warnOnEpochGap("Observation", tow,
                    obs_gap_last_tow_s_, obs_gap_min_period_s_);
 
+    // Anchor the ESF-RAW timeline. RXM-RAWX epochs are RTKLIB-validated, so
+    // they need no extra time-validity gate; now() is the host arrival the
+    // offset estimate is built from, taken before any stamping.
+    const rclcpp::Time obs_arrival = now();
+    feedGnssAnchor(week, tow, obs_arrival);
+
     msg::GnssObservations msg;
-    msg.header.stamp    = (use_gps_timestamp_ && week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
+    const auto measurement_stamp = time_base_.stamp(
+        use_gps_timestamp_, week > 0,
+        obs_time, obs_arrival, get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+    msg.header.stamp = *measurement_stamp;
     msg.header.frame_id = frame_id_;
     msg.week = static_cast<uint32_t>(week);
     msg.tow = tow;
@@ -831,12 +992,13 @@ class UbxDecoderNode : public rclcpp::Node {
     for (int i = 0; i < raw_.obs.n; ++i) {
       const obsd_t& obs = raw_.obs.data[i];
       decoder_common::countSatellite(obs.sat, sat_count);
-      decoder_common::appendObservations(obs, msg.observations);
+      decoder_common::appendObservations(obs, msg.observations, &raw_.nav);
     }
 
     obs_pub_->publish(msg);
+    receiver_health_.published(msg.week, msg.tow, msg.observations.size());
 
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
       "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
@@ -853,7 +1015,13 @@ class UbxDecoderNode : public rclcpp::Node {
     for (int i = 0; i < raw_.nav.ng; ++i) {
       changed = eph_store_.ingestGeph(raw_.nav.geph[i]) || changed;
     }
+    changed = eph_store_.ingestIon(raw_.nav) || changed;
     if (changed) publishSnapshot();
+  }
+
+  // Broadcast ionosphere parameters (backend status 9): part of the snapshot.
+  void publishIonosphere() {
+    if (eph_store_.ingestIon(raw_.nav)) publishSnapshot();
   }
 
   void maybePublishHeartbeat() {
@@ -862,6 +1030,7 @@ class UbxDecoderNode : public rclcpp::Node {
 
   void publishSnapshot() {
     auto m = eph_store_.buildSnapshot(now());
+    receiver_health_.snapshotRejected(eph_store_.lastSnapshotRejected());
     eph_pub_->publish(m);
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
       "Published ephemeris snapshot: GNSS=%zu GLO=%zu",
@@ -878,39 +1047,62 @@ class UbxDecoderNode : public rclcpp::Node {
   rclcpp::Publisher<msg::GnssSolution>::SharedPtr       sol_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr   imu_pub_;       // ESF-INS (calibrated)
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr   imu_raw_pub_;   // ESF-RAW (uncalibrated)
+
+  // sTtag -> ROS time for ESF-RAW. Nominal tick; the drift diagnostic above
+  // is what catches a wrong constant.
+  ins::SensorTickClock imu_clock_{ins::SensorTickClock::Config{
+      ubx::esf_raw::STTAG_TICK_S, 1ull << 32}};
+  bool imu_clock_drift_reported_{false};
+
+  // GNSS time anchor for the ESF-RAW timeline (see feedGnssAnchor). The
+  // estimator is GnssEpochAligner in TowAutoOffset mode, reused rather than
+  // reimplemented because it is the tested one.
+  gnss_utils::GnssEpochAligner gnss_anchor_{
+      gnss_utils::GnssEpochAligner::Config{
+          gnss_utils::GnssEpochAligner::Source::TowAutoOffset, 60.0}};
+  double gnss_anchor_offset_s_{0.0};
+  bool   has_gnss_anchor_{false};
+  int64_t gnss_anchor_arrival_ns_{0};
+  std::chrono::steady_clock::time_point gnss_anchor_steady_{};
+  bool   imu_gps_warned_{false};
+  bool   pvt_time_valid_{false};
+  wire::FreshGnssReference nav_time_ref_, observation_time_ref_;
   rclcpp::TimerBase::SharedPtr timer_;
 
+  wire::Framer wire_framer_{wire::Protocol::Ubx};
+  std::chrono::steady_clock::time_point wire_last_input_{std::chrono::steady_clock::now()};
+  uint64_t wire_last_rejected_{0};
   stream_t stream_{};
   raw_t    raw_{};
+
+
+  // One time base per session, latched at the first published message and
+  // never changed. Shared by EVERY topic this node publishes, which is what
+  // structurally guarantees the IMU and the GNSS topics cannot end up on
+  // different bases. See decoder_common::TimeBaseLatch.
+  decoder_common::TimeBaseLatch time_base_;
 
   // RTCM relay (PC -> receiver): STRSVR-style TCP server -> receiver stream
   decoder_common::RtcmRelayServer relay_;
 
   // NMEA parsing state
   gnss_utils::NmeaParser nmea_parser_;
-  std::string            nmea_buffer_;
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
   PendingPvt             pending_;
   SolutionSource         source_{SolutionSource::UNDETERMINED};
-  rclcpp::Time           grace_start_{0, 0, RCL_ROS_TIME};
+  std::chrono::steady_clock::time_point grace_start_{};
   bool                   grace_started_{false};
   bool                   saw_binary_during_grace_{false};
 
   // ENU origin
-  double origin_latitude_{0.0};
-  double origin_longitude_{0.0};
-  double origin_altitude_{0.0};
   bool   has_local_origin_{false};
   double local_origin_ecef_[3]{0.0};
   double local_origin_pos_[3]{0.0};
 
-  // UBX mini-framer state (ESF-INS / ESF-RAW)
-  int                  ubx_state_{0};
+  // UBX decoded frame payload (ESF-INS / ESF-RAW)
   uint8_t              ubx_cls_{0};
   uint8_t              ubx_id_{0};
-  uint16_t             ubx_len_{0};
-  uint16_t             ubx_pos_{0};
   std::vector<uint8_t> ubx_payload_;
 
   // Epoch-gap detection state (see warnOnEpochGap)
@@ -927,7 +1119,13 @@ class UbxDecoderNode : public rclcpp::Node {
 
 int main(int argc, char* argv[]) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<gnss_ros_standardization::UbxDecoderNode>());
+  try {
+    rclcpp::spin(std::make_shared<gnss_ros_standardization::UbxDecoderNode>());
+  } catch (const std::exception& error) {
+    RCLCPP_FATAL(rclcpp::get_logger("ubx_decoder_node"), "Startup/runtime failure: %s", error.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   rclcpp::shutdown();
   return 0;
 }

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 // Shared helpers for rosbag2 ↔ RTKLIB converters.
 //   Read side  (bag → RTKLIB):   deserializeRos, normalizeBagUri, deriveOutputPath
 //                                — used by rosbag_to_rinex.cpp, rosbag_to_pos.cpp
@@ -15,13 +14,15 @@
 #include <rosbag2_storage/serialized_bag_message.hpp>
 #include <rosbag2_storage/topic_metadata.hpp>
 
-extern "C" {
-#include "rtklib.h"
-}
+#include "gnss_ros_standardization/rtklib_compat.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <limits>
 #include <filesystem>
+#include <fstream>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -74,13 +75,14 @@ inline std::string deriveOutputPath(const std::string& bag_uri, const std::strin
 template <typename ROSMsg>
 inline bool deserializeRos(const rosbag2_storage::SerializedBagMessage& in,
                            rclcpp::Serialization<ROSMsg>& ser, ROSMsg& out) {
-  if (!in.serialized_data || in.serialized_data->buffer_length == 0) return false;
+  if (!in.serialized_data || in.serialized_data->buffer_length == 0)
+    throw std::runtime_error("Rejected 1 message: empty serialized data on " + in.topic_name);
   try {
     rclcpp::SerializedMessage smsg(*in.serialized_data);
     ser.deserialize_message(&smsg, &out);
     return true;
-  } catch (...) {
-    return false;
+  } catch (const std::exception& e) {
+    throw std::runtime_error("Rejected 1 message: Cannot deserialize " + in.topic_name + ": " + e.what());
   }
 }
 
@@ -107,18 +109,30 @@ inline std::string resolveStorageId(const std::string& override_id,
 // the numeric value is GPST. For UTC-converted ROS Time, use
 // gnss_utils::gpstToUtcRosTime() instead.
 inline rclcpp::Time toRosTimeGpst(gtime_t t) {
-  long sec     = static_cast<long>(t.time);
-  long nanosec = static_cast<long>(t.sec * 1e9);
-  if (nanosec >= 1000000000) {
-    sec += nanosec / 1000000000;
-    nanosec %= 1000000000;
-  } else if (nanosec < 0) {
-    long roll = (-nanosec + 999999999) / 1000000000;
-    sec -= roll;
-    nanosec += roll * 1000000000;
-  }
-  if (sec < 0) sec = 0;
-  return rclcpp::Time(sec, nanosec, RCL_ROS_TIME);
+  if (t.time < 0 || t.time > std::numeric_limits<int32_t>::max() ||
+      !std::isfinite(t.sec) || t.sec < 0 || t.sec >= 1)
+    throw std::out_of_range("GNSS epoch outside ROS builtin Time range");
+  const int64_t ns=static_cast<int64_t>(t.time)*1000000000LL + std::llround(t.sec*1e9);
+  if (ns/1000000000LL > std::numeric_limits<int32_t>::max())
+    throw std::out_of_range("GNSS epoch rounds outside ROS builtin Time range");
+  return rclcpp::Time(ns, RCL_ROS_TIME);
+}
+
+enum class TimeScale { Utc, LegacyGpst };
+inline TimeScale parseTimeScale(const std::string& value) {
+  if (value == "utc") return TimeScale::Utc;
+  if (value == "gpst") return TimeScale::LegacyGpst;
+  throw std::invalid_argument("--timestamp-scale must be utc or gpst");
+}
+inline rclcpp::Time toRosTime(gtime_t t, TimeScale scale = TimeScale::Utc) {
+  return toRosTimeGpst(scale == TimeScale::Utc ? gpst2utc(t) : t);
+}
+inline void writeTimeScaleMetadata(const std::string& bag, TimeScale scale) {
+  std::ofstream out(std::filesystem::path(bag) / "gnss_time_basis.yaml");
+  out << "header_and_bag_time: " << (scale == TimeScale::Utc ? "utc" : "gpst_legacy")
+      << "\ngnss_week_tow: gpst\n";
+  out.close();
+  if (!out) throw std::runtime_error("Cannot write time basis metadata for " + bag);
 }
 
 // Set offered_qos_profiles on a TopicMetadata in a way that compiles on both
@@ -195,3 +209,96 @@ inline const std::string& transientLocalConverterQosYaml() {
 }
 
 }  // namespace gnss_converter_io
+
+// ---- output transaction ----
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <stdexcept>
+#include <string>
+#include <vector>
+namespace gnss_converter_io {
+// Ordinary conversion/write failures leave destinations untouched. The two
+// final renames are not a crash-atomic multi-file filesystem transaction.
+class OutputTransaction {
+  struct File {
+    std::filesystem::path target, directory, temporary, backup;
+    FILE* stream = nullptr;
+    bool saved = false, installed = false;
+  };
+  std::vector<File> files_;
+  bool committed_ = false;
+public:
+  FILE* open(const std::string& path) {
+    namespace fs = std::filesystem;
+    const auto target = fs::absolute(path).lexically_normal();
+    for (const auto& f : files_)
+      if (target == f.target || (fs::exists(target) && fs::exists(f.target) && fs::equivalent(target,f.target)))
+        throw std::runtime_error("Output destinations must differ");
+    if (fs::exists(target) && !fs::is_regular_file(fs::symlink_status(target)))
+      throw std::runtime_error("Output destination must be a regular file: " + path);
+    std::string pattern = target.string() + ".tmp-XXXXXX";
+    if (!mkdtemp(pattern.data())) throw std::runtime_error("Cannot create output temporary directory: " + path);
+    files_.push_back({target,pattern,fs::path(pattern)/"output",fs::path(pattern)/"previous"});
+    auto& file = files_.back();
+    file.stream = std::fopen(file.temporary.c_str(), "w");
+    if (!file.stream) throw std::runtime_error("Cannot open temporary output: " + path);
+    // Replacing an existing file must not broaden its access permissions.
+    if (fs::exists(target)) fs::permissions(file.temporary,fs::status(target).permissions());
+    setvbuf(file.stream, nullptr, _IOFBF, 1<<20);
+    return file.stream;
+  }
+  void commit() {
+    for (auto& file : files_) {
+      bool failed = std::ferror(file.stream) || std::fflush(file.stream) != 0;
+      if (std::fclose(file.stream) != 0) failed = true;
+      file.stream = nullptr;
+      if (failed) throw std::runtime_error("Output write/close failed");
+    }
+    for (auto& file : files_) {
+      if (std::filesystem::exists(file.target)) {
+        std::filesystem::rename(file.target,file.backup); file.saved = true;
+      }
+      std::filesystem::rename(file.temporary,file.target); file.installed = true;
+    }
+    committed_ = true;
+  }
+  ~OutputTransaction() {
+    for (auto& file : files_) {
+      if (file.stream) std::fclose(file.stream);
+      std::error_code error;
+      if (!committed_) {
+        if (file.installed) std::filesystem::remove(file.target,error);
+        if (file.saved) {
+          std::filesystem::rename(file.backup,file.target,error);
+          if (error) { // Preserve the backup if an external filesystem change prevents rollback.
+            std::fprintf(stderr,"Cannot restore output; previous file saved at %s\n",file.backup.c_str());
+            continue;
+          }
+        }
+      }
+      std::filesystem::remove_all(file.directory,error);
+    }
+  }
+};
+
+// Bag writers require a nonexistent destination. Own a private staging parent
+// so every failure removes only files this conversion created.
+class BagTransaction {
+  std::filesystem::path target_, directory_, staged_;
+public:
+  explicit BagTransaction(const std::string& path):target_(std::filesystem::absolute(path).lexically_normal()) {
+    while (!target_.has_filename() && target_ != target_.parent_path()) target_=target_.parent_path();
+    if (std::filesystem::exists(target_)) throw std::runtime_error("Output bag already exists: " + path);
+    std::string pattern=target_.string()+".tmp-XXXXXX";
+    if (!mkdtemp(pattern.data())) throw std::runtime_error("Cannot stage output bag: " + path);
+    directory_=pattern; staged_=directory_/target_.filename();
+  }
+  std::string path() const {return staged_.string();}
+  void commit() {
+    if (std::filesystem::exists(target_)) throw std::runtime_error("Output bag appeared during conversion");
+    std::filesystem::rename(staged_,target_);
+  }
+  ~BagTransaction() {std::error_code error;std::filesystem::remove_all(directory_,error);}
+};
+} // namespace gnss_converter_io

@@ -1,0 +1,1742 @@
+{
+  "reference": "rtcm-rs v0.11.0 d4d0269dc76b7e88b6620ca023b82889b6441662",
+  "purpose": "Field order, integer representation and numeric scale extracted from independent R2 definitions; no RTKLIB-derived expectations.",
+  "source_sha256": {
+    "src/df/dfs.rs": "e43c56adbb593ae77bab8570d3a044eb6a90e46035c66e997e5a851d32dcd4b1",
+    "src/msg/msg1019.rs": "4ec0e3ffe5a63037c8c807935b0146c13c2f2054dbc215f4f2729a49f37b119a",
+    "src/msg/msg1020.rs": "a58e56dc11e9790c59eee17000ba04435117975e60856fa53d7f1ce1ecdf3981",
+    "src/msg/msg1041.rs": "76a3245c12030936e9c2590cada3b397f39b35646e4a9271792c059c44e6bef6",
+    "src/msg/msg1042.rs": "ad287199d7c42383a52045d8c4639026cd03e6d27e6c8b247a676bbb2402055b",
+    "src/msg/msg1044.rs": "de7c5f3b25a2a86138ddec3c957914487ac6c8bb59f22abdea46335c61e7bbf7",
+    "src/msg/msg1045.rs": "8e9b4bcb7a65540d3892282e5337d0b9e039fd46b84175fb0567f6fd8ca15c11",
+    "src/msg/msg1046.rs": "411e7317bdc317fb84e78a84939d4eafa22c5217ebcf0a0766f6dcac2537e0a7"
+  },
+  "messages": {
+    "1019": [
+      {
+        "name": "gps_satellite_id",
+        "df": "df009",
+        "width": 6,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "gps_week_number",
+        "df": "df076",
+        "width": 10,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "ura_index",
+        "df": "df077",
+        "width": 4,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "code_on_l2_ind",
+        "df": "df078",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "idot_sc_s",
+        "df": "df079",
+        "width": 14,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "iode",
+        "df": "df071",
+        "width": 8,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "toc_s",
+        "df": "df081",
+        "width": 16,
+        "storage": "U16",
+        "scale": 16.0,
+        "bias": 0
+      },
+      {
+        "name": "af2_s_s2",
+        "df": "df082",
+        "width": 8,
+        "storage": "I8",
+        "scale": 2.7755575615628914e-17,
+        "bias": 0
+      },
+      {
+        "name": "af1_s_s",
+        "df": "df083",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "af0_s",
+        "df": "df084",
+        "width": 22,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "iodc",
+        "df": "df085",
+        "width": 10,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "crs_m",
+        "df": "df086",
+        "width": 16,
+        "storage": "I16",
+        "scale": 0.03125,
+        "bias": 0
+      },
+      {
+        "name": "delta_n_sc_s",
+        "df": "df087",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "m0_sc",
+        "df": "df088",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "cuc_rad",
+        "df": "df089",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "eccentricity",
+        "df": "df090",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.1641532182693481e-10,
+        "bias": 0
+      },
+      {
+        "name": "cus_rad",
+        "df": "df091",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "sqrt_a_sqrt_m",
+        "df": "df092",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.9073486328125e-06,
+        "bias": 0
+      },
+      {
+        "name": "toe_s",
+        "df": "df093",
+        "width": 16,
+        "storage": "U16",
+        "scale": 16.0,
+        "bias": 0
+      },
+      {
+        "name": "cic_rad",
+        "df": "df094",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "omega0_sc",
+        "df": "df095",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "cis_rad",
+        "df": "df096",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "i0_sc",
+        "df": "df097",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "crc_m",
+        "df": "df098",
+        "width": 16,
+        "storage": "I16",
+        "scale": 0.03125,
+        "bias": 0
+      },
+      {
+        "name": "omega_sc",
+        "df": "df099",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "omegadot_sc_s",
+        "df": "df100",
+        "width": 24,
+        "storage": "I32",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "tgd_s",
+        "df": "df101",
+        "width": 8,
+        "storage": "I8",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "sv_health_ind",
+        "df": "df102",
+        "width": 6,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "l2_p_data_flag",
+        "df": "df103",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "fit_interval_ind",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      }
+    ],
+    "1020": [
+      {
+        "name": "glo_satellite_id",
+        "df": "df038",
+        "width": 6,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "glo_satellite_freq_chan_number",
+        "df": "df040",
+        "width": 5,
+        "storage": "U8",
+        "scale": 1,
+        "bias": -7
+      },
+      {
+        "name": "glo_alm_health_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "glo_alm_health_avail_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "p1_ind",
+        "df": "df106",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "tk_h",
+        "df": "df107_hour",
+        "width": 5,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "tk_min",
+        "df": "df107_min",
+        "width": 6,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "tk_s",
+        "df": "df107_s",
+        "width": 1,
+        "storage": "U8",
+        "scale": 30,
+        "bias": 0
+      },
+      {
+        "name": "glo_eph_health_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "p2_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "tb_min",
+        "df": "df110",
+        "width": 7,
+        "storage": "U8",
+        "scale": 15,
+        "bias": 0
+      },
+      {
+        "name": "xn_first_deriv_km_s",
+        "df": "df111",
+        "width": 24,
+        "storage": "SM32",
+        "scale": 9.5367431640625e-07,
+        "bias": 0
+      },
+      {
+        "name": "xn_km",
+        "df": "df112",
+        "width": 27,
+        "storage": "SM32",
+        "scale": 0.00048828125,
+        "bias": 0
+      },
+      {
+        "name": "xn_second_deriv_km_s2",
+        "df": "df113",
+        "width": 5,
+        "storage": "SM8",
+        "scale": 9.313225746154785e-10,
+        "bias": 0
+      },
+      {
+        "name": "yn_first_deriv_km_s",
+        "df": "df114",
+        "width": 24,
+        "storage": "SM32",
+        "scale": 9.5367431640625e-07,
+        "bias": 0
+      },
+      {
+        "name": "yn_km",
+        "df": "df115",
+        "width": 27,
+        "storage": "SM32",
+        "scale": 0.00048828125,
+        "bias": 0
+      },
+      {
+        "name": "yn_second_deriv_km_s2",
+        "df": "df116",
+        "width": 5,
+        "storage": "SM8",
+        "scale": 9.313225746154785e-10,
+        "bias": 0
+      },
+      {
+        "name": "zn_first_deriv_km_s",
+        "df": "df117",
+        "width": 24,
+        "storage": "SM32",
+        "scale": 9.5367431640625e-07,
+        "bias": 0
+      },
+      {
+        "name": "zn_km",
+        "df": "df118",
+        "width": 27,
+        "storage": "SM32",
+        "scale": 0.00048828125,
+        "bias": 0
+      },
+      {
+        "name": "zn_second_deriv_km_s2",
+        "df": "df119",
+        "width": 5,
+        "storage": "SM8",
+        "scale": 9.313225746154785e-10,
+        "bias": 0
+      },
+      {
+        "name": "p3_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "gamma_n",
+        "df": "df121",
+        "width": 11,
+        "storage": "SM16",
+        "scale": 9.094947017729282e-13,
+        "bias": 0
+      },
+      {
+        "name": "glo_m_p_ind",
+        "df": "df122",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "glo_m_3str_ln_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "tau_n_s",
+        "df": "df124",
+        "width": 22,
+        "storage": "SM32",
+        "scale": 9.313225746154785e-10,
+        "bias": 0
+      },
+      {
+        "name": "glo_m_delta_tau_n_s",
+        "df": "df125",
+        "width": 5,
+        "storage": "SM8",
+        "scale": 9.313225746154785e-10,
+        "bias": 0
+      },
+      {
+        "name": "en_d",
+        "df": "df126",
+        "width": 5,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "glo_m_p4_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "glo_m_ft_ind",
+        "df": "df128",
+        "width": 4,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "glo_m_nt_d",
+        "df": "df129",
+        "width": 11,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "glo_m_m_ind",
+        "df": "df130",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "additional_data_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "na_d",
+        "df": "df132",
+        "width": 11,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "tau_c_s",
+        "df": "df133",
+        "width": 32,
+        "storage": "SM32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "glo_m_n4_year",
+        "df": "df134",
+        "width": 5,
+        "storage": "U8",
+        "scale": 4,
+        "bias": 1992
+      },
+      {
+        "name": "glo_m_tau_gps_s",
+        "df": "df135",
+        "width": 22,
+        "storage": "SM32",
+        "scale": 9.313225746154785e-10,
+        "bias": 0
+      },
+      {
+        "name": "glo_m_5str_ln_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "reserved_353_7",
+        "df": "df001_7bits",
+        "width": 7,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      }
+    ],
+    "1041": [
+      {
+        "name": "navic_satellite_id",
+        "df": "df516",
+        "width": 6,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "navic_week_number",
+        "df": "df517",
+        "width": 10,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "af0_s",
+        "df": "df518",
+        "width": 22,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "af1_s_s",
+        "df": "df519",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "af2_s_s2",
+        "df": "df520",
+        "width": 8,
+        "storage": "I8",
+        "scale": 2.7755575615628914e-17,
+        "bias": 0
+      },
+      {
+        "name": "ura_index",
+        "df": "df521",
+        "width": 4,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "toc_s",
+        "df": "df522",
+        "width": 16,
+        "storage": "U16",
+        "scale": 16.0,
+        "bias": 0
+      },
+      {
+        "name": "tgd_s",
+        "df": "df523",
+        "width": 8,
+        "storage": "I8",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "delta_n_sc_s",
+        "df": "df524",
+        "width": 22,
+        "storage": "I32",
+        "scale": 4.547473508864641e-13,
+        "bias": 0
+      },
+      {
+        "name": "iodec",
+        "df": "df525",
+        "width": 8,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "reserved_132_10",
+        "df": "df001_10bits",
+        "width": 10,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "l5_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "s_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "cuc_rad",
+        "df": "df529",
+        "width": 15,
+        "storage": "I16",
+        "scale": 3.725290298461914e-09,
+        "bias": 0
+      },
+      {
+        "name": "cus_rad",
+        "df": "df530",
+        "width": 15,
+        "storage": "I16",
+        "scale": 3.725290298461914e-09,
+        "bias": 0
+      },
+      {
+        "name": "cic_rad",
+        "df": "df531",
+        "width": 15,
+        "storage": "I16",
+        "scale": 3.725290298461914e-09,
+        "bias": 0
+      },
+      {
+        "name": "cis_rad",
+        "df": "df532",
+        "width": 15,
+        "storage": "I16",
+        "scale": 3.725290298461914e-09,
+        "bias": 0
+      },
+      {
+        "name": "crc_m",
+        "df": "df533",
+        "width": 15,
+        "storage": "I16",
+        "scale": 0.0625,
+        "bias": 0
+      },
+      {
+        "name": "crs_m",
+        "df": "df534",
+        "width": 15,
+        "storage": "I16",
+        "scale": 0.0625,
+        "bias": 0
+      },
+      {
+        "name": "idot_sc_s",
+        "df": "df535",
+        "width": 14,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "m0_sc",
+        "df": "df536",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "toe_s",
+        "df": "df537",
+        "width": 16,
+        "storage": "U16",
+        "scale": 16.0,
+        "bias": 0
+      },
+      {
+        "name": "eccentricity",
+        "df": "df538",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.1641532182693481e-10,
+        "bias": 0
+      },
+      {
+        "name": "sqrt_a_sqrt_m",
+        "df": "df539",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.9073486328125e-06,
+        "bias": 0
+      },
+      {
+        "name": "omega0_sc",
+        "df": "df540",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "omega_sc",
+        "df": "df541",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "omegadot_sc_s",
+        "df": "df542",
+        "width": 22,
+        "storage": "I32",
+        "scale": 4.547473508864641e-13,
+        "bias": 0
+      },
+      {
+        "name": "i0_sc",
+        "df": "df543",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "spare_idot",
+        "df": "df001_2bits",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "spare_i0",
+        "df": "df001_2bits",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      }
+    ],
+    "1042": [
+      {
+        "name": "bds_satellite_id",
+        "df": "df488",
+        "width": 6,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "bds_week_number",
+        "df": "df489",
+        "width": 13,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "ura_index",
+        "df": "df490",
+        "width": 4,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "idot_sc_s",
+        "df": "df491",
+        "width": 14,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "aode",
+        "df": "df492",
+        "width": 5,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "toc_s",
+        "df": "df493",
+        "width": 17,
+        "storage": "U32",
+        "scale": 8.0,
+        "bias": 0
+      },
+      {
+        "name": "a2_s_s2",
+        "df": "df494",
+        "width": 11,
+        "storage": "I16",
+        "scale": 1.3552527156068805e-20,
+        "bias": 0
+      },
+      {
+        "name": "a1_s_s",
+        "df": "df495",
+        "width": 22,
+        "storage": "I32",
+        "scale": 8.881784197001252e-16,
+        "bias": 0
+      },
+      {
+        "name": "a0_s",
+        "df": "df496",
+        "width": 24,
+        "storage": "I32",
+        "scale": 1.1641532182693481e-10,
+        "bias": 0
+      },
+      {
+        "name": "aodc",
+        "df": "df497",
+        "width": 5,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "crs_m",
+        "df": "df498",
+        "width": 18,
+        "storage": "I32",
+        "scale": 0.015625,
+        "bias": 0
+      },
+      {
+        "name": "delta_n_sc_s",
+        "df": "df499",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "m0_sc",
+        "df": "df500",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "cuc_rad",
+        "df": "df501",
+        "width": 18,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "eccentricity",
+        "df": "df502",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.1641532182693481e-10,
+        "bias": 0
+      },
+      {
+        "name": "cus_rad",
+        "df": "df503",
+        "width": 18,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "sqrt_a_sqrt_m",
+        "df": "df504",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.9073486328125e-06,
+        "bias": 0
+      },
+      {
+        "name": "toe_s",
+        "df": "df505",
+        "width": 17,
+        "storage": "U32",
+        "scale": 8.0,
+        "bias": 0
+      },
+      {
+        "name": "cic_rad",
+        "df": "df506",
+        "width": 18,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "omega0_sc",
+        "df": "df507",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "cis_rad",
+        "df": "df508",
+        "width": 18,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "i0_sc",
+        "df": "df509",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "crc_m",
+        "df": "df510",
+        "width": 18,
+        "storage": "I32",
+        "scale": 0.015625,
+        "bias": 0
+      },
+      {
+        "name": "omega_sc",
+        "df": "df511",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "omegadot_sc_s",
+        "df": "df512",
+        "width": 24,
+        "storage": "I32",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "tgd1_s",
+        "df": "df513",
+        "width": 10,
+        "storage": "I16",
+        "scale": 1e-10,
+        "bias": 0
+      },
+      {
+        "name": "tgd2_s",
+        "df": "df514",
+        "width": 10,
+        "storage": "I16",
+        "scale": 1e-10,
+        "bias": 0
+      },
+      {
+        "name": "sv_health_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      }
+    ],
+    "1044": [
+      {
+        "name": "qzss_satellite_id",
+        "df": "df429",
+        "width": 4,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "toc_s",
+        "df": "df430",
+        "width": 16,
+        "storage": "U16",
+        "scale": 16.0,
+        "bias": 0
+      },
+      {
+        "name": "af2_s_s2",
+        "df": "df431",
+        "width": 8,
+        "storage": "I8",
+        "scale": 2.7755575615628914e-17,
+        "bias": 0
+      },
+      {
+        "name": "af1_s_s",
+        "df": "df432",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "af0_s",
+        "df": "df433",
+        "width": 22,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "iode",
+        "df": "df434",
+        "width": 8,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "crs_m",
+        "df": "df435",
+        "width": 16,
+        "storage": "I16",
+        "scale": 0.03125,
+        "bias": 0
+      },
+      {
+        "name": "delta_n_sc_s",
+        "df": "df436",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "m0_sc",
+        "df": "df437",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "cuc_rad",
+        "df": "df438",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "eccentricity",
+        "df": "df439",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.1641532182693481e-10,
+        "bias": 0
+      },
+      {
+        "name": "cus_rad",
+        "df": "df440",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "sqrt_a_sqrt_m",
+        "df": "df441",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.9073486328125e-06,
+        "bias": 0
+      },
+      {
+        "name": "toe_s",
+        "df": "df442",
+        "width": 16,
+        "storage": "U16",
+        "scale": 16.0,
+        "bias": 0
+      },
+      {
+        "name": "cic_rad",
+        "df": "df443",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "omega0_sc",
+        "df": "df444",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "cis_rad",
+        "df": "df445",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "i0_sc",
+        "df": "df446",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "crc_m",
+        "df": "df447",
+        "width": 16,
+        "storage": "I16",
+        "scale": 0.03125,
+        "bias": 0
+      },
+      {
+        "name": "omega_sc",
+        "df": "df448",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "omegadot_sc_s",
+        "df": "df449",
+        "width": 24,
+        "storage": "I32",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "idot_sc_s",
+        "df": "df450",
+        "width": 14,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "code_on_l2_ind",
+        "df": "df451",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "qzss_week_number",
+        "df": "df452",
+        "width": 10,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "ura_index",
+        "df": "df453",
+        "width": 4,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "sv_health_ind",
+        "df": "df454",
+        "width": 6,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "tgd_s",
+        "df": "df455",
+        "width": 8,
+        "storage": "I8",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "iodc",
+        "df": "df456",
+        "width": 10,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "fit_interval_ind",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      }
+    ],
+    "1045": [
+      {
+        "name": "gal_satellite_id",
+        "df": "df252",
+        "width": 6,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "gal_week_number",
+        "df": "df289",
+        "width": 12,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "iodnav",
+        "df": "df290",
+        "width": 10,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "sisa_e1_e5a_index",
+        "df": "df291",
+        "width": 8,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "idot_sc_s",
+        "df": "df292",
+        "width": 14,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "toc_s",
+        "df": "df293",
+        "width": 14,
+        "storage": "U16",
+        "scale": 60.0,
+        "bias": 0
+      },
+      {
+        "name": "af2_s_s2",
+        "df": "df294",
+        "width": 6,
+        "storage": "I8",
+        "scale": 1.734723475976807e-18,
+        "bias": 0
+      },
+      {
+        "name": "af1_s_s",
+        "df": "df295",
+        "width": 21,
+        "storage": "I32",
+        "scale": 1.4210854715202004e-14,
+        "bias": 0
+      },
+      {
+        "name": "af0_s",
+        "df": "df296",
+        "width": 31,
+        "storage": "I32",
+        "scale": 5.820766091346741e-11,
+        "bias": 0
+      },
+      {
+        "name": "crs_m",
+        "df": "df297",
+        "width": 16,
+        "storage": "I16",
+        "scale": 0.03125,
+        "bias": 0
+      },
+      {
+        "name": "delta_n_sc_s",
+        "df": "df298",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "m0_sc",
+        "df": "df299",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "cuc_rad",
+        "df": "df300",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "eccentricity",
+        "df": "df301",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.1641532182693481e-10,
+        "bias": 0
+      },
+      {
+        "name": "cus_rad",
+        "df": "df302",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "sqrt_a_sqrt_m",
+        "df": "df303",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.9073486328125e-06,
+        "bias": 0
+      },
+      {
+        "name": "toe_s",
+        "df": "df304",
+        "width": 14,
+        "storage": "U16",
+        "scale": 60.0,
+        "bias": 0
+      },
+      {
+        "name": "cic_rad",
+        "df": "df305",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "omega0_sc",
+        "df": "df306",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "cis_rad",
+        "df": "df307",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "i0_sc",
+        "df": "df308",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "crc_m",
+        "df": "df309",
+        "width": 16,
+        "storage": "I16",
+        "scale": 0.03125,
+        "bias": 0
+      },
+      {
+        "name": "omega_sc",
+        "df": "df310",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "omegadot_sc_s",
+        "df": "df311",
+        "width": 24,
+        "storage": "I32",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "bgd_e1_e5a_s",
+        "df": "df312",
+        "width": 10,
+        "storage": "I16",
+        "scale": 2.3283064365386963e-10,
+        "bias": 0
+      },
+      {
+        "name": "e5a_sig_health_ind",
+        "df": "df314",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "e5a_data_validity_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "reserved_489_7",
+        "df": "df001_7bits",
+        "width": 7,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      }
+    ],
+    "1046": [
+      {
+        "name": "gal_satellite_id",
+        "df": "df252",
+        "width": 6,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "gal_week_number",
+        "df": "df289",
+        "width": 12,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "iodnav",
+        "df": "df290",
+        "width": 10,
+        "storage": "U16",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "sisa_e1_e5b_index",
+        "df": "df286",
+        "width": 8,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "idot_sc_s",
+        "df": "df292",
+        "width": 14,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "toc_s",
+        "df": "df293",
+        "width": 14,
+        "storage": "U16",
+        "scale": 60.0,
+        "bias": 0
+      },
+      {
+        "name": "af2_s_s2",
+        "df": "df294",
+        "width": 6,
+        "storage": "I8",
+        "scale": 1.734723475976807e-18,
+        "bias": 0
+      },
+      {
+        "name": "af1_s_s",
+        "df": "df295",
+        "width": 21,
+        "storage": "I32",
+        "scale": 1.4210854715202004e-14,
+        "bias": 0
+      },
+      {
+        "name": "af0_s",
+        "df": "df296",
+        "width": 31,
+        "storage": "I32",
+        "scale": 5.820766091346741e-11,
+        "bias": 0
+      },
+      {
+        "name": "crs_m",
+        "df": "df297",
+        "width": 16,
+        "storage": "I16",
+        "scale": 0.03125,
+        "bias": 0
+      },
+      {
+        "name": "delta_n_sc_s",
+        "df": "df298",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "m0_sc",
+        "df": "df299",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "cuc_rad",
+        "df": "df300",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "eccentricity",
+        "df": "df301",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.1641532182693481e-10,
+        "bias": 0
+      },
+      {
+        "name": "cus_rad",
+        "df": "df302",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "sqrt_a_sqrt_m",
+        "df": "df303",
+        "width": 32,
+        "storage": "U32",
+        "scale": 1.9073486328125e-06,
+        "bias": 0
+      },
+      {
+        "name": "toe_s",
+        "df": "df304",
+        "width": 14,
+        "storage": "U16",
+        "scale": 60.0,
+        "bias": 0
+      },
+      {
+        "name": "cic_rad",
+        "df": "df305",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "omega0_sc",
+        "df": "df306",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "cis_rad",
+        "df": "df307",
+        "width": 16,
+        "storage": "I16",
+        "scale": 1.862645149230957e-09,
+        "bias": 0
+      },
+      {
+        "name": "i0_sc",
+        "df": "df308",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "crc_m",
+        "df": "df309",
+        "width": 16,
+        "storage": "I16",
+        "scale": 0.03125,
+        "bias": 0
+      },
+      {
+        "name": "omega_sc",
+        "df": "df310",
+        "width": 32,
+        "storage": "I32",
+        "scale": 4.656612873077393e-10,
+        "bias": 0
+      },
+      {
+        "name": "omegadot_sc_s",
+        "df": "df311",
+        "width": 24,
+        "storage": "I32",
+        "scale": 1.1368683772161603e-13,
+        "bias": 0
+      },
+      {
+        "name": "bgd_e1_e5a_s",
+        "df": "df312",
+        "width": 10,
+        "storage": "I16",
+        "scale": 2.3283064365386963e-10,
+        "bias": 0
+      },
+      {
+        "name": "bgd_e1_e5b_s",
+        "df": "df313",
+        "width": 10,
+        "storage": "I16",
+        "scale": 2.3283064365386963e-10,
+        "bias": 0
+      },
+      {
+        "name": "e5b_sig_health_ind",
+        "df": "df316",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "e5b_data_validity_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "e1_b_sig_health_ind",
+        "df": "df287",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "e1_b_data_validity_flag",
+        "df": "df_flag",
+        "width": 1,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      },
+      {
+        "name": "reserved_502_2",
+        "df": "df001_2bits",
+        "width": 2,
+        "storage": "U8",
+        "scale": 1,
+        "bias": 0
+      }
+    ]
+  }
+}

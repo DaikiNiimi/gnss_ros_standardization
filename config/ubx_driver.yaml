@@ -6,6 +6,9 @@
 
 ubx_driver_node:
   ros__parameters:
+    # Passive RAWX streams cannot reliably identify pre-protocol27 Reserved bytes.
+    # auto (current layout inference), data0 (protocol17), data1_pre27 (legacy DATA1).
+    rawx_layout: auto
     # Basic Settings
     
     # Stream path (serial, tcp, ntrip, file)
@@ -23,28 +26,46 @@ ubx_driver_node:
     frame_id: "gnss_link"
     
     # Topic Names
-    observation_topic: "/gnss/observation"
-    ephemeris_topic: "/gnss/ephemeris"
-    solution_topic: "/gnss/nmea_solution"
-    imu_topic:     "/gnss/imu/data"      # ESF-INS (calibrated)
-    imu_raw_topic: "/gnss/imu/data_raw"  # ESF-RAW (uncalibrated)
+    topics:
+      observation: "/gnss/observation"
+      ephemeris: "/gnss/ephemeris"
+      solution: "/gnss/nmea_solution"
+      imu:     "/gnss/imu/data"      # ESF-INS (calibrated)
+      imu_raw: "/gnss/imu/data_raw"  # ESF-RAW (uncalibrated)
 
     # RTCM relay (PC -> receiver) for receiver on-chip RTK. See src/drivers/README.md.
-    rtcm_relay:
-      enabled: false           # set true (+ messages.nav_pvt/nav_hpposllh) for on-chip RTK
+    rtcm_input:
+      enable: false           # set true (+ messages.nav_pvt/nav_hpposllh) for on-chip RTK
       listen: "tcpsvr://:5556" # RTKLIB stream path; ":port" binds all interfaces
 
-    # ENU local origin settings
-    auto_origin: true              # false: use origin below; true: first valid fix
-    origin: [0.0, 0.0, 0.0]       # [lat_deg, lon_deg, alt_m (ellipsoidal)]
+    # ENU local origin: "auto" = first valid receiver solution | "fixed" = pos below
+    local_origin:
+      mode: "auto"
+      postype: "llh"                # "llh" | "ecef"
+      pos: [0.0, 0.0, 0.0]          # llh: [lat_deg, lon_deg, h_m (ellipsoidal)]; ecef: [x, y, z] m
     
     # Send configuration commands on startup. false uses the receiver's
     # current config as-is (equivalent to ubx_decoder_node decode-only).
     configure_on_startup: true
 
-    # Use GPS week/tow for message header stamps instead of system clock.
-    # ESF-RAW (raw IMU) carries no GNSS time, so IMU stamps stay host-clock
-    # based even when this is true (unlike Septentrio/NovAtel).
+    # Use GPS week/tow for message header stamps instead of the system clock.
+    #
+    # This now applies to /gnss/imu/data_raw as well, so the IMU can never end
+    # up on a different time base from the GNSS topics of the same node.
+    # ESF-RAW carries no GNSS time of its own (sTtag only), so its timeline is
+    # shifted onto GPS time using the offset estimated from the GNSS epochs -
+    # enable nav_pvt, nav_clock or rawx so an anchor exists. Without one the
+    # session stays on the host clock and says so once.
+    #
+    # Caveat worth knowing before trusting it as absolute time: the estimate
+    # removes the host/GPS clock difference and the minimum GNSS output
+    # latency, but GNSS epochs and IMU samples do not leave the receiver with
+    # the same delay, and u-blox documents neither. Expect an O(10-100 ms)
+    # systematic offset in ABSOLUTE terms. What it does fix - and what a
+    # fusion node actually consumes - is the IMU/GNSS RELATIVE alignment.
+    #
+    # The base is chosen once, at the first published message, and never
+    # changes mid-session.
     use_gps_timestamp: false
 
     # Dynamic platform model
@@ -71,6 +92,10 @@ ubx_driver_node:
       # NAV-COV (full 3x3 covariance) overwrites the diagonal-only NAV-PVT covariance.
       nav_dop: false       # NAV-DOP (0x01,0x04) → gdop/pdop/hdop/vdop
       nav_cov: false       # NAV-COV (0x01,0x36) → pos_enu_cov 3x3 + vel_enu_cov 3x3
+      # NAV-CLOCK (0x01,0x22) → receiver clock solution. Not published; it
+      # supplies tAcc as a quality gate on the GNSS epochs used to anchor the
+      # ESF-RAW timeline when use_gps_timestamp is true.
+      nav_clock: false
 
       # Optional native ECEF position/velocity (most users can leave both false).
       nav_posecef: false   # NAV-POSECEF (0x01,0x01) → pos_ecef
@@ -95,18 +120,23 @@ ubx_driver_node:
       # enabled simultaneously; they publish to different topics.
       esf_raw: false   # ESF-RAW: uncalibrated, native IMU sample rate → /gnss/imu/data_raw
       esf_ins: false   # ESF-INS: receiver-calibrated angular rate + accel → /gnss/imu/data
+      #
+      # Use esf_raw for GNSS/IMU fusion. ESF-INS is the receiver's own fused
+      # output, already corrected with GNSS inside the receiver, so feeding it
+      # to an estimator that also consumes those GNSS measurements double-
+      # counts them.
 
     # GNSS Constellation Settings
     # All supported frequencies for each enabled constellation are configured
     # automatically (depends on hardware + RTKLIB decoder support).
-    gnss:
+    navsys:
       gps: true       # GPS (L1C/A, L2C, L5)
-      glonass: true   # GLONASS (L1C, L2C)
-      galileo: true   # Galileo (E1, E5a, E5b)
-      beidou: true    # BeiDou (B1I, B2I)
-      qzss: true      # QZSS (L1C/A, L2C, L5)
-      navic: false    # NavIC (IRNSS)
-      sbas: false     # SBAS (L1C/A)
+      glo: true   # GLONASS (L1C, L2C)
+      gal: true   # Galileo (E1, E5a, E5b)
+      bds: true    # BeiDou (B1I, B2I)
+      qzs: true      # QZSS (L1C/A, L2C, L5)
+      irn: false    # NavIC (IRNSS)
+      sbs: false     # SBAS (L1C/A)
 
     # Solution source (locked at startup): BINARY if nav_pvt is true, else NMEA.
     # Within BINARY, position priority per epoch: HPPOSLLH > NAV-PVT (LLH),

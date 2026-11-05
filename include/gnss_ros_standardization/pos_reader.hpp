@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 // Shared RTKLIB .pos file parser used by pos_to_rosbag and rinex_to_rosbag.
 // Supports LLH and ECEF variants, GPST date-time or week/tow time columns,
 // optional velocity columns, and UTC/GPST time-system header declaration.
@@ -55,6 +54,7 @@ inline uint8_t qToStatus(int Q) {
     case 4: return GnssSolution::STATUS_DGPS;
     case 5: return GnssSolution::STATUS_SINGLE;
     case 6: return GnssSolution::STATUS_PPP;
+    case 7: return GnssSolution::STATUS_DR;
     default: return GnssSolution::STATUS_NONE;
   }
 }
@@ -72,7 +72,8 @@ inline std::vector<std::string> splitTokens(const std::string& s) {
 // Parse an RTKLIB .pos file and return all valid rows.
 // Errors and per-line warnings are written to `err` (typically std::cerr).
 // On open failure or malformed file, an empty rows vector is returned.
-inline ParseResult parsePosFile(const std::string& path, std::ostream& err) {
+inline ParseResult parsePosFile(const std::string& path, std::ostream& err,
+    gnss_converter_io::TimeScale scale = gnss_converter_io::TimeScale::Utc) {
   ParseResult result;
 
   std::ifstream ifs(path);
@@ -94,6 +95,10 @@ inline ParseResult parsePosFile(const std::string& path, std::ostream& err) {
     if (!std::getline(ifs, line)) break;
     if (line.empty()) continue;
     if (line[0] != '%') { ifs.seekg(data_start); break; }
+    if (line.find("latitude(d") != std::string::npos && line.find("latitude(deg)")==std::string::npos)
+      throw std::invalid_argument("DMS .pos angles are unsupported; export decimal degrees");
+    if (line.find("/geodetic") != std::string::npos)
+      throw std::invalid_argument("Geodetic-height .pos is unsupported; export ellipsoidal height");
     if (!format_detected) {
       if (line.find("x/y/z-ecef") != std::string::npos ||
           line.find("x-ecef")     != std::string::npos) {
@@ -175,7 +180,7 @@ inline ParseResult parsePosFile(const std::string& path, std::ostream& err) {
 
     GnssSolution sol;
     detail::initSolutionToNaN(sol);
-    rclcpp::Time stamp = gnss_converter_io::toRosTimeGpst(t);
+    rclcpp::Time stamp = gnss_converter_io::toRosTime(t, scale);
     sol.header.stamp    = stamp;
     sol.header.frame_id = "gnss_receiver";
     int week = 0;
@@ -229,6 +234,12 @@ inline ParseResult parsePosFile(const std::string& path, std::ostream& err) {
           sol.pos_enu_cov = {cee, cne, ceu, cne, cnn, cun, ceu, cun, cuu};
         }
       }
+
+      const double covariance_llh[3]={sol.latitude*D2R,sol.longitude*D2R,sol.altitude};
+      // RTKLIB covariance rotations use column-major matrices; covariance is
+      // symmetric so the row-major ROS storage has the same scalar layout.
+      if (is_ecef) covenu(covariance_llh,sol.pos_cov_ecef.data(),sol.pos_enu_cov.data());
+      else covecef(covariance_llh,sol.pos_enu_cov.data(),sol.pos_cov_ecef.data());
 
       if (tok.size() >= off + 12) sol.age_diff = static_cast<float>(std::stod(tok[off + 11]));
       if (tok.size() >= off + 13) sol.ratio    = static_cast<float>(std::stod(tok[off + 12]));

@@ -1,0 +1,177 @@
+# Site configuration for the pipeline launch file (see launch/README.md).
+#
+# This is the one file to edit: what to run, and on which hardware. Once it is
+# right, everything runs with no arguments at all:
+#
+#     ros2 launch gnss_ros_standardization pipeline.launch.py
+#
+# Any key can be overridden for a single run from the command line, e.g.
+# `pipeline:=logging` to record instead of running the configured estimator.
+#
+# Copy it to config/site.local.yaml to keep your real settings out of git:
+# that name is gitignored and is preferred over this file, so the command above
+# keeps working and `git pull` never conflicts with your edits.
+#
+# A second setup goes in config/site_<name>.yaml (or site_<name>.local.yaml) and
+# is selected with site:=<name>.
+#
+# Every key is optional. An empty value, an empty list, or a missing key all mean
+# "not specified", in which case the value comes from the node's own YAML in this
+# directory, or from the node's built-in default. A command-line argument beats
+# this file; this file beats the node YAML. The launch prints what it resolved,
+# and from where, when it starts.
+
+run:
+  # What to run:
+  #   logging       record rover / base / IMU to a rosbag, no estimator
+  #   rtk           RTK on the host (real_time_kinematic, RTKLIB rtkpos)
+  #   gnss_fgo      tightly-coupled GNSS factor graph (needs the GTSAM build)
+  #   gnss_imu_fgo  tightly-coupled GNSS/IMU factor graph (needs the GTSAM build)
+  #   ekf           loosely-coupled GNSS/IMU error-state EKF
+  #   onboard_rtk   RTK on the receiver itself, corrections relayed from base
+  # logging is the shipped default because it needs nothing but a rover.
+  pipeline: logging
+
+  # pipeline ekf only - where the EKF's GNSS solution comes from:
+  #   rtk       also run real_time_kinematic and feed the EKF its solution
+  #   receiver  feed the EKF the receiver's own PVT; needs no base at all
+  ekf_solution_source: rtk
+
+  # true = start no receiver nodes; `ros2 bag play` feeds the estimator. For
+  # replaying a bag recorded by the logging pipeline into rtk / gnss_fgo /
+  # gnss_imu_fgo / ekf.
+  replay: false
+
+  # Run the gnss_visualizer dashboard alongside.
+  visualize: false
+
+rover:
+  # ubx | sbf | novatel | rtcm
+  receiver: ubx
+
+  # decoder = passive; take the receiver exactly as it is already configured.
+  # driver  = send configuration commands on startup, from the receiver's YAML
+  #           in this directory (ubx_driver.yaml / sbf_driver.yaml / ...).
+  mode: decoder
+
+  # RTKLIB stream URI: serial:// tcpcli:// tcpsvr:// ntrip:// file://
+  # file:// replays a captured raw receiver log through the real decoder, which
+  # is how you reprocess a recording with different settings.
+  source: "serial:///dev/ttyACM0:115200"
+
+  # Driver YAML override. Empty uses config/<receiver>_driver.yaml.
+  # Only read when mode is driver.
+  params_file: ""
+
+# Several receivers logged at once (logging pipeline only, for now). Replaces
+# the `rover` section above - delete or comment that one out first, the two
+# cannot be combined. All receivers share the one base below and go into one
+# bag, each under its own namespace: /<name>/gnss/observation, frame_id
+# <name>_gnss_link, node /<name>/<executable>.
+#
+# receiver and source are required per entry. mode and params_file mean the same
+# as above. imu overrides imu.enabled for that receiver alone; unset follows it
+# (an rtcm entry never has an IMU).
+#
+# rovers:
+#   - name: f9p
+#     receiver: ubx
+#     source: "serial:///dev/ttyACM0:115200"
+#   - name: mosaic
+#     receiver: sbf
+#     mode: driver
+#     source: "serial:///dev/ttyUSB0:115200"
+#     imu: true
+
+base:
+  # Almost always rtcm: an NTRIP caster or a local base sending RTCM3.
+  receiver: rtcm
+
+  # Empty runs no base node. Fine for logging a rover alone and for the EKF on
+  # the receiver's PVT; every other pipeline needs it.
+  #
+  # ${VAR} and $VAR are expanded from the environment, so credentials need not
+  # be written here. An unset or empty variable is a startup error, not a
+  # silently broken URI. Export them once, e.g. in ~/.bashrc:
+  #     export NTRIP_USER=... NTRIP_PASSWORD=... NTRIP_CASTER=... NTRIP_MOUNTPOINT=...
+  source: ""
+  # source: "ntrip://${NTRIP_USER}:${NTRIP_PASSWORD}@${NTRIP_CASTER}:2101/${NTRIP_MOUNTPOINT}"
+
+  # Publish the base's ephemerides onto /gnss/ephemeris instead of parking them
+  # on /base/gnss/ephemeris. Only for a rover stream that carries no navigation
+  # data of its own; otherwise a stale base message can displace the rover's.
+  merge_ephemeris: false
+
+  # Historical RTCM logs only: RTCM MSM carries no GPS week, so replaying an old
+  # file:// log needs the GPS week and time of week near its first observation.
+  # Empty uses the host date (live streams).
+  reference_week:
+  reference_tow:
+
+imu:
+  # Turns on /gnss/imu/data_raw. In driver mode the driver is told to enable the
+  # right message for the receiver; in decoder mode it must already be enabled
+  # on the receiver itself.
+  #
+  # Left unset here, which means "let the pipeline decide": gnss_imu_fgo and ekf
+  # turn the IMU on, the others leave it off. Set true if your platform has an
+  # IMU and you want it logged too, or false to force it off everywhere.
+  enabled:
+
+  # Stamp headers with UTC(GPST) rather than the host clock. Recommended
+  # whenever the IMU is used: it puts the IMU and the GNSS topics of one node on
+  # the same time base. See "Message time base" in src/decoders/README.md.
+  # Unset follows the pipeline: on for gnss_imu_fgo and ekf, off elsewhere.
+  use_gps_timestamp:
+
+estimator:
+  # Estimator YAML override. Empty uses the packaged config for whichever
+  # estimator the pipeline runs (real_time_kinematic.yaml, gnss_fgo.yaml,
+  # gnss_imu_fgo.yaml, gnss_imu_kalman_filter.yaml). Point it at a file in
+  # config/ppc/ to reproduce one of the dataset evaluations.
+  #
+  # For ekf with ekf_solution_source rtk this is the EKF's file; the RTK stage
+  # feeding it keeps the packaged real_time_kinematic.yaml (base_position below
+  # still reaches it).
+  params_file: ""
+
+  # Base antenna position. Leave empty to use whatever the estimator YAML above
+  # already carries - that is the normal case, and it is why this is not a
+  # required setting.
+  #
+  # An error here translates the entire trajectory, so a pipeline refuses to
+  # start if neither this nor the estimator YAML gives a usable position.
+  # "rtcm" is not a valid type: RTCM 1005/1006 station information is parsed but
+  # never republished to topics, so it would leave the position at zero.
+  base_position: []          # [lat_deg, lon_deg, height_m] or ECEF [x, y, z]
+  base_position_type: ""     # llh | ecef
+
+  # IMU body to GNSS antenna, metres. Leave empty to use the estimator YAML.
+  #
+  # NOTE the frame differs by estimator: gnss_imu_fgo takes FLU (x forward,
+  # y left, z up) and the EKF takes FRD (x forward, y right, z down), so the
+  # same physical offset has y and z negated between them. If you run both from
+  # one site file, leave this empty and set each estimator's own YAML instead.
+  lever_arm: []
+
+relay:
+  # pipeline onboard_rtk only. 0 uses the per-receiver default:
+  # 5556 (ubx), 5557 (sbf), 5558 (novatel).
+  port: 0
+
+  # NovAtel only, and required there: a SECOND device for the dedicated RTCMV3
+  # port, e.g. "serial:///dev/ttyUSB2:230400". RTCMV3 receive cannot share the
+  # NOVATEL log port, so this must differ from rover.source.
+  novatel_output: ""
+
+record:
+  # Left unset, which means "let the pipeline decide": logging records, the
+  # others do not. Set true to record every pipeline, false for none.
+  enabled:
+
+  # Empty auto-names gnss_<pipeline>_<YYYYmmdd_HHMMSS> in the current directory.
+  output: ""
+
+  # mcap | sqlite3. mcap works on both Humble and Jazzy here.
+  storage: mcap
+  compress: false
