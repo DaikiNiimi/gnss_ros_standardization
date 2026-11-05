@@ -25,7 +25,7 @@ uint8 STATUS_SBAS=3     # SBAS-corrected
 uint8 STATUS_DGPS=4     # differential GNSS
 uint8 STATUS_SINGLE=5   # standalone GNSS
 uint8 STATUS_PPP=6      # precise point positioning
-uint8 STATUS_EKF=7      # GNSS/IMU EKF fused solution
+uint8 STATUS_DR=7       # dead reckoning (RTKLIB SOLQ_DR): propagated without a GNSS measurement update
 
 uint8 num_sats          # number of satellites used
 float32 ratio           # AR ratio: reliability of integer ambiguity resolution
@@ -85,3 +85,6 @@ geometry_msgs/Vector3 vel_enu   # velocity [m/s] (East, North, Up)
 # Velocity covariance.
 # Frame: tangent plane at the CURRENT receiver position.
 float64[9] vel_enu_cov          # 3×3 velocity covariance, row-major [(m/s)²]
+
+# Unavailable velocity: vel_ecef/vel_enu and both velocity covariance arrays
+# contain NaN. A measured zero velocity remains zero with a valid covariance.

@@ -11,7 +11,6 @@ real_time_kinematic:
     tcp_port: 8002
 
     # Excluded Satellites (e.g. ["G01", "R03", "E12"])
-    excluded_satellites: [""]
 
     # Frequencies (shared with SPP node)
     # Enable specific frequency bands. nf is auto-derived: highest enabled band
@@ -26,19 +25,16 @@ real_time_kinematic:
 
     # Station Positions
     ant2:
-      # Base station position type (ecef, llh, or rtcm)
+      # Base station position type (ecef or llh)
       postype: "llh"
       # Base position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
-      pos: [35.70494444, 139.72169444, 74.380]
+      pos: [0.0, 0.0, 0.0] # Required: replace with surveyed base coordinates
 
-    # Fixed Origin for Local Position (ENU)
-    # If 'pos' is set to non-zero, this position is used as the origin for 'local_position' and 'local_origin_ecef'.
-    # If all 0.0, the Base Station position (from RTCM or ant2) will be used as the origin.
-    fixed_origin:
-      # Position type (ecef or llh)
-      postype: "llh"
-      # Position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
-      pos: [0.0, 0.0, 0.0]
+    # ENU local origin: "auto" = the base station position (ant2) | "fixed" = pos below
+    local_origin:
+      mode: "auto"
+      postype: "llh"                # "llh" | "ecef"
+      pos: [0.0, 0.0, 0.0]          # llh: [lat_deg, lon_deg, h_m]; ecef: [x, y, z] m
 
     # Setting 1 (pos1)
     pos1:    

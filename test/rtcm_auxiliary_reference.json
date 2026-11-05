@@ -1,0 +1,5499 @@
+{
+  "reference": "https://github.com/martinhakansson/rtcm-rs/tree/d4d0269dc76b7e88b6620ca023b82889b6441662",
+  "scope": "60 auxiliary/unsupported IDs, empty/populated reference records; no new Topic support",
+  "source_sha256": {
+    "src/msg/msg1001.rs": "c2836d41310a14ccd019996116ec4b01b7fcb3fcc069254e41ff5d2afa9c78d8",
+    "src/msg/msg1002.rs": "fffc549cd8f880ca937c0d5938d34d19b85f4d4607b69d82703d2d7e267e5df2",
+    "src/msg/msg1003.rs": "4e1af866e3d88dff6debaabe4df6d4292566b3ce648461a0e2eee9f703b20088",
+    "src/msg/msg1004.rs": "99bb60458e31c4364fa46ecfaf008f275c86ad952c2997d9f10d18be0b621ab0",
+    "src/msg/msg1005.rs": "98e7e898e4312815e7515505790bc327ea4928550a41dda58a4230ffdfaa00df",
+    "src/msg/msg1006.rs": "e869e8c18fe747d3904d3eb76a57d2ee05525a487ea5665dfe434d220ed47b45",
+    "src/msg/msg1007.rs": "e4baa8d6175facccbc3350d5c0fe98d8d3783c3778c24b6f34330e2ef48a3eb4",
+    "src/msg/msg1008.rs": "0de6ca9a69ce699081fff65ac78909921b7cd73e137828f2c34e0b26807addeb",
+    "src/msg/msg1009.rs": "38cfbecdf85a0e7bad9b2a1896c978295ed04646dc8ede2ba0e298caf2621dac",
+    "src/msg/msg1010.rs": "f3c3e7ae4283b13adc94449702ce768b5fa2e12bf933717d752f1944b838e6f1",
+    "src/msg/msg1011.rs": "e7860b54f89e14666267bde4edf4cfaacfc9bb02d08fcedbdf97975970c6c80f",
+    "src/msg/msg1012.rs": "bd01196fcf7839c6a11d70534cf648e1a27d9fbc8ffe40b1025721968576c3ef",
+    "src/msg/msg1013.rs": "bb4d7dcc79cc546072bd8251314e6ceb9cfeec09b407eebaf416a02763616386",
+    "src/msg/msg1014.rs": "3cc31b864af041a6111803dacd32514818a4188954efeccacd53530caff06282",
+    "src/msg/msg1015.rs": "982ba6c0c1f6969e028f9c7f850783c4846d30c296465eb0940b22899fddc3ca",
+    "src/msg/msg1016.rs": "17be3f677600e1144e790aa7eb9bf40d22c426994d46be61f415ebe6f04b5702",
+    "src/msg/msg1017.rs": "37f3e0b75deb2af7180e0f60d04b4bdad7c7de1e3ffffdeeda4ff0d94781599b",
+    "src/msg/msg1019.rs": "4ec0e3ffe5a63037c8c807935b0146c13c2f2054dbc215f4f2729a49f37b119a",
+    "src/msg/msg1020.rs": "a58e56dc11e9790c59eee17000ba04435117975e60856fa53d7f1ce1ecdf3981",
+    "src/msg/msg1021.rs": "68af9f4a856e5a7b7c5336b4024ff07e18ba2c437228122c49af0ffcc2d2ce99",
+    "src/msg/msg1022.rs": "adf7e55bef8ec1fb9f14afc1219abf91c1c51fb260849f1da5291c3670bc1bc7",
+    "src/msg/msg1023.rs": "11963d1790a3da97d26b7e51487090b4a1679a1fc8c4c841fa00291097c300dc",
+    "src/msg/msg1024.rs": "1b4be300c5b244da2f9bfa33f67f2655bd8ba02e409289c85b38c0d258b2a82a",
+    "src/msg/msg1025.rs": "5bbcaac62065d3bab0dbac6e54e04bfad96c701e9474c87834884ed332c1106e",
+    "src/msg/msg1026.rs": "4a59e860aacb7bdc3664ad8113bc09745db3727cf515f90f418a9b8e8d4809de",
+    "src/msg/msg1027.rs": "8fa3e3a2c3653734c531090fd2e69f8d142719b90304112fd7b291588ea65618",
+    "src/msg/msg1029.rs": "cb159c58b61a66037e9feb923768b4f92c3e87520819484e1d50b50d30bef547",
+    "src/msg/msg1030.rs": "4a5850bc28ac93071f0c416bed1c3673785852f6700aa54d4ae4d348e2e27fa6",
+    "src/msg/msg1031.rs": "8b07d9905c2a5b1e4f6c8e9e933e594915234e8c4360f2158382f81b7803545d",
+    "src/msg/msg1032.rs": "72d1b7b5bb2df5391a7943542aa93a9880b48713355edc6495ebd4b69e012221",
+    "src/msg/msg1033.rs": "735184d12c1d3df4f31d2a603a530eecf9e5841d217f088b72df136b49febbbd",
+    "src/msg/msg1034.rs": "66fb6f33ab2a97adc23cea873917b7a8339d8d78913f927efd94a5527e9c7785",
+    "src/msg/msg1035.rs": "f012bb9e257ffdc6c46ae1416257699dda01616bb8d785b0a7d572f84780bbb0",
+    "src/msg/msg1037.rs": "51bd9327ee163db1dcc18167a45765a2e5b493a2719d1ad05b8d14b74974a784",
+    "src/msg/msg1038.rs": "e9337239898e0dbf7502f744a3ffd516736dba6fa3fce29ccfe7d9ba556d2be5",
+    "src/msg/msg1039.rs": "d32b1f28c9577aa2f9019e49dcff463f6deefa7254474b8c27cdd82402710643",
+    "src/msg/msg1041.rs": "76a3245c12030936e9c2590cada3b397f39b35646e4a9271792c059c44e6bef6",
+    "src/msg/msg1042.rs": "ad287199d7c42383a52045d8c4639026cd03e6d27e6c8b247a676bbb2402055b",
+    "src/msg/msg1044.rs": "de7c5f3b25a2a86138ddec3c957914487ac6c8bb59f22abdea46335c61e7bbf7",
+    "src/msg/msg1045.rs": "8e9b4bcb7a65540d3892282e5337d0b9e039fd46b84175fb0567f6fd8ca15c11",
+    "src/msg/msg1046.rs": "411e7317bdc317fb84e78a84939d4eafa22c5217ebcf0a0766f6dcac2537e0a7",
+    "src/msg/msg1057.rs": "30b67df85f97d42079d7c7e8120309204acca216ee6b93f8790583a9ae3daf75",
+    "src/msg/msg1058.rs": "fbb5b74281efd467781291dd2ceccd20433d32b8dafd86e88ed61845a76a5d43",
+    "src/msg/msg1059.rs": "2dde77d0d6abe4f089756bd64de4127ed9072d8ad1ac6440c07422efe4580770",
+    "src/msg/msg1060.rs": "02cf1141cbf9f05bfb43cb2416ec277de9f7c6175c33e126554bfb1f03841000",
+    "src/msg/msg1061.rs": "82b784d63b5b6c1a7f62c0156d47923dc7b6dcccfc12d30a959b980afd4e4faf",
+    "src/msg/msg1062.rs": "9ec0b3fb4414830368973ad1de5bc8c8fdb0de27108ff66084b9718375f7cecf",
+    "src/msg/msg1063.rs": "56d402f929a8ca998a340948a85b93b1cebf6f15ca6768ca85e795a546ee57af",
+    "src/msg/msg1064.rs": "2413acab29fdbc5dd5e9360868000d13405e7e150ae247276cd1c174702c95d3",
+    "src/msg/msg1065.rs": "0c28d46f1d41bf26382a4aea2b0ac5d008d4ede6aadd547d1b793a24eaaf0c39",
+    "src/msg/msg1066.rs": "e542b999f710d41a46c8d4cf1309cb7fea9678fe4f760af2349e464ecf31363d",
+    "src/msg/msg1067.rs": "9593f4945fb047c25fe04d4fe2b3f8a287a9665c7b801815875c68f7d3870bc4",
+    "src/msg/msg1068.rs": "6a1d60d57a70c4e10c400382f59f2a02a6d13fba544438052802a92cf66bc650",
+    "src/msg/msg1071.rs": "be3b584303d0fe983c0751a0273daf01c5b73b707eecc0e3e2cfc5f40b8b9c9e",
+    "src/msg/msg1072.rs": "044dc43834436e6817ff6be0992dc514e82abff058327475ec89afa351469819",
+    "src/msg/msg1073.rs": "11d8b51e6a01355f5b34005b41a923a06133ff3c91482058b47893e9de22f75a",
+    "src/msg/msg1074.rs": "b9bd5183d9c0bcd249bf9e63bb5bd3a65bd0250137258a4f835b5694e0e66add",
+    "src/msg/msg1075.rs": "62e959fa6b33ca77b7d63c55152dcc8cb842ecdbedf5266f8e572f40f0c81973",
+    "src/msg/msg1076.rs": "4328a64d6107cfa671439dd7092eb6680bb19e91b97b50c8478607bdb9fff77a",
+    "src/msg/msg1077.rs": "d8d75185ff8c9541cdbb3f525ef1a3664f269de6f4dc141732e2ef5fa35dea16",
+    "src/msg/msg1081.rs": "c984c6538c328d4d69c299b75278f0f986b2162c879cded95a42834b38440bf1",
+    "src/msg/msg1082.rs": "68bf21e722062ffd8525fd792e12dab13d418537877d3aba3907e5e513707bf2",
+    "src/msg/msg1083.rs": "7415b9e6169735565a11c816da3cd958cc99124edea2fe42baf24c62036d91bd",
+    "src/msg/msg1084.rs": "bfd07cc4bf62a0e4fc8056bc985eab9dc4227112ef07f84f907d5078efebd0cc",
+    "src/msg/msg1085.rs": "b7ec0cd300ab3000f050afa28a497f49f2b39659900096939718d782267975ea",
+    "src/msg/msg1086.rs": "7a94b2989e936e1e7dfd25f4970699ccfe93d039795e3a06613922c64cae61e7",
+    "src/msg/msg1087.rs": "78c3aa0754f1f61a653ca49b4570b9aa426981b5b88c18be6aca1a194565de99",
+    "src/msg/msg1091.rs": "f0e752024483a67a2d849c4106e26e2a258db4a47376ef952a6ae12663b2bf35",
+    "src/msg/msg1092.rs": "90226bd708aaa3d88d9b64bc3b5c09c2b8aa03ce8e72d22ede8d93f88177df9b",
+    "src/msg/msg1093.rs": "c5abff66ff4f04987fa989bdcf414fa1b1d2f0a0dac747956a003d36fcf87de9",
+    "src/msg/msg1094.rs": "f157f6561021ee01ca33798706939d506dc5301317413bc560103cbd82417220",
+    "src/msg/msg1095.rs": "005f4b03278808b96b3f8537ccb19d7733ee4b7691acfb04dba0278813c3f3b9",
+    "src/msg/msg1096.rs": "5cc9ebb0d5b0219028d396d5c2c3f716ea5c28c98540c988158dba0c2cf13eb2",
+    "src/msg/msg1097.rs": "49a5a351381a1a6a4b34070679507b588dae0a418053eb8cf4c82edd4bd1dbcb",
+    "src/msg/msg1101.rs": "6a2232b456d0f10fa380b3448a9d8b4978e7e8c4e53d907a36f6ffa1bc563dc8",
+    "src/msg/msg1102.rs": "8763040683532e55d12a0b81a68d10eea328573be20fb48a2b406d474792c302",
+    "src/msg/msg1103.rs": "f8a62b093b94bdd04958a9195bf44ee89d01ffb63cebbdaad73a04b8c4d301a7",
+    "src/msg/msg1104.rs": "eb1b0174e4026ade1f180ffd7e98ab8fbe9f93f41825d94440c6f4125a8de263",
+    "src/msg/msg1105.rs": "71aab664f104b8c81770786629e3ba6f694c6517b65c73363be5d6a59567e34e",
+    "src/msg/msg1106.rs": "14d283396b4d768181f5ecaaeec38305468e23dd8081aa3224d1ed7c2a0ecf53",
+    "src/msg/msg1107.rs": "dbcbf3268c7076bec7f6aa1af6ec9c97a614fb221321311a028fd8e072fb8239",
+    "src/msg/msg1111.rs": "3ab14f5b93a63f286b1a89f1de2605d5657904093ea6a7707602e61a17b28f58",
+    "src/msg/msg1112.rs": "035021e348f7ed861c825a3279867896c3a61688ad144bebbaeb1bee3d5d4da2",
+    "src/msg/msg1113.rs": "0659b752801ccf899662806dcdb4879aa4933dc65ce0a2012b069fc759cc7fbb",
+    "src/msg/msg1114.rs": "a0c1193014ad6520e939ef267e238fc881b23180bf7f1b512dded549ca2cd4c2",
+    "src/msg/msg1115.rs": "fe925c097a18d95e08f00505cd0776fd1188599419ec593f6e1ee241e254c6ac",
+    "src/msg/msg1116.rs": "53baa7925f7ca2a603d17779daf6437a1db9bdfa026d63d1781d4a8ed9efa331",
+    "src/msg/msg1117.rs": "e5aca226c1db0fd6f2f87f4d85b265bafbbad9d8bfa3af0b79e0ea3506850482",
+    "src/msg/msg1121.rs": "ac618dfd64ccb703307a44edf7b6601b5560dacc3498ddc05033493a1334377a",
+    "src/msg/msg1122.rs": "f61660e4de33107187b8dbf43937b90ab0f9dba1770b70274b07e03c864eedc5",
+    "src/msg/msg1123.rs": "6f18949e5424fc89df876886d12cd2e9665b8c4f2fc763b71910996eec516dc8",
+    "src/msg/msg1124.rs": "bfb8bc632714bc044f994b834984d15625caeda49c7fbf3b2cc256d68f99a132",
+    "src/msg/msg1125.rs": "044d00987b645beb1235c0dbd17fcfa1f6b23a506abd08a186e07e1c941cf798",
+    "src/msg/msg1126.rs": "a4c375b10f632cf6fa84e3a1e0554d60cdfafc947e4c1303d7995d805d394e4c",
+    "src/msg/msg1127.rs": "7b6377bfec480b0db68c21cecfe57930fb130ba32c17cc3fcfe37a79572ff5cd",
+    "src/msg/msg1131.rs": "8412dbb2ebf726ce115caa9ae3bcd7947bf8048a67b55278125647b21536fc90",
+    "src/msg/msg1132.rs": "8df3f97e9b7e90435025b8abc164636519e246228d12b78c026fc9cc8f4660cd",
+    "src/msg/msg1133.rs": "f2da917b74b6814b9508996a352eaf97298e51799c536ca364eb58c6c735937d",
+    "src/msg/msg1134.rs": "5a1c1ea48ae263dcb8b596a4fb6b8ef7788cb8c40168d596056804b521dbbb07",
+    "src/msg/msg1135.rs": "728e53d9e7b23f52f4d40a050d1edd7e4c9a457f21e8a68dc92261f658ce693e",
+    "src/msg/msg1136.rs": "9313b007249563f918839b3657c9a6b4d76afe08f80100c2f19c3bb944eeabb9",
+    "src/msg/msg1137.rs": "689cae400d7db084e5ef133bc12f5141d965f61deba64f10391dd07634249099",
+    "src/msg/msg1230.rs": "034ac7db33058eb11b9c40a5b04621d79a51686b8b271e061a4069508e8efa59",
+    "src/msg/msg1300.rs": "c4944f05c3a43339071236234c04a35199db37d009b37354639262991ce0939e",
+    "src/msg/msg1301.rs": "029d11b1d7904dd1c9fd86783337f0a4e153bc1ca37690ca8fa74027968f1128",
+    "src/msg/msg1302.rs": "d55fe1b0baebc6d1500c3ab627b6693b8546e9f31e4dfb706907ac2a8b28bb59",
+    "src/msg/msg1303.rs": "ed751bc5f5f17992b9a6d7ffaa20e87a1e22d803e62b4098c31990c6c20a3085",
+    "src/msg/msg1304.rs": "5af6aee8b7088b810b4fd2e3872e3d8fff6409ed815a797b766ef44902465ed4",
+    "Cargo.toml": "17172d0fd701eae5fbc16b1cb820925dac6f25e19cdd5a2ef137269eeb28dbf3",
+    "README.md": "966bdca47a770e971aa8e99e2189a25bf3f4c41f2f27c40bac4c192fbfe6d476",
+    "LICENSE-MIT": "598f2b91671d3c7a5c12d140693dc5bbe545e003036ee7a96d9ee0fb1e180a0b",
+    "LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "src/df/dfs.rs": "e43c56adbb593ae77bab8570d3a044eb6a90e46035c66e997e5a851d32dcd4b1",
+    "src/msg/msm46_sat.rs": "0b0891aba17212d049e0511b3b19284e9d55df270ab8a72f9a4c083706f01de6",
+    "src/msg/msm57_sat.rs": "e8854b2010adec14f20118ee253a6a4738aada8f0623dd52ac8b255f1476f3f3",
+    "src/msg/msm_mappings.rs": "5235799b8b2cf1434c687d00d8db3f490667d0c5e47d4d3513661ebcb128516f"
+  },
+  "cases": [
+    {
+      "id": 1001,
+      "variant": "empty",
+      "input_values": {
+        "Msg1001": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1001": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300083e902a00061a800042ec8c"
+    },
+    {
+      "id": 1001,
+      "variant": "populated",
+      "input_values": {
+        "Msg1001": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": [
+            {
+              "gps_l1_code_ind": 0,
+              "gps_satellite_id": 1,
+              "l1_lock_time_index": 10,
+              "l1_phase_pseudorange_diff_m": null,
+              "l1_pseudorange_m": 100000.0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1001": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "gps_l1_code_ind": 0,
+              "l1_pseudorange_m": 100000.0,
+              "l1_phase_pseudorange_diff_m": null,
+              "l1_lock_time_index": 10
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300103e902a00061a801004989681000002800c225e"
+    },
+    {
+      "id": 1003,
+      "variant": "empty",
+      "input_values": {
+        "Msg1003": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1003": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300083eb02a00061a8000afa21b"
+    },
+    {
+      "id": 1003,
+      "variant": "populated",
+      "input_values": {
+        "Msg1003": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": [
+            {
+              "gps_l1_code_ind": 0,
+              "gps_l2_code_ind": 0,
+              "gps_satellite_id": 1,
+              "l1_lock_time_index": 10,
+              "l1_phase_pseudorange_diff_m": null,
+              "l1_pseudorange_m": 100000.0,
+              "l2_l1_pseudorange_diff_m": null,
+              "l2_lock_time_index": 10,
+              "l2_phase_l1_pseudorange_diff_m": null
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1003": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "gps_l1_code_ind": 0,
+              "l1_pseudorange_m": 100000.0,
+              "l1_phase_pseudorange_diff_m": null,
+              "l1_lock_time_index": 10,
+              "gps_l2_code_ind": 0,
+              "l2_l1_pseudorange_diff_m": null,
+              "l2_phase_l1_pseudorange_diff_m": null,
+              "l2_lock_time_index": 10
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300153eb02a00061a8010049896810000028800200000504a6a51"
+    },
+    {
+      "id": 1005,
+      "variant": "empty",
+      "input_values": {
+        "Msg1005": {
+          "reference_station_id": 42,
+          "reserved_24_6": 0,
+          "gps_flag": 0,
+          "glonass_flag": 0,
+          "galileo_flag": 0,
+          "reference_station_ind": 0,
+          "antenna_ref_point_ecef_x_m": 0.0,
+          "single_receiver_osc_ind": 0,
+          "reserved_73_1": 0,
+          "antenna_ref_point_ecef_y_m": 0.0,
+          "quarter_cycle_ind": 0,
+          "antenna_ref_point_ecef_z_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1005": {
+          "reference_station_id": 42,
+          "reserved_24_6": 0,
+          "gps_flag": 0,
+          "glonass_flag": 0,
+          "galileo_flag": 0,
+          "reference_station_ind": 0,
+          "antenna_ref_point_ecef_x_m": 0.0,
+          "single_receiver_osc_ind": 0,
+          "reserved_73_1": 0,
+          "antenna_ref_point_ecef_y_m": 0.0,
+          "quarter_cycle_ind": 0,
+          "antenna_ref_point_ecef_z_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300133ed02a00000000000000000000000000000000333a01"
+    },
+    {
+      "id": 1005,
+      "variant": "populated",
+      "input_values": {
+        "Msg1005": {
+          "reference_station_id": 42,
+          "reserved_24_6": 0,
+          "gps_flag": 0,
+          "glonass_flag": 0,
+          "galileo_flag": 0,
+          "reference_station_ind": 0,
+          "antenna_ref_point_ecef_x_m": 1234.5,
+          "single_receiver_osc_ind": 0,
+          "reserved_73_1": 0,
+          "antenna_ref_point_ecef_y_m": 1234.5,
+          "quarter_cycle_ind": 0,
+          "antenna_ref_point_ecef_z_m": 1234.5
+        }
+      },
+      "reference_decoded": {
+        "Msg1005": {
+          "reference_station_id": 42,
+          "reserved_24_6": 0,
+          "gps_flag": 0,
+          "glonass_flag": 0,
+          "galileo_flag": 0,
+          "reference_station_ind": 0,
+          "antenna_ref_point_ecef_x_m": 1234.5,
+          "single_receiver_osc_ind": 0,
+          "reserved_73_1": 0,
+          "antenna_ref_point_ecef_y_m": 1234.5,
+          "quarter_cycle_ind": 0,
+          "antenna_ref_point_ecef_z_m": 1234.5
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300133ed02a000000bc5ea80000bc5ea80000bc5ea8b3fd7e"
+    },
+    {
+      "id": 1006,
+      "variant": "empty",
+      "input_values": {
+        "Msg1006": {
+          "reference_station_id": 42,
+          "reserved_24_6": 0,
+          "gps_flag": 0,
+          "glonass_flag": 0,
+          "galileo_flag": 0,
+          "reference_station_ind": 0,
+          "antenna_ref_point_ecef_x_m": 0.0,
+          "single_receiver_osc_ind": 0,
+          "reserved_73_1": 0,
+          "antenna_ref_point_ecef_y_m": 0.0,
+          "quarter_cycle_ind": 0,
+          "antenna_ref_point_ecef_z_m": 0.0,
+          "antenna_height_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1006": {
+          "reference_station_id": 42,
+          "reserved_24_6": 0,
+          "gps_flag": 0,
+          "glonass_flag": 0,
+          "galileo_flag": 0,
+          "reference_station_ind": 0,
+          "antenna_ref_point_ecef_x_m": 0.0,
+          "single_receiver_osc_ind": 0,
+          "reserved_73_1": 0,
+          "antenna_ref_point_ecef_y_m": 0.0,
+          "quarter_cycle_ind": 0,
+          "antenna_ref_point_ecef_z_m": 0.0,
+          "antenna_height_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300153ee02a00000000000000000000000000000000000004dec3"
+    },
+    {
+      "id": 1006,
+      "variant": "populated",
+      "input_values": {
+        "Msg1006": {
+          "reference_station_id": 42,
+          "reserved_24_6": 0,
+          "gps_flag": 0,
+          "glonass_flag": 0,
+          "galileo_flag": 0,
+          "reference_station_ind": 0,
+          "antenna_ref_point_ecef_x_m": 1234.5,
+          "single_receiver_osc_ind": 0,
+          "reserved_73_1": 0,
+          "antenna_ref_point_ecef_y_m": 1234.5,
+          "quarter_cycle_ind": 0,
+          "antenna_ref_point_ecef_z_m": 1234.5,
+          "antenna_height_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1006": {
+          "reference_station_id": 42,
+          "reserved_24_6": 0,
+          "gps_flag": 0,
+          "glonass_flag": 0,
+          "galileo_flag": 0,
+          "reference_station_ind": 0,
+          "antenna_ref_point_ecef_x_m": 1234.5,
+          "single_receiver_osc_ind": 0,
+          "reserved_73_1": 0,
+          "antenna_ref_point_ecef_y_m": 1234.5,
+          "quarter_cycle_ind": 0,
+          "antenna_ref_point_ecef_z_m": 1234.5,
+          "antenna_height_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300153ee02a000000bc5ea80000bc5ea80000bc5ea800004ce734"
+    },
+    {
+      "id": 1007,
+      "variant": "empty",
+      "input_values": {
+        "Msg1007": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "",
+          "antenna_setup_id": 0
+        }
+      },
+      "reference_decoded": {
+        "Msg1007": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "",
+          "antenna_setup_id": 0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300053ef02a0000eef4ee"
+    },
+    {
+      "id": 1007,
+      "variant": "populated",
+      "input_values": {
+        "Msg1007": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "GNSS",
+          "antenna_setup_id": 0
+        }
+      },
+      "reference_decoded": {
+        "Msg1007": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "GNSS",
+          "antenna_setup_id": 0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300093ef02a04474e5353004696a8"
+    },
+    {
+      "id": 1008,
+      "variant": "empty",
+      "input_values": {
+        "Msg1008": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "",
+          "antenna_setup_id": 0,
+          "antenna_serial_number_str": ""
+        }
+      },
+      "reference_decoded": {
+        "Msg1008": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "",
+          "antenna_setup_id": 0,
+          "antenna_serial_number_str": ""
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300063f002a0000001b28a9"
+    },
+    {
+      "id": 1008,
+      "variant": "populated",
+      "input_values": {
+        "Msg1008": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "GNSS",
+          "antenna_setup_id": 0,
+          "antenna_serial_number_str": "GNSS"
+        }
+      },
+      "reference_decoded": {
+        "Msg1008": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "GNSS",
+          "antenna_setup_id": 0,
+          "antenna_serial_number_str": "GNSS"
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000e3f002a04474e53530004474e535348c026"
+    },
+    {
+      "id": 1009,
+      "variant": "empty",
+      "input_values": {
+        "Msg1009": {
+          "reference_station_id": 42,
+          "glo_epoch_time_ms": 10882000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1009": {
+          "reference_station_id": 42,
+          "glo_epoch_time_ms": 10882000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300083f102a14c17a00007e2821"
+    },
+    {
+      "id": 1009,
+      "variant": "populated",
+      "input_values": {
+        "Msg1009": {
+          "reference_station_id": 42,
+          "glo_epoch_time_ms": 10882000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": [
+            {
+              "glo_l1_code_ind": 0,
+              "glo_satellite_freq_chan_number": -7,
+              "glo_satellite_id": 1,
+              "l1_lock_time_index": 10,
+              "l1_phase_pseudorange_diff_m": null,
+              "l1_pseudorange_m": 100000.0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1009": {
+          "reference_station_id": 42,
+          "glo_epoch_time_ms": 10882000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "glo_l1_code_ind": 0,
+              "glo_satellite_freq_chan_number": -7,
+              "l1_pseudorange_m": 100000.0,
+              "l1_phase_pseudorange_diff_m": null,
+              "l1_lock_time_index": 10
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300103f102a14c17a0080201312d020000050ab02ce"
+    },
+    {
+      "id": 1011,
+      "variant": "empty",
+      "input_values": {
+        "Msg1011": {
+          "reference_station_id": 42,
+          "glo_epoch_time_ms": 10882000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1011": {
+          "reference_station_id": 42,
+          "glo_epoch_time_ms": 10882000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300083f302a14c17a00009366b6"
+    },
+    {
+      "id": 1011,
+      "variant": "populated",
+      "input_values": {
+        "Msg1011": {
+          "reference_station_id": 42,
+          "glo_epoch_time_ms": 10882000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": [
+            {
+              "glo_l1_code_ind": 0,
+              "glo_l2_code_ind": 0,
+              "glo_satellite_freq_chan_number": -7,
+              "glo_satellite_id": 1,
+              "l1_lock_time_index": 10,
+              "l1_phase_pseudorange_diff_m": null,
+              "l1_pseudorange_m": 100000.0,
+              "l2_l1_pseudorange_diff_m": null,
+              "l2_lock_time_index": 10,
+              "l2_phase_l1_pseudorange_diff_m": null
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1011": {
+          "reference_station_id": 42,
+          "glo_epoch_time_ms": 10882000,
+          "synchronous_gnss_msg_flag": 0,
+          "divergence_free_smoothing_flag": 0,
+          "smoothing_interval_index": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "glo_l1_code_ind": 0,
+              "glo_satellite_freq_chan_number": -7,
+              "l1_pseudorange_m": 100000.0,
+              "l1_phase_pseudorange_diff_m": null,
+              "l1_lock_time_index": 10,
+              "glo_l2_code_ind": 0,
+              "l2_l1_pseudorange_diff_m": null,
+              "l2_phase_l1_pseudorange_diff_m": null,
+              "l2_lock_time_index": 10
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300153f302a14c17a0080201312d020000051000400000ae0e834"
+    },
+    {
+      "id": 1013,
+      "variant": "empty",
+      "input_values": {
+        "Msg1013": {
+          "reference_station_id": 42,
+          "modified_julian_day_number": 0,
+          "seconds_of_day_s": 0,
+          "leap_seconds_gps_utc_s": null,
+          "message_id_announcements": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1013": {
+          "reference_station_id": 42,
+          "modified_julian_day_number": 0,
+          "seconds_of_day_s": 0,
+          "leap_seconds_gps_utc_s": null,
+          "message_id_announcements": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300093f502a0000000003fce37be0"
+    },
+    {
+      "id": 1013,
+      "variant": "populated",
+      "input_values": {
+        "Msg1013": {
+          "reference_station_id": 42,
+          "modified_julian_day_number": 0,
+          "seconds_of_day_s": 0,
+          "leap_seconds_gps_utc_s": null,
+          "message_id_announcements": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1013": {
+          "reference_station_id": 42,
+          "modified_julian_day_number": 0,
+          "seconds_of_day_s": 0,
+          "leap_seconds_gps_utc_s": null,
+          "message_id_announcements": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300093f502a0000000003fce37be0"
+    },
+    {
+      "id": 1021,
+      "variant": "empty",
+      "input_values": {
+        "Msg1021": {
+          "source_name_str": "",
+          "target_name_str": "",
+          "system_id": 0,
+          "utilized_trans_msg_ind": 0,
+          "plate_number": 0,
+          "computation_ind": 0,
+          "height_ind": 0,
+          "phi_v_asec": 0.0,
+          "lambda_v_asec": 0.0,
+          "delta_phi_v_asec": null,
+          "delta_lambda_v_asec": null,
+          "dx_m": 0.0,
+          "dy_m": 0.0,
+          "dz_m": 0.0,
+          "r_1_asec": 0.0,
+          "r_2_asec": 0.0,
+          "r_3_asec": 0.0,
+          "ds_ppm": 0.0,
+          "a_s_m": null,
+          "b_s_m": null,
+          "a_t_m": null,
+          "b_t_m": null,
+          "hor_hel_mol_quality_ind": 0,
+          "ver_hel_mol_quality_ind": 0
+        }
+      },
+      "reference_decoded": {
+        "Msg1021": {
+          "source_name_str": "",
+          "target_name_str": "",
+          "system_id": 0,
+          "utilized_trans_msg_ind": 0,
+          "plate_number": 0,
+          "computation_ind": 0,
+          "height_ind": 0,
+          "phi_v_asec": 0.0,
+          "lambda_v_asec": 0.0,
+          "delta_phi_v_asec": null,
+          "delta_lambda_v_asec": null,
+          "dx_m": 0.0,
+          "dy_m": 0.0,
+          "dz_m": 0.0,
+          "r_1_asec": 0.0,
+          "r_2_asec": 0.0,
+          "r_3_asec": 0.0,
+          "ds_ppm": 0.0,
+          "a_s_m": null,
+          "b_s_m": null,
+          "a_t_m": null,
+          "b_t_m": null,
+          "hor_hel_mol_quality_ind": 0,
+          "ver_hel_mol_quality_ind": 0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300343fd00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000bfca8e"
+    },
+    {
+      "id": 1021,
+      "variant": "populated",
+      "input_values": {
+        "Msg1021": {
+          "source_name_str": "GNSS",
+          "target_name_str": "GNSS",
+          "system_id": 0,
+          "utilized_trans_msg_ind": 0,
+          "plate_number": 0,
+          "computation_ind": 0,
+          "height_ind": 0,
+          "phi_v_asec": 0.0,
+          "lambda_v_asec": 0.0,
+          "delta_phi_v_asec": null,
+          "delta_lambda_v_asec": null,
+          "dx_m": 0.0,
+          "dy_m": 0.0,
+          "dz_m": 0.0,
+          "r_1_asec": 0.0,
+          "r_2_asec": 0.0,
+          "r_3_asec": 0.0,
+          "ds_ppm": 0.0,
+          "a_s_m": null,
+          "b_s_m": null,
+          "a_t_m": null,
+          "b_t_m": null,
+          "hor_hel_mol_quality_ind": 0,
+          "ver_hel_mol_quality_ind": 0
+        }
+      },
+      "reference_decoded": {
+        "Msg1021": {
+          "source_name_str": "GNSS",
+          "target_name_str": "GNSS",
+          "system_id": 0,
+          "utilized_trans_msg_ind": 0,
+          "plate_number": 0,
+          "computation_ind": 0,
+          "height_ind": 0,
+          "phi_v_asec": 0.0,
+          "lambda_v_asec": 0.0,
+          "delta_phi_v_asec": null,
+          "delta_lambda_v_asec": null,
+          "dx_m": 0.0,
+          "dy_m": 0.0,
+          "dz_m": 0.0,
+          "r_1_asec": 0.0,
+          "r_2_asec": 0.0,
+          "r_3_asec": 0.0,
+          "ds_ppm": 0.0,
+          "a_s_m": null,
+          "b_s_m": null,
+          "a_t_m": null,
+          "b_t_m": null,
+          "hor_hel_mol_quality_ind": 0,
+          "ver_hel_mol_quality_ind": 0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3003c3fd223a729a9911d394d4c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001a3567"
+    },
+    {
+      "id": 1022,
+      "variant": "empty",
+      "input_values": {
+        "Msg1022": {
+          "source_name_str": "",
+          "target_name_str": "",
+          "system_id": 0,
+          "utilized_trans_msg_ind": 0,
+          "plate_number": 0,
+          "computation_ind": 0,
+          "height_ind": 0,
+          "phi_v_asec": 0.0,
+          "lambda_v_asec": 0.0,
+          "delta_phi_v_asec": null,
+          "delta_lambda_v_asec": null,
+          "dx_m": 0.0,
+          "dy_m": 0.0,
+          "dz_m": 0.0,
+          "r_1_asec": 0.0,
+          "r_2_asec": 0.0,
+          "r_3_asec": 0.0,
+          "ds_ppm": 0.0,
+          "x_p_m": 0.0,
+          "y_p_m": 0.0,
+          "z_p_m": 0.0,
+          "a_s_m": null,
+          "b_s_m": null,
+          "a_t_m": null,
+          "b_t_m": null,
+          "hor_hel_mol_quality_ind": 0,
+          "ver_hel_mol_quality_ind": 0
+        }
+      },
+      "reference_decoded": {
+        "Msg1022": {
+          "source_name_str": "",
+          "target_name_str": "",
+          "system_id": 0,
+          "utilized_trans_msg_ind": 0,
+          "plate_number": 0,
+          "computation_ind": 0,
+          "height_ind": 0,
+          "phi_v_asec": 0.0,
+          "lambda_v_asec": 0.0,
+          "delta_phi_v_asec": null,
+          "delta_lambda_v_asec": null,
+          "dx_m": 0.0,
+          "dy_m": 0.0,
+          "dz_m": 0.0,
+          "r_1_asec": 0.0,
+          "r_2_asec": 0.0,
+          "r_3_asec": 0.0,
+          "ds_ppm": 0.0,
+          "x_p_m": 0.0,
+          "y_p_m": 0.0,
+          "z_p_m": 0.0,
+          "a_s_m": null,
+          "b_s_m": null,
+          "a_t_m": null,
+          "b_t_m": null,
+          "hor_hel_mol_quality_ind": 0,
+          "ver_hel_mol_quality_ind": 0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300413fe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000953327"
+    },
+    {
+      "id": 1022,
+      "variant": "populated",
+      "input_values": {
+        "Msg1022": {
+          "source_name_str": "GNSS",
+          "target_name_str": "GNSS",
+          "system_id": 0,
+          "utilized_trans_msg_ind": 0,
+          "plate_number": 0,
+          "computation_ind": 0,
+          "height_ind": 0,
+          "phi_v_asec": 0.0,
+          "lambda_v_asec": 0.0,
+          "delta_phi_v_asec": null,
+          "delta_lambda_v_asec": null,
+          "dx_m": 0.0,
+          "dy_m": 0.0,
+          "dz_m": 0.0,
+          "r_1_asec": 0.0,
+          "r_2_asec": 0.0,
+          "r_3_asec": 0.0,
+          "ds_ppm": 0.0,
+          "x_p_m": 0.0,
+          "y_p_m": 0.0,
+          "z_p_m": 0.0,
+          "a_s_m": null,
+          "b_s_m": null,
+          "a_t_m": null,
+          "b_t_m": null,
+          "hor_hel_mol_quality_ind": 0,
+          "ver_hel_mol_quality_ind": 0
+        }
+      },
+      "reference_decoded": {
+        "Msg1022": {
+          "source_name_str": "GNSS",
+          "target_name_str": "GNSS",
+          "system_id": 0,
+          "utilized_trans_msg_ind": 0,
+          "plate_number": 0,
+          "computation_ind": 0,
+          "height_ind": 0,
+          "phi_v_asec": 0.0,
+          "lambda_v_asec": 0.0,
+          "delta_phi_v_asec": null,
+          "delta_lambda_v_asec": null,
+          "dx_m": 0.0,
+          "dy_m": 0.0,
+          "dz_m": 0.0,
+          "r_1_asec": 0.0,
+          "r_2_asec": 0.0,
+          "r_3_asec": 0.0,
+          "ds_ppm": 0.0,
+          "x_p_m": 0.0,
+          "y_p_m": 0.0,
+          "z_p_m": 0.0,
+          "a_s_m": null,
+          "b_s_m": null,
+          "a_t_m": null,
+          "b_t_m": null,
+          "hor_hel_mol_quality_ind": 0,
+          "ver_hel_mol_quality_ind": 0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300493fe223a729a9911d394d4c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005ebda"
+    },
+    {
+      "id": 1023,
+      "variant": "empty",
+      "input_values": {
+        "Msg1023": {
+          "system_id": 0,
+          "hor_shift_flag": 0,
+          "ver_shift_flag": 0,
+          "phi_0_asec": 0.0,
+          "lambda_0_asec": 0.0,
+          "delta_phi_asec": null,
+          "delta_lambda_asec": null,
+          "mean_delta_phi_asec": 0.0,
+          "mean_delta_lambda_asec": 0.0,
+          "mean_delta_h_m": 0.0,
+          "grid": [
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            }
+          ],
+          "hor_interp_ind": 0,
+          "ver_interp_ind": 0,
+          "hor_grid_quality_ind": 0,
+          "ver_grid_quality_ind": 0,
+          "modified_julian_day_number": 0
+        }
+      },
+      "reference_decoded": {
+        "Msg1023": {
+          "system_id": 0,
+          "hor_shift_flag": 0,
+          "ver_shift_flag": 0,
+          "phi_0_asec": 0.0,
+          "lambda_0_asec": 0.0,
+          "delta_phi_asec": null,
+          "delta_lambda_asec": null,
+          "mean_delta_phi_asec": 0.0,
+          "mean_delta_lambda_asec": 0.0,
+          "mean_delta_h_m": 0.0,
+          "grid": [
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            }
+          ],
+          "hor_interp_ind": 0,
+          "ver_interp_ind": 0,
+          "hor_grid_quality_ind": 0,
+          "ver_grid_quality_ind": 0,
+          "modified_julian_day_number": 0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300493ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d41a4a"
+    },
+    {
+      "id": 1023,
+      "variant": "populated",
+      "input_values": {
+        "Msg1023": {
+          "system_id": 0,
+          "hor_shift_flag": 0,
+          "ver_shift_flag": 0,
+          "phi_0_asec": 0.0,
+          "lambda_0_asec": 0.0,
+          "delta_phi_asec": null,
+          "delta_lambda_asec": null,
+          "mean_delta_phi_asec": 0.0,
+          "mean_delta_lambda_asec": 0.0,
+          "mean_delta_h_m": 0.0,
+          "grid": [
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            }
+          ],
+          "hor_interp_ind": 0,
+          "ver_interp_ind": 0,
+          "hor_grid_quality_ind": 0,
+          "ver_grid_quality_ind": 0,
+          "modified_julian_day_number": 0
+        }
+      },
+      "reference_decoded": {
+        "Msg1023": {
+          "system_id": 0,
+          "hor_shift_flag": 0,
+          "ver_shift_flag": 0,
+          "phi_0_asec": 0.0,
+          "lambda_0_asec": 0.0,
+          "delta_phi_asec": null,
+          "delta_lambda_asec": null,
+          "mean_delta_phi_asec": 0.0,
+          "mean_delta_lambda_asec": 0.0,
+          "mean_delta_h_m": 0.0,
+          "grid": [
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_phi_asec": 0.0,
+              "delta_lambda_asec": 0.0,
+              "delta_h_m": 0.0
+            }
+          ],
+          "hor_interp_ind": 0,
+          "ver_interp_ind": 0,
+          "hor_grid_quality_ind": 0,
+          "ver_grid_quality_ind": 0,
+          "modified_julian_day_number": 0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300493ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d41a4a"
+    },
+    {
+      "id": 1024,
+      "variant": "empty",
+      "input_values": {
+        "Msg1024": {
+          "system_id": 0,
+          "hor_shift_flag": 0,
+          "ver_shift_flag": 0,
+          "n_0_m": 0.0,
+          "e_0_m": 0.0,
+          "delta_n_m": null,
+          "delta_e_m": null,
+          "mean_delta_n_m": 0.0,
+          "mean_delta_e_m": 0.0,
+          "mean_delta_h_m": 0.0,
+          "grid": [
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            }
+          ],
+          "hor_interp_ind": 0,
+          "ver_interp_ind": 0,
+          "hor_grid_quality_ind": 0,
+          "ver_grid_quality_ind": 0,
+          "modified_julian_day_number": 0
+        }
+      },
+      "reference_decoded": {
+        "Msg1024": {
+          "system_id": 0,
+          "hor_shift_flag": 0,
+          "ver_shift_flag": 0,
+          "n_0_m": 0.0,
+          "e_0_m": 0.0,
+          "delta_n_m": null,
+          "delta_e_m": null,
+          "mean_delta_n_m": 0.0,
+          "mean_delta_e_m": 0.0,
+          "mean_delta_h_m": 0.0,
+          "grid": [
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            }
+          ],
+          "hor_interp_ind": 0,
+          "ver_interp_ind": 0,
+          "hor_grid_quality_ind": 0,
+          "ver_grid_quality_ind": 0,
+          "modified_julian_day_number": 0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3004a400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000076fa09"
+    },
+    {
+      "id": 1024,
+      "variant": "populated",
+      "input_values": {
+        "Msg1024": {
+          "system_id": 0,
+          "hor_shift_flag": 0,
+          "ver_shift_flag": 0,
+          "n_0_m": 0.0,
+          "e_0_m": 0.0,
+          "delta_n_m": null,
+          "delta_e_m": null,
+          "mean_delta_n_m": 0.0,
+          "mean_delta_e_m": 0.0,
+          "mean_delta_h_m": 0.0,
+          "grid": [
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            }
+          ],
+          "hor_interp_ind": 0,
+          "ver_interp_ind": 0,
+          "hor_grid_quality_ind": 0,
+          "ver_grid_quality_ind": 0,
+          "modified_julian_day_number": 0
+        }
+      },
+      "reference_decoded": {
+        "Msg1024": {
+          "system_id": 0,
+          "hor_shift_flag": 0,
+          "ver_shift_flag": 0,
+          "n_0_m": 0.0,
+          "e_0_m": 0.0,
+          "delta_n_m": null,
+          "delta_e_m": null,
+          "mean_delta_n_m": 0.0,
+          "mean_delta_e_m": 0.0,
+          "mean_delta_h_m": 0.0,
+          "grid": [
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            },
+            {
+              "delta_n_m": 0.0,
+              "delta_e_m": 0.0,
+              "delta_h_m": 0.0
+            }
+          ],
+          "hor_interp_ind": 0,
+          "ver_interp_ind": 0,
+          "hor_grid_quality_ind": 0,
+          "ver_grid_quality_ind": 0,
+          "modified_julian_day_number": 0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3004a400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000076fa09"
+    },
+    {
+      "id": 1025,
+      "variant": "empty",
+      "input_values": {
+        "Msg1025": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "la_no_deg": 0.0,
+          "lo_no_deg": 0.0,
+          "sno_ppm": 1000000.0,
+          "fe_m": 0.0,
+          "fn_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1025": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "la_no_deg": 0.0,
+          "lo_no_deg": 0.0,
+          "sno_ppm": 1000000.0,
+          "fe_m": 0.0,
+          "fn_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300194010000000000000000000014dc9380000000000000000000003f0af"
+    },
+    {
+      "id": 1025,
+      "variant": "populated",
+      "input_values": {
+        "Msg1025": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "la_no_deg": 0.0,
+          "lo_no_deg": 0.0,
+          "sno_ppm": 1000000.0,
+          "fe_m": 0.0,
+          "fn_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1025": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "la_no_deg": 0.0,
+          "lo_no_deg": 0.0,
+          "sno_ppm": 1000000.0,
+          "fe_m": 0.0,
+          "fn_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300194010000000000000000000014dc9380000000000000000000003f0af"
+    },
+    {
+      "id": 1026,
+      "variant": "empty",
+      "input_values": {
+        "Msg1026": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "la_fo_deg": 0.0,
+          "lo_fo_deg": 0.0,
+          "la_sp1_deg": 0.0,
+          "la_sp2_deg": 0.0,
+          "efo_m": 0.0,
+          "nfo_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1026": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "la_fo_deg": 0.0,
+          "lo_fo_deg": 0.0,
+          "la_sp1_deg": 0.0,
+          "la_sp2_deg": 0.0,
+          "efo_m": 0.0,
+          "nfo_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001e4020000000000000000000000000000000000000000000000000000000001c3485"
+    },
+    {
+      "id": 1026,
+      "variant": "populated",
+      "input_values": {
+        "Msg1026": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "la_fo_deg": 0.0,
+          "lo_fo_deg": 0.0,
+          "la_sp1_deg": 0.0,
+          "la_sp2_deg": 0.0,
+          "efo_m": 0.0,
+          "nfo_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1026": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "la_fo_deg": 0.0,
+          "lo_fo_deg": 0.0,
+          "la_sp1_deg": 0.0,
+          "la_sp2_deg": 0.0,
+          "efo_m": 0.0,
+          "nfo_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001e4020000000000000000000000000000000000000000000000000000000001c3485"
+    },
+    {
+      "id": 1027,
+      "variant": "empty",
+      "input_values": {
+        "Msg1027": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "rectification_flag": 0,
+          "la_pc_deg": 0.0,
+          "lo_pc_deg": 0.0,
+          "az_il_deg": 0.0,
+          "diff_arsg_deg": 0.0,
+          "sil_ppm": 1000000.0,
+          "epc_m": 0.0,
+          "npc_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1027": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "rectification_flag": 0,
+          "la_pc_deg": 0.0,
+          "lo_pc_deg": 0.0,
+          "az_il_deg": 0.0,
+          "diff_arsg_deg": 0.0,
+          "sil_ppm": 1000000.0,
+          "epc_m": 0.0,
+          "npc_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3002140300000000000000000000000000000000000053724e00000000000000000000051fcb5"
+    },
+    {
+      "id": 1027,
+      "variant": "populated",
+      "input_values": {
+        "Msg1027": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "rectification_flag": 0,
+          "la_pc_deg": 0.0,
+          "lo_pc_deg": 0.0,
+          "az_il_deg": 0.0,
+          "diff_arsg_deg": 0.0,
+          "sil_ppm": 1000000.0,
+          "epc_m": 0.0,
+          "npc_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1027": {
+          "system_id": 0,
+          "projection_type_ind": 0,
+          "rectification_flag": 0,
+          "la_pc_deg": 0.0,
+          "lo_pc_deg": 0.0,
+          "az_il_deg": 0.0,
+          "diff_arsg_deg": 0.0,
+          "sil_ppm": 1000000.0,
+          "epc_m": 0.0,
+          "npc_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3002140300000000000000000000000000000000000053724e00000000000000000000051fcb5"
+    },
+    {
+      "id": 1029,
+      "variant": "empty",
+      "input_values": {
+        "Msg1029": {
+          "reference_station_id": 42,
+          "modified_julian_day_number": 0,
+          "seconds_of_day_s": 0,
+          "text_str": ""
+        }
+      },
+      "reference_decoded": {
+        "Msg1029": {
+          "reference_station_id": 42,
+          "modified_julian_day_number": 0,
+          "seconds_of_day_s": 0,
+          "text_str": ""
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000940502a000000000000805b2f"
+    },
+    {
+      "id": 1029,
+      "variant": "populated",
+      "input_values": {
+        "Msg1029": {
+          "reference_station_id": 42,
+          "modified_julian_day_number": 0,
+          "seconds_of_day_s": 0,
+          "text_str": "GNSS"
+        }
+      },
+      "reference_decoded": {
+        "Msg1029": {
+          "reference_station_id": 42,
+          "modified_julian_day_number": 0,
+          "seconds_of_day_s": 0,
+          "text_str": "GNSS"
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000d40502a000000000404474e5353d42b0a"
+    },
+    {
+      "id": 1030,
+      "variant": "empty",
+      "input_values": {
+        "Msg1030": {
+          "gps_resid_epoch_time_s": 100,
+          "reference_station_id": 42,
+          "refs_n": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1030": {
+          "gps_resid_epoch_time_s": 100,
+          "reference_station_id": 42,
+          "refs_n": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300074060006402a000e0af78"
+    },
+    {
+      "id": 1030,
+      "variant": "populated",
+      "input_values": {
+        "Msg1030": {
+          "gps_resid_epoch_time_s": 100,
+          "reference_station_id": 42,
+          "refs_n": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "s_ic_mm": 0.0,
+              "s_id_ppm": 0.0,
+              "s_oc_mm": 0.0,
+              "s_od_ppm": 0.0,
+              "s_oh_ppm": 0.0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1030": {
+          "gps_resid_epoch_time_s": 100,
+          "reference_station_id": 42,
+          "refs_n": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "s_oc_mm": 0.0,
+              "s_od_ppm": 0.0,
+              "s_oh_ppm": 0.0,
+              "s_ic_mm": 0.0,
+              "s_id_ppm": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000e4060006402a00104000000000000584212"
+    },
+    {
+      "id": 1031,
+      "variant": "empty",
+      "input_values": {
+        "Msg1031": {
+          "glo_resid_epoch_time_s": 100,
+          "reference_station_id": 42,
+          "refs_n": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1031": {
+          "glo_resid_epoch_time_s": 100,
+          "reference_station_id": 42,
+          "refs_n": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000740700320150000f5040e"
+    },
+    {
+      "id": 1031,
+      "variant": "populated",
+      "input_values": {
+        "Msg1031": {
+          "glo_resid_epoch_time_s": 100,
+          "reference_station_id": 42,
+          "refs_n": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "s_ic_mm": 0.0,
+              "s_id_ppm": 0.0,
+              "s_oc_mm": 0.0,
+              "s_od_ppm": 0.0,
+              "s_oh_ppm": 0.0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1031": {
+          "glo_resid_epoch_time_s": 100,
+          "reference_station_id": 42,
+          "refs_n": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "s_oc_mm": 0.0,
+              "s_od_ppm": 0.0,
+              "s_oh_ppm": 0.0,
+              "s_ic_mm": 0.0,
+              "s_id_ppm": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000d40700320150008200000000000f5d302"
+    },
+    {
+      "id": 1032,
+      "variant": "empty",
+      "input_values": {
+        "Msg1032": {
+          "non_physical_reference_station_id": 0,
+          "physical_reference_station_id": 0,
+          "reserved_36_6": 0,
+          "phys_ref_arp_ecef_x_m": 0.0,
+          "phys_ref_arp_ecef_y_m": 0.0,
+          "phys_ref_arp_ecef_z_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1032": {
+          "non_physical_reference_station_id": 0,
+          "physical_reference_station_id": 0,
+          "reserved_36_6": 0,
+          "phys_ref_arp_ecef_x_m": 0.0,
+          "phys_ref_arp_ecef_y_m": 0.0,
+          "phys_ref_arp_ecef_z_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300144080000000000000000000000000000000000000631556"
+    },
+    {
+      "id": 1032,
+      "variant": "populated",
+      "input_values": {
+        "Msg1032": {
+          "non_physical_reference_station_id": 0,
+          "physical_reference_station_id": 0,
+          "reserved_36_6": 0,
+          "phys_ref_arp_ecef_x_m": 0.0,
+          "phys_ref_arp_ecef_y_m": 0.0,
+          "phys_ref_arp_ecef_z_m": 0.0
+        }
+      },
+      "reference_decoded": {
+        "Msg1032": {
+          "non_physical_reference_station_id": 0,
+          "physical_reference_station_id": 0,
+          "reserved_36_6": 0,
+          "phys_ref_arp_ecef_x_m": 0.0,
+          "phys_ref_arp_ecef_y_m": 0.0,
+          "phys_ref_arp_ecef_z_m": 0.0
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300144080000000000000000000000000000000000000631556"
+    },
+    {
+      "id": 1033,
+      "variant": "empty",
+      "input_values": {
+        "Msg1033": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "",
+          "antenna_setup_id": 0,
+          "antenna_serial_number_str": "",
+          "receiver_type_descriptor_str": "",
+          "receiver_firmware_version_str": "",
+          "receiver_serial_number_str": ""
+        }
+      },
+      "reference_decoded": {
+        "Msg1033": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "",
+          "antenna_setup_id": 0,
+          "antenna_serial_number_str": "",
+          "receiver_type_descriptor_str": "",
+          "receiver_firmware_version_str": "",
+          "receiver_serial_number_str": ""
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000940902a000000000000c1bbaa"
+    },
+    {
+      "id": 1033,
+      "variant": "populated",
+      "input_values": {
+        "Msg1033": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "GNSS",
+          "antenna_setup_id": 0,
+          "antenna_serial_number_str": "GNSS",
+          "receiver_type_descriptor_str": "GNSS",
+          "receiver_firmware_version_str": "GNSS",
+          "receiver_serial_number_str": "GNSS"
+        }
+      },
+      "reference_decoded": {
+        "Msg1033": {
+          "reference_station_id": 42,
+          "antenna_descriptor_str": "GNSS",
+          "antenna_setup_id": 0,
+          "antenna_serial_number_str": "GNSS",
+          "receiver_type_descriptor_str": "GNSS",
+          "receiver_firmware_version_str": "GNSS",
+          "receiver_serial_number_str": "GNSS"
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001d40902a04474e53530004474e535304474e535304474e535304474e5353e93e42"
+    },
+    {
+      "id": 1034,
+      "variant": "empty",
+      "input_values": {
+        "Msg1034": {
+          "reference_station_id": 42,
+          "gps_fkp_epoch_time_s": 100,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1034": {
+          "reference_station_id": 42,
+          "gps_fkp_epoch_time_s": 100,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000740a02a00064000d7be67"
+    },
+    {
+      "id": 1034,
+      "variant": "populated",
+      "input_values": {
+        "Msg1034": {
+          "reference_station_id": 42,
+          "gps_fkp_epoch_time_s": 100,
+          "satellites": [
+            {
+              "geom_grad_east_ppm": null,
+              "geom_grad_north_ppm": null,
+              "gps_satellite_id": 1,
+              "iode": 0,
+              "iono_grad_east_ppm": null,
+              "iono_grad_north_ppm": null
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1034": {
+          "reference_station_id": 42,
+          "gps_fkp_epoch_time_s": 100,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "iode": 0,
+              "geom_grad_north_ppm": null,
+              "geom_grad_east_ppm": null,
+              "iono_grad_north_ppm": null,
+              "iono_grad_east_ppm": null
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000f40a02a00064082010010010004000077cdcd"
+    },
+    {
+      "id": 1035,
+      "variant": "empty",
+      "input_values": {
+        "Msg1035": {
+          "reference_station_id": 42,
+          "glo_fkp_epoch_time_s": 100,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1035": {
+          "reference_station_id": 42,
+          "glo_fkp_epoch_time_s": 100,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000640b02a003200f976e2"
+    },
+    {
+      "id": 1035,
+      "variant": "populated",
+      "input_values": {
+        "Msg1035": {
+          "reference_station_id": 42,
+          "glo_fkp_epoch_time_s": 100,
+          "satellites": [
+            {
+              "geom_grad_east_ppm": null,
+              "geom_grad_north_ppm": null,
+              "glo_satellite_id": 1,
+              "iod": 0,
+              "iono_grad_east_ppm": null,
+              "iono_grad_north_ppm": null
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1035": {
+          "reference_station_id": 42,
+          "glo_fkp_epoch_time_s": 100,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "iod": 0,
+              "geom_grad_north_ppm": null,
+              "geom_grad_east_ppm": null,
+              "iono_grad_north_ppm": null,
+              "iono_grad_east_ppm": null
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000e40b02a00320410080080080020002c3567"
+    },
+    {
+      "id": 1037,
+      "variant": "empty",
+      "input_values": {
+        "Msg1037": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1037": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100.0,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000a40d000003e80000000005829dc"
+    },
+    {
+      "id": 1037,
+      "variant": "populated",
+      "input_values": {
+        "Msg1037": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": [
+            {
+              "amb_status_ind": 0,
+              "glo_satellite_id": 1,
+              "iono_phase_diff_m": 0.0,
+              "non_sync_count": 0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1037": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100.0,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "amb_status_ind": 0,
+              "non_sync_count": 0,
+              "iono_phase_diff_m": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000d40d000003e80000000820000001d5527"
+    },
+    {
+      "id": 1038,
+      "variant": "empty",
+      "input_values": {
+        "Msg1038": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1038": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100.0,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000a40e000003e8000000000e54615"
+    },
+    {
+      "id": 1038,
+      "variant": "populated",
+      "input_values": {
+        "Msg1038": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": [
+            {
+              "amb_status_ind": 0,
+              "geom_phase_diff_m": 0.0,
+              "glo_satellite_id": 1,
+              "iod": 0,
+              "non_sync_count": 0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1038": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100.0,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "amb_status_ind": 0,
+              "non_sync_count": 0,
+              "geom_phase_diff_m": 0.0,
+              "iod": 0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000e40e000003e8000000082000000003f0aaf"
+    },
+    {
+      "id": 1039,
+      "variant": "empty",
+      "input_values": {
+        "Msg1039": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1039": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100.0,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000a40f000003e80000000000c58fb"
+    },
+    {
+      "id": 1039,
+      "variant": "populated",
+      "input_values": {
+        "Msg1039": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": [
+            {
+              "amb_status_ind": 0,
+              "geom_phase_diff_m": 0.0,
+              "glo_satellite_id": 1,
+              "iod": 0,
+              "iono_phase_diff_m": 0.0,
+              "non_sync_count": 0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1039": {
+          "network_id": 0,
+          "subnetwork_id": 0,
+          "glo_epoch_time_s": 100.0,
+          "multiple_message_flag": 0,
+          "ma_reference_station_id": 0,
+          "aux_reference_station_id": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "amb_status_ind": 0,
+              "non_sync_count": 0,
+              "geom_phase_diff_m": 0.0,
+              "iod": 0,
+              "iono_phase_diff_m": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001040f000003e8000000082000000000000be5e59"
+    },
+    {
+      "id": 1057,
+      "variant": "empty",
+      "input_values": {
+        "Msg1057": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1057": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d30009421000640000000000120580"
+    },
+    {
+      "id": 1057,
+      "variant": "populated",
+      "input_values": {
+        "Msg1057": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "delta_along_track_m": 0.0,
+              "delta_cross_track_m": 0.0,
+              "delta_radial_m": 0.0,
+              "dot_delta_along_track_m_s": 0.0,
+              "dot_delta_cross_track_m_s": 0.0,
+              "dot_delta_radial_m_s": 0.0,
+              "gps_satellite_id": 1,
+              "iode": 0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1057": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "iode": 0,
+              "delta_radial_m": 0.0,
+              "delta_along_track_m": 0.0,
+              "delta_cross_track_m": 0.0,
+              "dot_delta_radial_m_s": 0.0,
+              "dot_delta_along_track_m_s": 0.0,
+              "dot_delta_cross_track_m_s": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001a42100064000000001040000000000000000000000000000000008246b6"
+    },
+    {
+      "id": 1058,
+      "variant": "empty",
+      "input_values": {
+        "Msg1058": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1058": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d30009422000640000000000a0c8e2"
+    },
+    {
+      "id": 1058,
+      "variant": "populated",
+      "input_values": {
+        "Msg1058": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "delta_clock_c0_m": 0.0,
+              "delta_clock_c1_m_s": 0.0,
+              "delta_clock_c2_m_s2": 0.0,
+              "gps_satellite_id": 1
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1058": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "delta_clock_c0_m": 0.0,
+              "delta_clock_c1_m_s": 0.0,
+              "delta_clock_c2_m_s2": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001242200064000000002080000000000000000061e9ad"
+    },
+    {
+      "id": 1059,
+      "variant": "empty",
+      "input_values": {
+        "Msg1059": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "biases": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1059": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "biases": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d30009423000640000000000ce8c3c"
+    },
+    {
+      "id": 1059,
+      "variant": "populated",
+      "input_values": {
+        "Msg1059": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "biases": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1059": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "biases": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d30009423000640000000000ce8c3c"
+    },
+    {
+      "id": 1060,
+      "variant": "empty",
+      "input_values": {
+        "Msg1060": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1060": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d30009424000640000000000431edd"
+    },
+    {
+      "id": 1060,
+      "variant": "populated",
+      "input_values": {
+        "Msg1060": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "delta_along_track_m": 0.0,
+              "delta_clock_c0_m": 0.0,
+              "delta_clock_c1_m_s": 0.0,
+              "delta_clock_c2_m_s2": 0.0,
+              "delta_cross_track_m": 0.0,
+              "delta_radial_m": 0.0,
+              "dot_delta_along_track_m_s": 0.0,
+              "dot_delta_cross_track_m_s": 0.0,
+              "dot_delta_radial_m_s": 0.0,
+              "gps_satellite_id": 1,
+              "iode": 0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1060": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "iode": 0,
+              "delta_radial_m": 0.0,
+              "delta_along_track_m": 0.0,
+              "delta_cross_track_m": 0.0,
+              "dot_delta_radial_m_s": 0.0,
+              "dot_delta_along_track_m_s": 0.0,
+              "dot_delta_cross_track_m_s": 0.0,
+              "delta_clock_c0_m": 0.0,
+              "delta_clock_c1_m_s": 0.0,
+              "delta_clock_c2_m_s2": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3002342400064000000001040000000000000000000000000000000000000000000000000009cb992"
+    },
+    {
+      "id": 1061,
+      "variant": "empty",
+      "input_values": {
+        "Msg1061": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1061": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300094250006400000000002d5a03"
+    },
+    {
+      "id": 1061,
+      "variant": "populated",
+      "input_values": {
+        "Msg1061": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "ssr_ura_class": 0,
+              "ssr_ura_value": 0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1061": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "ssr_ura_class": 0,
+              "ssr_ura_value": 0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000a42500064000000002080ab4bcb"
+    },
+    {
+      "id": 1062,
+      "variant": "empty",
+      "input_values": {
+        "Msg1062": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1062": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300094260006400000000009f9761"
+    },
+    {
+      "id": 1062,
+      "variant": "populated",
+      "input_values": {
+        "Msg1062": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "high_rate_clock_correction_m": 0.0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1062": {
+          "gps_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "gps_satellite_id": 1,
+              "high_rate_clock_correction_m": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000c426000640000000020800000e18926"
+    },
+    {
+      "id": 1063,
+      "variant": "empty",
+      "input_values": {
+        "Msg1063": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1063": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300094270032000000000006829bc"
+    },
+    {
+      "id": 1063,
+      "variant": "populated",
+      "input_values": {
+        "Msg1063": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "delta_along_track_m": 0.0,
+              "delta_cross_track_m": 0.0,
+              "delta_radial_m": 0.0,
+              "dot_delta_along_track_m_s": 0.0,
+              "dot_delta_cross_track_m_s": 0.0,
+              "dot_delta_radial_m_s": 0.0,
+              "glo_satellite_id": 1,
+              "iod": 0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1063": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "iod": 0,
+              "delta_radial_m": 0.0,
+              "delta_along_track_m": 0.0,
+              "delta_cross_track_m": 0.0,
+              "dot_delta_radial_m_s": 0.0,
+              "dot_delta_along_track_m_s": 0.0,
+              "dot_delta_cross_track_m_s": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d30019427003200000000084000000000000000000000000000000003aba54"
+    },
+    {
+      "id": 1064,
+      "variant": "empty",
+      "input_values": {
+        "Msg1064": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1064": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300084280032000000000ad39e5"
+    },
+    {
+      "id": 1064,
+      "variant": "populated",
+      "input_values": {
+        "Msg1064": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "delta_clock_c0_m": 0.0,
+              "delta_clock_c1_m_s": 0.0,
+              "delta_clock_c2_m_s2": 0.0,
+              "glo_satellite_id": 1
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1064": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "delta_clock_c0_m": 0.0,
+              "delta_clock_c1_m_s": 0.0,
+              "delta_clock_c2_m_s2": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001242800320000000010800000000000000000055afe5"
+    },
+    {
+      "id": 1065,
+      "variant": "empty",
+      "input_values": {
+        "Msg1065": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "biases": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1065": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "biases": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d30008429003200000000018b8d3"
+    },
+    {
+      "id": 1065,
+      "variant": "populated",
+      "input_values": {
+        "Msg1065": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "biases": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1065": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "biases": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d30008429003200000000018b8d3"
+    },
+    {
+      "id": 1066,
+      "variant": "empty",
+      "input_values": {
+        "Msg1066": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1066": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000942a003200000000000478de7"
+    },
+    {
+      "id": 1066,
+      "variant": "populated",
+      "input_values": {
+        "Msg1066": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "delta_along_track_m": 0.0,
+              "delta_clock_c0_m": 0.0,
+              "delta_clock_c1_m_s": 0.0,
+              "delta_clock_c2_m_s2": 0.0,
+              "delta_cross_track_m": 0.0,
+              "delta_radial_m": 0.0,
+              "dot_delta_along_track_m_s": 0.0,
+              "dot_delta_cross_track_m_s": 0.0,
+              "dot_delta_radial_m_s": 0.0,
+              "glo_satellite_id": 1,
+              "iod": 0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1066": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "satellite_reference_datum_ind": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "iod": 0,
+              "delta_radial_m": 0.0,
+              "delta_along_track_m": 0.0,
+              "delta_cross_track_m": 0.0,
+              "dot_delta_radial_m_s": 0.0,
+              "dot_delta_along_track_m_s": 0.0,
+              "dot_delta_cross_track_m_s": 0.0,
+              "delta_clock_c0_m": 0.0,
+              "delta_clock_c1_m_s": 0.0,
+              "delta_clock_c2_m_s2": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3002242a00320000000008400000000000000000000000000000000000000000000000000a1fa46"
+    },
+    {
+      "id": 1067,
+      "variant": "empty",
+      "input_values": {
+        "Msg1067": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1067": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000842b0032000000000f5f644"
+    },
+    {
+      "id": 1067,
+      "variant": "populated",
+      "input_values": {
+        "Msg1067": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "ssr_ura_class": 0,
+              "ssr_ura_value": 0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1067": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "ssr_ura_class": 0,
+              "ssr_ura_value": 0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000a42b00320000000010800c0b437"
+    },
+    {
+      "id": 1068,
+      "variant": "empty",
+      "input_values": {
+        "Msg1068": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1068": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000842c0032000000000f1e830"
+    },
+    {
+      "id": 1068,
+      "variant": "populated",
+      "input_values": {
+        "Msg1068": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "high_rate_clock_correction_m": 0.0
+            }
+          ]
+        }
+      },
+      "reference_decoded": {
+        "Msg1068": {
+          "glo_epoch_time_s": 100,
+          "ssr_update_interval_index": 0,
+          "multiple_message_flag": 0,
+          "iod_ssr": 0,
+          "ssr_provider_id": 0,
+          "ssr_solution_id": 0,
+          "satellites": [
+            {
+              "glo_satellite_id": 1,
+              "high_rate_clock_correction_m": 0.0
+            }
+          ]
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3000c42c0032000000001080000004a8e89"
+    },
+    {
+      "id": 1071,
+      "variant": "empty",
+      "input_values": {
+        "Msg1071": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001642f02a00061a800000000000000000000000000000005c0793"
+    },
+    {
+      "id": 1071,
+      "variant": "populated",
+      "input_values": {
+        "Msg1071": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1071": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001942f02a00061a8000004000000000000000200000006000000056998c"
+    },
+    {
+      "id": 1072,
+      "variant": "empty",
+      "input_values": {
+        "Msg1072": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001643002a00061a800000000000000000000000000000003c05af"
+    },
+    {
+      "id": 1072,
+      "variant": "populated",
+      "input_values": {
+        "Msg1072": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1072": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001a43002a00061a8000004000000000000000200000006000000000b6b8ea"
+    },
+    {
+      "id": 1073,
+      "variant": "empty",
+      "input_values": {
+        "Msg1073": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001643102a00061a800000000000000000000000000000007e1972"
+    },
+    {
+      "id": 1073,
+      "variant": "populated",
+      "input_values": {
+        "Msg1073": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1073": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001c43102a00061a800000400000000000000020000000600000000000002a825c"
+    },
+    {
+      "id": 1081,
+      "variant": "empty",
+      "input_values": {
+        "Msg1081": {
+          "reference_station_id": 42,
+          "glo_day_of_week": 0,
+          "glo_epoch_time_ms": 10882000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001643902a02982f400000000000000000000000000000009edc99"
+    },
+    {
+      "id": 1081,
+      "variant": "populated",
+      "input_values": {
+        "Msg1081": {
+          "reference_station_id": 42,
+          "glo_day_of_week": 0,
+          "glo_epoch_time_ms": 10882000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1081": {
+          "reference_station_id": 42,
+          "glo_day_of_week": 0,
+          "glo_epoch_time_ms": 10882000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001943902a02982f400000400000000000000020000000600000000974b2"
+    },
+    {
+      "id": 1082,
+      "variant": "empty",
+      "input_values": {
+        "Msg1082": {
+          "reference_station_id": 42,
+          "glo_day_of_week": 0,
+          "glo_epoch_time_ms": 10882000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001643a02a02982f4000000000000000000000000000000058f9fe"
+    },
+    {
+      "id": 1082,
+      "variant": "populated",
+      "input_values": {
+        "Msg1082": {
+          "reference_station_id": 42,
+          "glo_day_of_week": 0,
+          "glo_epoch_time_ms": 10882000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1082": {
+          "reference_station_id": 42,
+          "glo_day_of_week": 0,
+          "glo_epoch_time_ms": 10882000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001a43a02a02982f40000040000000000000002000000060000000003b706a"
+    },
+    {
+      "id": 1083,
+      "variant": "empty",
+      "input_values": {
+        "Msg1083": {
+          "reference_station_id": 42,
+          "glo_day_of_week": 0,
+          "glo_epoch_time_ms": 10882000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001643b02a02982f400000000000000000000000000000001ae523"
+    },
+    {
+      "id": 1083,
+      "variant": "populated",
+      "input_values": {
+        "Msg1083": {
+          "reference_station_id": 42,
+          "glo_day_of_week": 0,
+          "glo_epoch_time_ms": 10882000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1083": {
+          "reference_station_id": 42,
+          "glo_day_of_week": 0,
+          "glo_epoch_time_ms": 10882000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001c43b02a02982f40000040000000000000002000000060000000000000e158a0"
+    },
+    {
+      "id": 1091,
+      "variant": "empty",
+      "input_values": {
+        "Msg1091": {
+          "reference_station_id": 42,
+          "gal_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001644302a00061a80000000000000000000000000000000e868a9"
+    },
+    {
+      "id": 1091,
+      "variant": "populated",
+      "input_values": {
+        "Msg1091": {
+          "reference_station_id": 42,
+          "gal_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1091": {
+          "reference_station_id": 42,
+          "gal_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001944302a00061a80000040000000000000002000000060000000311026"
+    },
+    {
+      "id": 1092,
+      "variant": "empty",
+      "input_values": {
+        "Msg1092": {
+          "reference_station_id": 42,
+          "gal_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001644402a00061a80000000000000000000000000000000a07241"
+    },
+    {
+      "id": 1092,
+      "variant": "populated",
+      "input_values": {
+        "Msg1092": {
+          "reference_station_id": 42,
+          "gal_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1092": {
+          "reference_station_id": 42,
+          "gal_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001a44402a00061a8000004000000000000000200000006000000000eff17b"
+    },
+    {
+      "id": 1093,
+      "variant": "empty",
+      "input_values": {
+        "Msg1093": {
+          "reference_station_id": 42,
+          "gal_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001644502a00061a80000000000000000000000000000000e26e9c"
+    },
+    {
+      "id": 1093,
+      "variant": "populated",
+      "input_values": {
+        "Msg1093": {
+          "reference_station_id": 42,
+          "gal_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1093": {
+          "reference_station_id": 42,
+          "gal_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001c44502a00061a80000040000000000000002000000060000000000000eb1695"
+    },
+    {
+      "id": 1101,
+      "variant": "empty",
+      "input_values": {
+        "Msg1101": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001644d02a00061a80000000000000000000000000000000785d79"
+    },
+    {
+      "id": 1101,
+      "variant": "populated",
+      "input_values": {
+        "Msg1101": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1101": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001944d02a00061a80000040000000000000002000000060000000bc151e"
+    },
+    {
+      "id": 1102,
+      "variant": "empty",
+      "input_values": {
+        "Msg1102": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001644e02a00061a80000000000000000000000000000000be781e"
+    },
+    {
+      "id": 1102,
+      "variant": "populated",
+      "input_values": {
+        "Msg1102": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1102": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001a44e02a00061a8000004000000000000000200000006000000000b5aeb4"
+    },
+    {
+      "id": 1103,
+      "variant": "empty",
+      "input_values": {
+        "Msg1103": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001644f02a00061a80000000000000000000000000000000fc64c3"
+    },
+    {
+      "id": 1103,
+      "variant": "populated",
+      "input_values": {
+        "Msg1103": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1103": {
+          "reference_station_id": 42,
+          "gps_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001c44f02a00061a80000040000000000000002000000060000000000000036ee1"
+    },
+    {
+      "id": 1111,
+      "variant": "empty",
+      "input_values": {
+        "Msg1111": {
+          "reference_station_id": 42,
+          "qzss_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001645702a00061a80000000000000000000000000000000d47c17"
+    },
+    {
+      "id": 1111,
+      "variant": "populated",
+      "input_values": {
+        "Msg1111": {
+          "reference_station_id": 42,
+          "qzss_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1111": {
+          "reference_station_id": 42,
+          "qzss_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001945702a00061a8000004000000000000000200000006000000026fea8"
+    },
+    {
+      "id": 1112,
+      "variant": "empty",
+      "input_values": {
+        "Msg1112": {
+          "reference_station_id": 42,
+          "qzss_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001645802a00061a8000000000000000000000000000000006551a"
+    },
+    {
+      "id": 1112,
+      "variant": "populated",
+      "input_values": {
+        "Msg1112": {
+          "reference_station_id": 42,
+          "qzss_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1112": {
+          "reference_station_id": 42,
+          "qzss_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001a45802a00061a80000040000000000000002000000060000000006d148e"
+    },
+    {
+      "id": 1113,
+      "variant": "empty",
+      "input_values": {
+        "Msg1113": {
+          "reference_station_id": 42,
+          "qzss_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001645902a00061a800000000000000000000000000000004449c7"
+    },
+    {
+      "id": 1113,
+      "variant": "populated",
+      "input_values": {
+        "Msg1113": {
+          "reference_station_id": 42,
+          "qzss_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1113": {
+          "reference_station_id": 42,
+          "qzss_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  1,
+                  "C"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001c45902a00061a80000040000000000000002000000060000000000000623516"
+    },
+    {
+      "id": 1121,
+      "variant": "empty",
+      "input_values": {
+        "Msg1121": {
+          "reference_station_id": 42,
+          "bds_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001646102a00061a800000000000000000000000000000008e4b8a"
+    },
+    {
+      "id": 1121,
+      "variant": "populated",
+      "input_values": {
+        "Msg1121": {
+          "reference_station_id": 42,
+          "bds_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "satellite_id": 1,
+                "signal_id": [
+                  2,
+                  "I"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1121": {
+          "reference_station_id": 42,
+          "bds_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  2,
+                  "I"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001946102a00061a80000040000000000000002000000060000000153a7d"
+    },
+    {
+      "id": 1122,
+      "variant": "empty",
+      "input_values": {
+        "Msg1122": {
+          "reference_station_id": 42,
+          "bds_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001646202a00061a80000000000000000000000000000000486eed"
+    },
+    {
+      "id": 1122,
+      "variant": "populated",
+      "input_values": {
+        "Msg1122": {
+          "reference_station_id": 42,
+          "bds_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  2,
+                  "I"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1122": {
+          "reference_station_id": 42,
+          "bds_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  2,
+                  "I"
+                ],
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001a46202a00061a800000400000000000000020000000600000000082963b"
+    },
+    {
+      "id": 1123,
+      "variant": "empty",
+      "input_values": {
+        "Msg1123": {
+          "reference_station_id": 42,
+          "bds_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001646302a00061a800000000000000000000000000000000a7230"
+    },
+    {
+      "id": 1123,
+      "variant": "populated",
+      "input_values": {
+        "Msg1123": {
+          "reference_station_id": 42,
+          "bds_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  2,
+                  "I"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1123": {
+          "reference_station_id": 42,
+          "bds_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  2,
+                  "I"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001c46302a00061a80000040000000000000002000000060000000000000c1d90f"
+    },
+    {
+      "id": 1131,
+      "variant": "empty",
+      "input_values": {
+        "Msg1131": {
+          "reference_station_id": 42,
+          "navic_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001646b02a00061a800000000000000000000000000000009041d5"
+    },
+    {
+      "id": 1131,
+      "variant": "populated",
+      "input_values": {
+        "Msg1131": {
+          "reference_station_id": 42,
+          "navic_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "satellite_id": 1,
+                "signal_id": [
+                  5,
+                  "A"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1131": {
+          "reference_station_id": 42,
+          "navic_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  5,
+                  "A"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001946b02a00061a80000040000000000000000000020060000000af92fc"
+    },
+    {
+      "id": 1132,
+      "variant": "empty",
+      "input_values": {
+        "Msg1132": {
+          "reference_station_id": 42,
+          "navic_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001646c02a00061a80000000000000000000000000000000d85b3d"
+    },
+    {
+      "id": 1132,
+      "variant": "populated",
+      "input_values": {
+        "Msg1132": {
+          "reference_station_id": 42,
+          "navic_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  5,
+                  "A"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1132": {
+          "reference_station_id": 42,
+          "navic_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  5,
+                  "A"
+                ],
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001a46c02a00061a8000004000000000000000000002006000000000239083"
+    },
+    {
+      "id": 1133,
+      "variant": "empty",
+      "input_values": {
+        "Msg1133": {
+          "reference_station_id": 42,
+          "navic_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [],
+            "signal_data": []
+          }
+        }
+      },
+      "reference_decoded": "Corrupt",
+      "reference_valid": false,
+      "frame_hex": "d3001646d02a00061a800000000000000000000000000000009a47e0"
+    },
+    {
+      "id": 1133,
+      "variant": "populated",
+      "input_values": {
+        "Msg1133": {
+          "reference_station_id": 42,
+          "navic_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5,
+                "satellite_id": 1
+              }
+            ],
+            "signal_data": [
+              {
+                "gnss_phaserange_lock_time_ind": 0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "half_cycle_ambiguity_ind": 0,
+                "satellite_id": 1,
+                "signal_id": [
+                  5,
+                  "A"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "reference_decoded": {
+        "Msg1133": {
+          "reference_station_id": 42,
+          "navic_epoch_time_ms": 100000,
+          "msm_multiple_message_flag": 0,
+          "issue_of_data_station": null,
+          "reserved_58_7": 0,
+          "clock_steering_ind": 0,
+          "external_clock_ind": 0,
+          "gnss_smoothing_type_ind": 0,
+          "gnss_smoothing_interval_index": 0,
+          "data_segment": {
+            "satellite_data": [
+              {
+                "satellite_id": 1,
+                "gnss_satellite_rough_range_mod1ms_ms": 0.5
+              }
+            ],
+            "signal_data": [
+              {
+                "satellite_id": 1,
+                "signal_id": [
+                  5,
+                  "A"
+                ],
+                "gnss_signal_fine_pseudorange_ms": 0.0,
+                "gnss_signal_fine_phaserange_ms": 0.0,
+                "gnss_phaserange_lock_time_ind": 0,
+                "half_cycle_ambiguity_ind": 0
+              }
+            ]
+          }
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d3001c46d02a00061a800000400000000000000000000200600000000000006749e5"
+    },
+    {
+      "id": 1230,
+      "variant": "empty",
+      "input_values": {
+        "Msg1230": {
+          "reference_station_id": 42,
+          "glo_code_phase_bias_ind": 0,
+          "glo_code_phase_biases": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1230": {
+          "reference_station_id": 42,
+          "glo_code_phase_bias_ind": 0,
+          "glo_code_phase_biases": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300044ce02a00c8d98c"
+    },
+    {
+      "id": 1230,
+      "variant": "populated",
+      "input_values": {
+        "Msg1230": {
+          "reference_station_id": 42,
+          "glo_code_phase_bias_ind": 0,
+          "glo_code_phase_biases": []
+        }
+      },
+      "reference_decoded": {
+        "Msg1230": {
+          "reference_station_id": 42,
+          "glo_code_phase_bias_ind": 0,
+          "glo_code_phase_biases": []
+        }
+      },
+      "reference_valid": true,
+      "frame_hex": "d300044ce02a00c8d98c"
+    }
+  ]
+}

@@ -10,7 +10,6 @@ real_time_kinematic:
       solution: "/gnss/solution"
 
     tcp_port: 8002
-    excluded_satellites: [""]
 
     frequencies:
       enable_l1: true
@@ -22,7 +21,8 @@ real_time_kinematic:
       postype: "llh"
       pos: [35.13470947, 136.97757427, 104.718]
 
-    fixed_origin:
+    local_origin:
+      mode: "auto"
       postype: "llh"
       pos: [0.0, 0.0, 0.0]
 

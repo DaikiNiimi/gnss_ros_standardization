@@ -1,16 +1,17 @@
-// SPDX-License-Identifier: MIT
+#include "gnss_ros_standardization/bag_io_utils.hpp"
 #include <rclcpp/rclcpp.hpp>
+#include <Eigen/Geometry>
 #include <rosbag2_cpp/writer.hpp>
 #include <rosbag2_storage/storage_options.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 
 #include "gnss_ros_standardization/gnss_utils.hpp"
-#include "gnss_ros_standardization/bag_io_utils.hpp"
 #include "gnss_ros_standardization/pos_reader.hpp"
 // gnss_utils.hpp includes rtklib.h internally
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -28,14 +29,23 @@ using gnss_ros_standardization::msg::GnssEphemeris;
 using gnss_ros_standardization::msg::GlonassEphemeris;
 using gnss_ros_standardization::msg::GnssEphemerides;
 
-// Default ephemeris selection gates (seconds). Configurable via CLI.
-//   GNSS  : GPS LNAV TOE validity is ±2 h (7200 s); Galileo I/NAV similar.
-//   GLONASS: broadcast ephemeris validity is ±15 min nominal; we use ±30 min
-//            (1800 s) to keep the same window RTKLIB uses by default.
-constexpr double kDefaultMaxDtoeGnss    = 7200.0;
+// GLONASS ephemeris window used only to fill an observation's frequency
+// channel when the OBS header has none (RTKLIB's default MAXDTOE_GLO).
 constexpr double kDefaultMaxDtoeGlonass = 1800.0;
 
-enum class EphMode { PerEpoch, OnChange };
+// How the NAV records reach the bag (the nodes select among what they hold):
+//   Transmission (default): each record at its RINEX transmission time (ttr;
+//     GLONASS: tof), records transmitted before the first observation epoch
+//     together kInitialNavLeadS before it - what a receiver stream delivers in
+//     real time.
+//   AllAtStart: every record kInitialNavLeadS before the first observation
+//     epoch, as RTKLIB post-processing (rnx2rtkp) holds the whole NAV file
+//     from its start.
+// The initial batch precedes the first epoch strictly: messages with equal
+// stamps on different topics reach a subscriber in no defined order during
+// `ros2 bag play`, and the first epoch must not be solved before it.
+enum class EphMode { Transmission, AllAtStart };
+constexpr double kInitialNavLeadS = 1.0;
 
 // One RINEX OBS input → one rosbag topic. Multiple sources (e.g. rover/base
 // for RTK) can be specified; epochs are written in GPST-time order across
@@ -52,6 +62,7 @@ struct ObsSource {
 // violation the moment anything links two of them (cppcheck flags it as one).
 namespace {
 struct Args {
+  gnss_converter_io::TimeScale time_scale{gnss_converter_io::TimeScale::Utc};
   std::vector<ObsSource> obs_sources;
   std::vector<std::string> nav_paths;
   std::string output_bag;
@@ -61,8 +72,7 @@ struct Args {
   std::string topic_nav  = "/gnss/ephemeris";
   std::string topic_pos  = "/gnss/solution";
   std::map<std::string, std::string> topic_obs_overrides;  // label -> explicit topic
-  EphMode eph_mode = EphMode::OnChange;
-  double max_dtoe_gnss    = kDefaultMaxDtoeGnss;
+  EphMode eph_mode = EphMode::Transmission;
   double max_dtoe_glonass = kDefaultMaxDtoeGlonass;
   // Optional IMU csv -> sensor_msgs/Imu (e.g. PPC-Dataset imu.csv). Columns:
   // GPS TOW, GPS Week, Acc XYZ [m/s^2], Ang Rate XYZ [deg/s] (deg->rad applied).
@@ -144,8 +154,16 @@ static std::pair<std::string, std::string> splitLabel(const std::string& s) {
 
 Args parseArgs(const std::vector<std::string>& args) {
   Args a;
+  auto duration = [](const std::string& text) {
+    size_t end = 0; const double value = std::stod(text, &end);
+    if (end != text.size() || !std::isfinite(value) || value < 0)
+      throw std::invalid_argument("invalid ephemeris age: " + text);
+    return value;
+  };
   for (size_t i = 0; i < args.size(); ++i) {
-    if (args[i] == "--obs" && i + 1 < args.size()) {
+    if (args[i] == "--timestamp-scale" && i + 1 < args.size()) {
+      a.time_scale = gnss_converter_io::parseTimeScale(args[++i]);
+    } else if (args[i] == "--obs" && i + 1 < args.size()) {
       auto [label, path] = splitLabel(args[++i]);
       a.obs_sources.push_back(ObsSource{label, path, ""});
     } else if (args[i] == "--nav" && i + 1 < args.size()) {
@@ -163,17 +181,15 @@ Args parseArgs(const std::vector<std::string>& args) {
       a.storage_id = args[++i];
     } else if (args[i] == "--eph-mode" && i + 1 < args.size()) {
       std::string m = args[++i];
-      if (m == "per-epoch")      a.eph_mode = EphMode::PerEpoch;
-      else if (m == "on-change") a.eph_mode = EphMode::OnChange;
+      if (m == "transmission") a.eph_mode = EphMode::Transmission;
+      else if (m == "all")     a.eph_mode = EphMode::AllAtStart;
       else {
         std::cerr << "Error: unknown --eph-mode '" << m
-                  << "' (expected per-epoch | on-change)\n";
+                  << "' (expected transmission | all)\n";
         std::exit(2);
       }
-    } else if (args[i] == "--max-dtoe-gnss" && i + 1 < args.size()) {
-      a.max_dtoe_gnss = std::stod(args[++i]);
     } else if (args[i] == "--max-dtoe-glo" && i + 1 < args.size()) {
-      a.max_dtoe_glonass = std::stod(args[++i]);
+      a.max_dtoe_glonass = duration(args[++i]);
     } else if (args[i] == "--pos" && i + 1 < args.size()) {
       auto [label, path] = splitLabel(args[++i]);
       a.pos_label = label;
@@ -188,6 +204,10 @@ Args parseArgs(const std::vector<std::string>& args) {
       a.reference_path = args[++i];
     } else if (args[i] == "--topic-reference" && i + 1 < args.size()) {
       a.topic_reference = args[++i];
+    } else if (args[i] == "--help" || args[i] == "-h") {
+      return Args{};
+    } else {
+      throw std::invalid_argument("unknown argument or missing value: " + args[i]);
     }
   }
   return a;
@@ -201,7 +221,7 @@ Args parseArgs(const std::vector<std::string>& args) {
 // a fatal error).
 static long writeImuCsv(rosbag2_cpp::Writer& writer, const std::string& path,
                         const std::string& topic, const std::string& frame,
-                        std::ostream& err) {
+                        std::ostream& err, gnss_converter_io::TimeScale scale) {
   std::ifstream ifs(path);
   if (!ifs) { err << "Error: cannot open --imu file '" << path << "'\n"; return -1; }
   std::string line;
@@ -225,7 +245,7 @@ static long writeImuCsv(rosbag2_cpp::Writer& writer, const std::string& path,
       return -1;
     }
     gtime_t t = gpst2time(week, tow);
-    rclcpp::Time stamp = gnss_converter_io::toRosTimeGpst(t);
+    rclcpp::Time stamp = gnss_converter_io::toRosTime(t, scale);
     sensor_msgs::msg::Imu msg;
     msg.header.stamp = stamp;
     msg.header.frame_id = "imu_link";
@@ -261,13 +281,13 @@ static long writeImuCsv(rosbag2_cpp::Writer& writer, const std::string& path,
 // error produces a perfectly plausible-looking bag, so it is verified rather
 // than asserted: reference.csv also carries East/North velocity, and
 // atan2(VN, VE) is the course over ground in the SAME convention the quaternion
-// must use. test/ppc_eval/verify_bag_reference.py regresses one against the
+// must use. test/tools/verify_bag_reference.py regresses one against the
 // other and requires slope +1, intercept 0. (This is the identical trap that
 // let a wrong IMU body frame survive in this converter for months: the check
 // that was performed could not have detected it.)
 static long writeReferenceCsv(rosbag2_cpp::Writer& writer,
                               const std::string& path, const std::string& topic,
-                              std::ostream& err) {
+                              std::ostream& err, gnss_converter_io::TimeScale scale) {
   std::ifstream ifs(path);
   if (!ifs) {
     err << "Error: cannot open --reference file '" << path << "'\n";
@@ -278,6 +298,8 @@ static long writeReferenceCsv(rosbag2_cpp::Writer& writer,
   std::getline(ifs, line);  // header
   long n = 0, n_skip = 0;
   const double kDeg2Rad = 3.14159265358979323846 / 180.0;
+  bool have_origin = false;
+  double origin_llh[3]{}, origin_ecef[3]{};
   while (std::getline(ifs, line)) {
     if (line.empty()) continue;
     for (char& c : line) if (c == ',') c = ' ';
@@ -290,7 +312,7 @@ static long writeReferenceCsv(rosbag2_cpp::Writer& writer,
       continue;
     }
     const gtime_t t = gpst2time(week, tow);
-    const rclcpp::Time stamp = gnss_converter_io::toRosTimeGpst(t);
+    const rclcpp::Time stamp = gnss_converter_io::toRosTime(t, scale);
 
     gnss_ros_standardization::msg::GnssSolution sol;
     sol.header.stamp = stamp;
@@ -332,17 +354,43 @@ static long writeReferenceCsv(rosbag2_cpp::Writer& writer,
     const double yaw_enu = (90.0 - heading) * kDeg2Rad;
     const double cr = std::cos(roll * kDeg2Rad * 0.5);
     const double sr = std::sin(roll * kDeg2Rad * 0.5);
-    const double cp = std::cos(pitch * kDeg2Rad * 0.5);
-    const double sp = std::sin(pitch * kDeg2Rad * 0.5);
+    // X1: PPC pitch is nose-up positive; ENU/FLU RzRyRx pitch is nose-down.
+    const double cp = std::cos(-pitch * kDeg2Rad * 0.5);
+    const double sp = std::sin(-pitch * kDeg2Rad * 0.5);
     const double cy = std::cos(yaw_enu * 0.5);
     const double sy = std::sin(yaw_enu * 0.5);
     odom.pose.pose.orientation.w = cr * cp * cy + sr * sp * sy;
     odom.pose.pose.orientation.x = sr * cp * cy - cr * sp * sy;
     odom.pose.pose.orientation.y = cr * sp * cy + sr * cp * sy;
     odom.pose.pose.orientation.z = cr * cp * sy - sr * sp * cy;
-    odom.twist.twist.linear.x = ve;
-    odom.twist.twist.linear.y = vn;
-    odom.twist.twist.linear.z = vu;
+    // Odometry pose is expressed in map; twist is expressed in child_frame_id.
+    // Anchor map at the first reference position. A zero pose for every sample
+    // and ENU velocity labelled base_link are both misleading to consumers.
+    if (!have_origin) {
+      origin_llh[0] = lat*kDeg2Rad; origin_llh[1] = lon*kDeg2Rad; origin_llh[2] = hgt;
+      origin_ecef[0] = ex; origin_ecef[1] = ey; origin_ecef[2] = ez;
+      have_origin = true;
+    }
+    const double delta[3]{ex-origin_ecef[0],ey-origin_ecef[1],ez-origin_ecef[2]};
+    double position[3]; ecef2enu(origin_llh,delta,position);
+    odom.pose.pose.position.x = position[0];
+    odom.pose.pose.position.y = position[1];
+    odom.pose.pose.position.z = position[2];
+    const auto q = odom.pose.pose.orientation; // attitude in the current local ENU
+    const double x=q.x,y=q.y,z=q.z,w=q.w;
+    odom.twist.twist.linear.x = (1-2*(y*y+z*z))*ve + 2*(x*y+z*w)*vn + 2*(x*z-y*w)*vu;
+    odom.twist.twist.linear.y = 2*(x*y-z*w)*ve + (1-2*(x*x+z*z))*vn + 2*(y*z+x*w)*vu;
+    odom.twist.twist.linear.z = 2*(x*z+y*w)*ve + 2*(y*z-x*w)*vn + (1-2*(x*x+y*y))*vu;
+    // The origin's fixed ENU and the sample's local ENU rotate slightly as the
+    // vehicle moves. Express pose orientation in that same fixed map frame.
+    const double local_llh[3]{lat*kDeg2Rad,lon*kDeg2Rad,hgt};
+    double origin_rotation[9],local_rotation[9];
+    xyz2enu(origin_llh,origin_rotation);xyz2enu(local_llh,local_rotation);
+    const Eigen::Map<const Eigen::Matrix3d> origin_basis(origin_rotation),local_basis(local_rotation);
+    const Eigen::Quaterniond local_attitude(w,x,y,z);
+    const Eigen::Quaterniond map_attitude(origin_basis*local_basis.transpose()*local_attitude.toRotationMatrix());
+    odom.pose.pose.orientation.x=map_attitude.x();odom.pose.pose.orientation.y=map_attitude.y();
+    odom.pose.pose.orientation.z=map_attitude.z();odom.pose.pose.orientation.w=map_attitude.w();
     writer.write(odom, odom_topic, stamp);
     ++n;
   }
@@ -402,37 +450,14 @@ static bool resolveObsTopics(Args& a, std::ostream& err) {
   return true;
 }
 
-// Select the best ephemeris index for the current time. Works for both eph_t
-// and geph_t (any RTKLIB type with a `toe` field).
-//
-// The selection MIRRORS RTKLIB's seleph() (ephemeris.c) so that a node
-// consuming the bag makes the same per-epoch choice rnx2rtkp makes reading the
-// RINEX directly:
-//   - smallest |t_curr - toe| within the per-system window, FUTURE toe
-//     included (that is what seleph does for GPS/QZS/BDS/IRN);
-//   - EXCEPT Galileo, where seleph requires toe strictly in the PAST
-//     ("AOD<=0") - set require_past_toe. Without this, nearest-|toe| selects a
-//     future record and the downstream seleph rejects the satellite outright:
-//     measured on PPC tokyo_run1, E36/E09 carried a toe ~25 min in the future
-//     from epoch 0 and were unusable for the first 1530 s of the replay.
-// (A stricter transmission-time causality filter - only records with
-// ttr <= t_curr, like a live receiver - was tried and REJECTED: seleph does
-// not apply it, so it broke selection parity with the CLI for GPS/BDS/QZS and
-// measurably cost satellite availability early in ephemeris windows.)
-//
-// On exact ties, prefer the later array index - since RTKLIB appends records
-// in file order, "later index" means "issued more recently in the source
-// RINEX nav file", which is the safer choice when two ephemerides share the
-// same TOE.
-template <typename T>
-int select_best_eph(const std::vector<int>& indices, const T* data_array,
-                    gtime_t t_curr, double max_dtoe,
-                    bool require_past_toe = false) {
+// Nearest-toe GLONASS ephemeris within max_dtoe (ties: the later record in
+// file order), as RTKLIB selects one; used only to fill an observation's
+// frequency channel when the OBS header lacks it.
+int select_glonass_eph(const std::vector<int>& indices, const geph_t* data_array,
+                       gtime_t t_curr, double max_dtoe) {
     int best_idx = -1;
     double min_diff = std::numeric_limits<double>::max();
     for (int idx : indices) {
-        if (require_past_toe &&
-            timediff(data_array[idx].toe, t_curr) >= 0.0) continue;
         double diff = std::fabs(timediff(t_curr, data_array[idx].toe));
         if (diff > max_dtoe) continue;
         if (diff < min_diff) { min_diff = diff; best_idx = idx; }
@@ -443,12 +468,17 @@ int select_best_eph(const std::vector<int>& indices, const T* data_array,
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  rclcpp::init(argc, argv);
+static int run(int argc, char** argv) {
+  rclcpp::InitOptions init_options;
+  init_options.auto_initialize_logging(false);
+  rclcpp::init(argc, argv, init_options);
 
   std::vector<std::string> args_vec;
-  for (int i=1; i<argc; ++i) args_vec.push_back(argv[i]);
-  Args args = parseArgs(args_vec);
+  const auto cli = rclcpp::remove_ros_arguments(argc, argv);
+  for (size_t i=1; i<cli.size(); ++i) args_vec.push_back(cli[i]);
+  Args args;
+  try { args = parseArgs(args_vec); }
+  catch (const std::exception& e) { std::cerr << "Error: " << e.what() << "\n"; return 2; }
 
   if (args.output_bag.empty() && !args.obs_sources.empty())
     args.output_bag = gnss_converter_io::deriveOutputPath(args.obs_sources.front().path, "");
@@ -460,8 +490,8 @@ int main(int argc, char** argv) {
       "                       [--topic-obs [name=]<topic>] [--topic-nav <topic>]\n"
       "                       [--topic-pos <topic>]\n"
       "                       [--out <bag_path>] [--storage mcap|sqlite3]\n"
-      "                       [--eph-mode per-epoch|on-change]\n"
-      "                       [--max-dtoe-gnss <sec>] [--max-dtoe-glo <sec>]\n"
+      "                       [--timestamp-scale utc|gpst]\n"
+      "                       [--eph-mode transmission|all] [--max-dtoe-glo <sec>]\n"
       "                       [--pos [name=]<pos_file>]\n"
       "                       [--imu <imu_csv>] [--topic-imu <topic>]\n"
       "                       [--reference <csv>] [--topic-reference <topic>]\n"
@@ -481,13 +511,17 @@ int main(int argc, char** argv) {
       "                specific OBS source (e.g. --pos rover=rover.pos). Without a\n"
       "                label, binds to the first --obs source. Solution rows are\n"
       "                interleaved at that source's epoch boundaries.\n"
-      "  --eph-mode    per-epoch: republish all visible ephemerides every obs epoch.\n"
-      "                on-change (default): publish per-sat only when the selected\n"
-      "                     nav index changes (avoids massive duplication; first\n"
-      "                     visible epoch of each sat still publishes once).\n"
-      "  --max-dtoe-*  max |t_obs - toe| for ephemeris selection [sec]. Defaults:\n"
-      "                GNSS=" << kDefaultMaxDtoeGnss
-      << ", GLONASS=" << kDefaultMaxDtoeGlonass << ".\n"
+      "  --eph-mode    transmission (default): every NAV record at its transmission\n"
+      "                     time (RINEX ttr; GLONASS tof), records sent before the\n"
+      "                     first obs epoch together 1 s before it (receiver-like).\n"
+      "                all: every NAV record 1 s before the first obs epoch\n"
+      "                     (rnx2rtkp-like).\n"
+      "                     The bundled RTK/SPP nodes keep 8 records per satellite\n"
+      "                     and the FGO nodes use a record only from its ttr, so\n"
+      "                     use the default with them.\n"
+      "                transmission omits records sent after the last obs epoch.\n"
+      "  --max-dtoe-glo  GLONASS |t_obs - toe| window [sec] for filling an obs\n"
+      "                frequency channel the OBS header lacks. Default " << kDefaultMaxDtoeGlonass << ".\n"
       "  --imu         Optional IMU csv (GPS TOW, Week, Acc XYZ [m/s^2], Ang Rate XYZ\n"
       "                [deg/s]; e.g. PPC-Dataset imu.csv). Written as sensor_msgs/Imu\n"
       "                to --topic-imu (default /gnss/imu/data_raw), GPST-stamped.\n"
@@ -507,7 +541,7 @@ int main(int argc, char** argv) {
       "                never be mistaken for an estimator's own output.\n"
       "                Heading is North-referenced clockwise; the Odometry yaw is\n"
       "                ENU (90-heading). Verify with\n"
-      "                test/ppc_eval/verify_bag_reference.py - a wrong convention\n"
+      "                test/tools/verify_bag_reference.py - a wrong convention\n"
       "                produces a plausible-looking bag.\n"
       "  When --nav is omitted, the NAV topic is created but empty.\n";
     return 1;
@@ -518,48 +552,39 @@ int main(int argc, char** argv) {
   // 1. Read each OBS source. unique_ptr<ObsGuard> keeps ObsGuard non-movable
   //    requirements satisfied while letting us hold many in a vector.
   std::vector<std::unique_ptr<ObsGuard>> obs_guards;
-  NavGuard nav_tmp_g;  // throwaway nav from OBS reads (a few mixed records)
+  std::vector<std::array<int, MAXPRNGLO>> source_channels;
   for (const auto& src : args.obs_sources) {
+    NavGuard nav_tmp_g;  // OBS header channels belong to this receiver/file only.
     auto og = std::make_unique<ObsGuard>();
     sta_t sta = {};
-    int obs_rc = readrnx(src.path.c_str(), 1, "", &og->obs, &nav_tmp_g.nav, &sta);
+    int obs_rc = readrnx(src.path.c_str(), 1, "-ROSOBS", &og->obs, &nav_tmp_g.nav, &sta);
     if (obs_rc <= 0 || og->obs.n <= 0) {
       std::cerr << "Error: failed to read observations from '" << src.path
                 << "' (readrnx rc=" << obs_rc << ", n=" << og->obs.n
                 << "). Check file path and RINEX OBS format.\n";
       return 1;
     }
+    std::array<int, MAXPRNGLO> channels{};
+    std::copy_n(nav_tmp_g.nav.glo_fcn, MAXPRNGLO, channels.begin());
+    source_channels.push_back(channels);
     obs_guards.push_back(std::move(og));
   }
 
   // 2. Read NAV data into a single accumulating nav_t (shared across sources).
   NavGuard ng;
-  size_t nav_ok = 0;
   for (const auto& path : args.nav_paths) {
     ObsGuard dummy_og;
     sta_t dummy_sta = {};
     int nav_rc = readrnx(path.c_str(), 1, "", &dummy_og.obs, &ng.nav, &dummy_sta);
     if (nav_rc <= 0) {
-      std::cerr << "Warning: failed to read nav file '" << path
-                << "' (readrnx rc=" << nav_rc << "). Skipping.\n";
-    } else {
-      ++nav_ok;
+      std::cerr << "Error: failed to read nav file '" << path
+                << "' (readrnx rc=" << nav_rc << "). Aborting.\n";
+      return 1;
     }
-  }
-  if (!args.nav_paths.empty() && nav_ok == 0) {
-    std::cerr << "Error: all --nav files failed to load; no ephemerides available.\n";
-    return 1;
   }
 
   // 3. Index nav for fast per-satellite lookup.
-  std::map<int, std::vector<int>> sat_eph_indices;
   std::map<int, std::vector<int>> sat_geph_indices;
-  for (int i = 0; i < ng.nav.n; ++i) {
-    const auto& e = ng.nav.eph[i];
-    if (e.toe.time != 0 && e.sat > 0 && satsys(e.sat, NULL) != SYS_NONE) {
-      sat_eph_indices[e.sat].push_back(i);
-    }
-  }
   for (int i = 0; i < ng.nav.ng; ++i) {
     const auto& g = ng.nav.geph[i];
     if (g.toe.time != 0 && g.sat > 0 && satsys(g.sat, NULL) == SYS_GLO) {
@@ -571,7 +596,7 @@ int main(int argc, char** argv) {
   gnss_pos_reader::ParseResult pos_result;
   int pos_src_idx = -1;
   if (!args.pos_path.empty()) {
-    pos_result = gnss_pos_reader::parsePosFile(args.pos_path, std::cerr);
+    pos_result = gnss_pos_reader::parsePosFile(args.pos_path, std::cerr, args.time_scale);
     if (pos_result.rows.empty()) {
       std::cerr << "Warning: --pos file produced no rows; solution topic will be absent.\n";
     } else {
@@ -603,9 +628,13 @@ int main(int argc, char** argv) {
   //    cleanup check (remove_all requires the file handles to be released first).
   size_t n_obs_epochs = 0;
   size_t n_eph_msgs   = 0;
+  size_t n_eph_omitted = 0;  // NAV records without an orbit
   size_t n_sol_msgs   = 0;
   long   n_imu_msgs   = 0;
   long   n_ref_msgs   = 0;
+  const std::string final_output=args.output_bag;
+  gnss_converter_io::BagTransaction output(final_output);
+  args.output_bag=output.path();
   {
     rosbag2_cpp::Writer writer;
     rosbag2_storage::StorageOptions storage_opts;
@@ -619,6 +648,7 @@ int main(int argc, char** argv) {
 
     try {
       writer.open(storage_opts, converter_opts);
+      gnss_converter_io::writeTimeScaleMetadata(args.output_bag, args.time_scale);
     } catch (const std::exception& e) {
       std::cerr << "Failed to open bag: " << e.what() << "\n";
       rclcpp::shutdown();
@@ -668,12 +698,91 @@ int main(int argc, char** argv) {
       writer.create_topic(tm);
     }
 
-    // "Last published nav index" for --eph-mode on-change, keyed by
-    // sat*4 + nav-type group (Galileo I/NAV and F/NAV are independent
-    // streams; see the emission loop). Shared across all OBS sources because
-    // NAV is shared.
-    std::map<int, int> last_eph_idx;
-    std::map<int, int> last_geph_idx;
+    // NAV stream (see EphMode). The nodes select among the records they
+    // hold, so the bag carries every record, not a converter-side selection.
+    // Written before the observations so that a record and an observation
+    // with the same stamp play back in that order.
+    {
+      bool any_obs = false;
+      gtime_t first{}, last{};
+      for (const auto& og : obs_guards)
+        for (int k = 0; k < og->obs.n; ++k) {
+          const gtime_t t = og->obs.data[k].time;
+          if (!any_obs || timediff(t, first) < 0) first = t;
+          if (!any_obs || timediff(t, last) > 0) last = t;
+          any_obs = true;
+        }
+      struct NavItem { double offset; size_t order; bool glonass; int idx; };
+      std::vector<NavItem> items;
+      const double span = any_obs ? timediff(last, first) : -1.0;
+      auto add = [&](gtime_t sent, bool glonass, int idx) {
+        double offset = args.eph_mode == EphMode::AllAtStart ? 0.0 : timediff(sent, first);
+        if (!(offset > 0.0)) offset = -kInitialNavLeadS;  // transmitted before the first epoch
+        if (offset > span) return;          // sent after the last epoch
+        items.push_back({offset, items.size(), glonass, idx});
+      };
+      for (int i = 0; i < ng.nav.n; ++i) {
+        const auto& e = ng.nav.eph[i];
+        if (e.toe.time != 0 && e.sat > 0 && satsys(e.sat, NULL) != SYS_NONE)
+          add(e.ttr, false, i);
+      }
+      for (int i = 0; i < ng.nav.ng; ++i) {
+        const auto& g = ng.nav.geph[i];
+        if (g.toe.time != 0 && g.sat > 0 && satsys(g.sat, NULL) == SYS_GLO)
+          add(g.tof, true, i);
+      }
+      std::stable_sort(items.begin(), items.end(), [](const NavItem& a, const NavItem& b) {
+        return a.offset < b.offset;
+      });
+      for (size_t k = 0; k < items.size();) {
+        GnssEphemerides msg_eph;
+        const gtime_t sent = timeadd(first, items[k].offset);
+        const rclcpp::Time stamp = gnss_converter_io::toRosTime(sent, args.time_scale);
+        msg_eph.header.stamp = stamp;
+        msg_eph.header.frame_id = "gnss_receiver";
+        // Ionosphere parameters of the RINEX NAV headers (all zero = absent).
+        std::copy(ng.nav.ion_gps, ng.nav.ion_gps + 8, msg_eph.ion_gps.begin());
+        std::copy(ng.nav.ion_gal, ng.nav.ion_gal + 4, msg_eph.ion_gal.begin());
+        std::copy(ng.nav.ion_qzs, ng.nav.ion_qzs + 8, msg_eph.ion_qzs.begin());
+        std::copy(ng.nav.ion_cmp, ng.nav.ion_cmp + 8, msg_eph.ion_bds.begin());
+        std::copy(ng.nav.ion_irn, ng.nav.ion_irn + 8, msg_eph.ion_irn.begin());
+        const double offset = items[k].offset;
+        for (; k < items.size() && items[k].offset == offset; ++k) {
+          const char* reason = items[k].glonass
+              ? gnss_utils::ephemerisMessageError(ng.nav.geph[items[k].idx])
+              : gnss_utils::ephemerisMessageError(ng.nav.eph[items[k].idx]);
+          if (reason) {
+            const int sat = items[k].glonass ? ng.nav.geph[items[k].idx].sat
+                                             : ng.nav.eph[items[k].idx].sat;
+            // A record without an orbit (receivers publish QZSS "unhealthy, no
+            // orbit" records) carries nothing a node could use: leave it out,
+            // with a warning (the RINEX file keeps it). Any other record the
+            // message cannot carry fails the conversion rather than silently
+            // missing from a successful bag.
+            const bool no_orbit = !items[k].glonass && ng.nav.eph[items[k].idx].A == 0.0 &&
+                                  ng.nav.eph[items[k].idx].e == 0.0;
+            if (no_orbit) {
+              std::cerr << "[rinex_to_rosbag] warning: NAV record without an orbit omitted ("
+                        << gnss_utils::satId(sat) << ")\n";
+              ++n_eph_omitted;
+              continue;
+            }
+            std::cerr << "[rinex_to_rosbag] ephemeris cannot be represented for "
+                      << gnss_utils::satId(sat) << ": " << reason
+                      << "; conversion failed; discard partial output\n";
+            rclcpp::shutdown();
+            return 1;
+          }
+          if (items[k].glonass)
+            msg_eph.glonass_ephemeris.push_back(gnss_utils::gephToMsg(ng.nav.geph[items[k].idx]));
+          else
+            msg_eph.gnss_ephemeris.push_back(gnss_utils::ephToMsg(ng.nav.eph[items[k].idx]));
+        }
+        if (msg_eph.gnss_ephemeris.empty() && msg_eph.glonass_ephemeris.empty()) continue;
+        writer.write(msg_eph, args.topic_nav, stamp);
+        ++n_eph_msgs;
+      }
+    }
 
     // Cursor into pos rows for the bound source.
     size_t pos_idx = 0;
@@ -707,7 +816,7 @@ int main(int argc, char** argv) {
       const auto& src = args.obs_sources[src_idx];
 
       gtime_t t_curr = top.t;
-      rclcpp::Time stamp = gnss_converter_io::toRosTimeGpst(t_curr);
+      rclcpp::Time stamp = gnss_converter_io::toRosTime(t_curr, args.time_scale);
 
       GnssObservations msg_obs;
       int week = 0;
@@ -716,106 +825,42 @@ int main(int argc, char** argv) {
       msg_obs.header.stamp = stamp;
       msg_obs.header.frame_id = src.label.empty() ? "gnss_receiver" : src.label;
 
-      GnssEphemerides msg_eph;
-      msg_eph.header.stamp = stamp;
-      msg_eph.header.frame_id = "gnss_receiver";
-
-      std::vector<int> epoch_sats;
-
       int i = cursor[src_idx];
       int j = i;
       while (j < obs.n) {
         if (timediff(obs.data[j].time, t_curr) > 1e-3) break;
-        const obsd_t& d = obs.data[j];
+        obsd_t d = obs.data[j];
+        d.freq = 255; // readrnx does not populate obsd_t.freq.
+        int prn = 0;
+        if (satsys(d.sat, &prn) == SYS_GLO && prn >= 1 && prn <= MAXPRNGLO) {
+          const int fcn = source_channels[src_idx][prn-1];
+          if (fcn >= 1 && fcn <= 14) d.freq = fcn - 1;
+          else if (sat_geph_indices.count(d.sat)) {
+            const int idx = select_glonass_eph(sat_geph_indices[d.sat], ng.nav.geph,
+                                            t_curr, args.max_dtoe_glonass);
+            if (idx >= 0 && ng.nav.geph[idx].frq >= -7 && ng.nav.geph[idx].frq <= 6)
+              d.freq = ng.nav.geph[idx].frq + 7;
+          }
+        }
 
-        bool has_signal = false;
         for (int k = 0; k < NFREQ + NEXOBS; ++k) {
-          if (d.code[k] || d.P[k] != 0.0 || d.L[k] != 0.0) {
-            msg_obs.observations.push_back(gnss_utils::obsToMsg(d, k));
-            has_signal = true;
+          if (d.code[k]) {
+            auto value = gnss_utils::obsToMsg(d, k);
+            if (value.sat) msg_obs.observations.push_back(std::move(value));
           }
         }
-        if (has_signal) epoch_sats.push_back(d.sat);
         j++;
-      }
-
-      std::sort(epoch_sats.begin(), epoch_sats.end());
-      epoch_sats.erase(std::unique(epoch_sats.begin(), epoch_sats.end()),
-                       epoch_sats.end());
-
-      // Select best ephemeris for each observed satellite.
-      // For on-change mode, only emit when the selected nav index changes
-      // (dictionaries are shared across sources since NAV is shared).
-      for (int sat : epoch_sats) {
-        int sys = satsys(sat, NULL);
-        if (sys == SYS_GLO) {
-          if (sat_geph_indices.count(sat)) {
-            int idx = select_best_eph(sat_geph_indices[sat], ng.nav.geph,
-                                      t_curr, args.max_dtoe_glonass);
-            if (idx == -1) continue;
-            if (args.eph_mode == EphMode::OnChange) {
-              auto it = last_geph_idx.find(sat);
-              if (it != last_geph_idx.end() && it->second == idx) continue;
-              last_geph_idx[sat] = idx;
-            }
-            msg_eph.glonass_ephemeris.push_back(
-                gnss_utils::gephToMsg(ng.nav.geph[idx]));
-          }
-        } else {
-          if (sat_eph_indices.count(sat)) {
-            // Galileo broadcasts two independent navigation messages (I/NAV on
-            // E1B/E5b: eph.code bit 9; F/NAV on E5a: bit 8) and RTKLIB's
-            // seleph() selects BY TYPE (default: I/NAV only). Selecting the
-            // nearest-toe record across both types therefore lets an F/NAV
-            // record shadow its I/NAV twin under on-change emission, and the
-            // downstream node then sees NO usable ephemeris for that satellite
-            // until the next I/NAV change - measured to remove E36/E09 from
-            // half of a 40-minute run. Select and emit the best record PER
-            // navigation type.
-            std::map<int, std::vector<int>> nav_type_groups;
-            for (int i : sat_eph_indices[sat]) {
-              int g = 0;
-              if (sys == SYS_GAL) {
-                g = (ng.nav.eph[i].code & (1 << 9)) ? 1 : 2;  // I/NAV : F/NAV
-              }
-              nav_type_groups[g].push_back(i);
-            }
-            // Per-system validity window, as in seleph() (Galileo and BeiDou
-            // ephemerides are valid far longer than GPS's 2 h; capping them at
-            // the GPS window starves satellites the CLI happily uses).
-            double tmax = args.max_dtoe_gnss;
-            if (sys == SYS_GAL) tmax = std::max(tmax, double(MAXDTOE_GAL));
-            if (sys == SYS_CMP) tmax = std::max(tmax, MAXDTOE_CMP + 1.0);
-            for (const auto& kv : nav_type_groups) {
-              int idx = select_best_eph(kv.second, ng.nav.eph, t_curr, tmax,
-                                        /*require_past_toe=*/sys == SYS_GAL);
-              if (idx == -1) continue;
-              if (args.eph_mode == EphMode::OnChange) {
-                const int key = sat * 4 + kv.first;
-                auto it = last_eph_idx.find(key);
-                if (it != last_eph_idx.end() && it->second == idx) continue;
-                last_eph_idx[key] = idx;
-              }
-              msg_eph.gnss_ephemeris.push_back(
-                  gnss_utils::ephToMsg(ng.nav.eph[idx]));
-            }
-          }
-        }
       }
 
       writer.write(msg_obs, src.topic, stamp);
       ++n_obs_epochs;
 
-      if (!msg_eph.gnss_ephemeris.empty() || !msg_eph.glonass_ephemeris.empty()) {
-        writer.write(msg_eph, args.topic_nav, stamp);
-        ++n_eph_msgs;
-      }
 
       // Flush any pos rows with t <= t_curr (only when this is the bound source).
       if (src_idx == pos_src_idx) {
         while (pos_idx < pos_result.rows.size()) {
           if (timediff(pos_result.rows[pos_idx].t, t_curr) > 1e-3) break;
-          rclcpp::Time ps = gnss_converter_io::toRosTimeGpst(pos_result.rows[pos_idx].t);
+          rclcpp::Time ps = gnss_converter_io::toRosTime(pos_result.rows[pos_idx].t, args.time_scale);
           writer.write(pos_result.rows[pos_idx].sol, args.topic_pos, ps);
           ++pos_idx;
           ++n_sol_msgs;
@@ -833,7 +878,7 @@ int main(int argc, char** argv) {
 
     // Flush any pos rows that follow the last obs epoch of the bound source.
     while (pos_idx < pos_result.rows.size()) {
-      rclcpp::Time ps = gnss_converter_io::toRosTimeGpst(pos_result.rows[pos_idx].t);
+      rclcpp::Time ps = gnss_converter_io::toRosTime(pos_result.rows[pos_idx].t, args.time_scale);
       writer.write(pos_result.rows[pos_idx].sol, args.topic_pos, ps);
       ++pos_idx;
       ++n_sol_msgs;
@@ -844,24 +889,25 @@ int main(int argc, char** argv) {
     // of storage order.
     if (!args.reference_path.empty()) {
       n_ref_msgs = writeReferenceCsv(writer, args.reference_path,
-                                     args.topic_reference, std::cerr);
+                                     args.topic_reference, std::cerr, args.time_scale);
       if (n_ref_msgs < 0) return 1;
     }
     if (!args.imu_path.empty()) {
       n_imu_msgs = writeImuCsv(writer, args.imu_path, args.topic_imu,
-                               args.imu_frame, std::cerr);
+                               args.imu_frame, std::cerr, args.time_scale);
       if (n_imu_msgs < 0) return 1;
     }
 
     std::cerr << "[rinex_to_rosbag] done: " << n_obs_epochs
               << " obs epochs, " << n_eph_msgs << " eph msgs";
+    if (n_eph_omitted) std::cerr << " (" << n_eph_omitted << " NAV records without an orbit omitted)";
     if (!pos_result.rows.empty())
       std::cerr << ", " << n_sol_msgs << " solution msgs";
     if (!args.imu_path.empty())
       std::cerr << ", " << n_imu_msgs << " imu msgs";
     if (!args.reference_path.empty())
       std::cerr << ", " << n_ref_msgs << " reference msgs (x2 topics)";
-    std::cerr << " -> " << args.output_bag << "\n";
+    std::cerr << " -> " << final_output << "\n";
   }  // writer closed here
 
   rclcpp::shutdown();
@@ -871,5 +917,15 @@ int main(int argc, char** argv) {
                  args.output_bag.c_str());
     return 1;
   }
+  output.commit();
   return 0;
+}
+
+int main(int argc, char** argv) {
+  try { return run(argc, argv); }
+  catch (const std::exception& e) {
+    std::cerr << "Conversion failed: " << e.what() << '\n';
+    if (rclcpp::ok()) rclcpp::shutdown();
+    return 1;
+  }
 }

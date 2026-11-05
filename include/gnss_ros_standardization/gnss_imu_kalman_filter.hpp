@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 #ifndef GNSS_ROS_STANDARDIZATION_GNSS_IMU_KALMAN_FILTER_HPP
 #define GNSS_ROS_STANDARDIZATION_GNSS_IMU_KALMAN_FILTER_HPP
 
@@ -11,9 +10,8 @@
 
 #include <Eigen/Dense>
 
-// NOTE: must come after <Eigen/Dense> - this header pulls in rtklib.h, whose
-// trace() macro would otherwise clobber Eigen's MatrixBase::trace().
 #include "gnss_ros_standardization/gnss_utils.hpp"
+#include "gnss_ros_standardization/measurement_validation.hpp"
 
 #include <fstream>
 #include <string>
@@ -24,9 +22,7 @@
 #include <deque>
 #include <functional>
 
-extern "C" {
-#include "rtklib.h"
-}
+#include "gnss_ros_standardization/rtklib_compat.hpp"
 
 namespace gnss_imu_kalman_filter {
 
@@ -83,7 +79,7 @@ enum class GnssUpdateMode {
 struct CsvConfig {
   std::string dir = "";  // output directory; empty = current working directory
 
-  bool        sensors_log_enabled  = true;
+  bool        sensors_log_enabled  = false;
   std::string sensors_log_filename = "ekf_sensors_log.csv";
 
   bool        state_log_enabled    = false;
@@ -95,14 +91,14 @@ struct CsvConfig {
  */
 struct EkfConfig {
   // Local ENU origin (the filter's navigation frame is local ENU)
-  std::string local_origin_mode = "gnss_fix";  // "gnss_fix" or "manual"
-  std::array<double, 3> local_origin_pos = {0.0, 0.0, 0.0};  // lat, lon, alt
+  // local_origin.*: mode fixed = this point; mode auto = the first usable GNSS solution.
+  gnss_utils::LocalOrigin local_origin;
 
   // Topics
   std::string topic_gnss_solution = "/gnss/solution";
   std::string topic_imu_raw       = "/imu/data_raw";
   std::string topic_wheel_speed   = "/can_twist";
-  std::string topic_solution  = "/gnss_imu_kalman_filter/solution";
+  std::string topic_solution  = "/gnss/fusion/ekf_solution";
 
   // CSV
   CsvConfig csv;
@@ -124,7 +120,7 @@ struct EkfConfig {
   GnssUpdateMode gnss_update_mode = GnssUpdateMode::FIX_ONLY;
   // Continuous yaw aiding from GNSS Doppler course. Assumes forward motion with
   // body X along the travel direction (ground vehicles); independent of the
-  // one-time use_init_yaw. Default false (platform assumption); the demo
+  // one-time init.use_yaw. Default false (platform assumption); the demo
   // config opts in.
   bool use_doppler_heading = false;
   double gnss_heading_speed_threshold = 0.5;  // [m/s] min speed for the heading update
@@ -190,8 +186,8 @@ struct EkfConfig {
 
   // IMU initialization
   double init_imu_duration = 1.0;  // [s]
-  bool   use_init_yaw = true;      // true: init_yaw_deg used immediately; false: wait for Doppler
-  double init_yaw_deg = 0.0;       // [deg] initial yaw when use_init_yaw is true
+  bool   use_init_yaw = false;     // true: init.yaw_deg used immediately; false: wait for Doppler
+  double init_yaw_deg = 0.0;       // [deg] initial yaw when init.use_yaw is true
 
   // Output configuration
   std::string output_reference_frame = "imu";  // "gnss" or "imu"
@@ -316,6 +312,10 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   ~GnssImuKalmanFilter() override;
 
  private:
+  friend struct EkfRegressionAccess;
+  void resetTimeline();
+  double reset_backjump_s_{5.0};
+  int64_t last_input_imu_ns_{-1};
   // ---- Parameter loading ----
   void loadParameters();
 
@@ -486,7 +486,7 @@ class GnssImuKalmanFilter : public rclcpp::Node {
 
   /**
    * @brief Push a {stamp, x_, P_} snapshot for the current state time and drop
-   *        snapshots older than imu_buffer_duration. Kept aligned with imu_buffer_.
+   *        snapshots older than ekf.imu_buffer_duration_s. Kept aligned with imu_buffer_.
    */
   void pushStateSnapshot(const rclcpp::Time& stamp);
 
@@ -499,6 +499,7 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   bool tryInitialize();
 
   // ---- Output ----
+  gnss_ros_standardization::msg::GnssSolution buildSolution(const rclcpp::Time& stamp) const;
   void publishSolution(const rclcpp::Time& stamp);
   void writeSensorsHeader();
   void writeSensorsRow(const rclcpp::Time& stamp);
@@ -570,7 +571,7 @@ class GnssImuKalmanFilter : public rclcpp::Node {
 
   /**
    * @brief Derive a Doppler heading [rad] from an origin-frame GNSS velocity,
-   *        gated on gnss_heading_speed_threshold. Returns NaN when the
+   *        gated on gnss.heading_min_speed_mps. Returns NaN when the
    *        velocity is invalid or below the speed gate.
    */
   double dopplerHeadingFromOriginVelocity(const OriginVelocity& vel) const;
@@ -612,6 +613,11 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   rclcpp::Time prev_imu_stamp_{0, 0, RCL_ROS_TIME};
   bool has_prev_imu_stamp_ = false;
 
+  // IMU samples refused by onImu() for not advancing. Kept visible because
+  // a producer stamping from host arrival time emits them routinely, and
+  // silently dropping them is how that stays undiagnosed.
+  std::size_t n_imu_out_of_order_ = 0;
+
   // Running estimate (EMA) of the nominal IMU sample interval [s]. Used to gate
   // predictToTime() so synchronous (high-rate) observations are not ZOH-extrapolated.
   double nominal_imu_dt_ = 0.01;
@@ -640,6 +646,25 @@ class GnssImuKalmanFilter : public rclcpp::Node {
   // ZUPT generically (no self-referential estimated-speed test).
   double last_meas_speed_ = std::numeric_limits<double>::quiet_NaN();
   rclcpp::Time last_meas_speed_stamp_{0, 0, RCL_ROS_TIME};
+
+  // Output status: the status of the GNSS solution behind the last accepted
+  // update, or STATUS_DR once the next update is overdue on the observed GNSS
+  // cadence (stream time: the IMU time at which the update was applied).
+  gnss_utils::ObservedInterval gnss_interval_;
+  bool have_gnss_update_{false};
+  rclcpp::Time last_gnss_update_time_{0, 0, RCL_ROS_TIME};
+  uint8_t last_gnss_update_status_{0};
+  rclcpp::Time init_gnss_time_{0, 0, RCL_ROS_TIME};  // the fix the state starts from
+  uint8_t init_gnss_status_{0};
+  void noteGnssUpdate(const rclcpp::Time& t_obs, uint8_t status);
+  uint8_t outputStatus(const rclcpp::Time& stamp) const;
+
+  // Time basis of header.stamp, read off the GNSS input: UTC (the contract) or
+  // GPST (legacy converted bags). Unknown keeps the UTC reading.
+  enum class HeaderBasis { Unknown, Utc, Gpst };
+  HeaderBasis header_basis_{HeaderBasis::Unknown};
+  void learnHeaderBasis(const gnss_ros_standardization::msg::GnssSolution& msg);
+  bool headerTimeToGpst(const rclcpp::Time& stamp, uint32_t& week, double& tow) const;
 
   // Latest sensor snapshots for CSV
   GnssSnapshot latest_gnss_;

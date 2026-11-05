@@ -1,19 +1,13 @@
-# Message Reference
+# Messages
 
-ROS 2 messages that form the public interface of `gnss_ros_standardization`.
-Field names and semantics follow [RTKLIB](https://github.com/rtklibexplorer/RTKLIB)
-C structures (`obsd_t`, `eph_t`, `geph_t`) so decoders, converters and
-positioning nodes map directly to/from RTKLIB internals.
-
-| Message | RTKLIB struct type | Description |
+| Message | Content | RTKLIB equivalent |
 |---|---|---|
-| [`GnssObservation.msg`](GnssObservation.msg) | `obsd_t` (one satellite at one epoch) | Single pseudorange / carrier-phase / Doppler / SNR sample |
-| [`GnssObservations.msg`](GnssObservations.msg) | array of `obsd_t` at one epoch | All satellite observations at a single epoch |
-| [`GnssEphemeris.msg`](GnssEphemeris.msg) | `eph_t` | Keplerian ephemeris (GPS / Galileo / QZSS / BeiDou / NavIC / SBAS) |
-| [`GlonassEphemeris.msg`](GlonassEphemeris.msg) | `geph_t` | GLONASS state-vector ephemeris |
-| [`GnssEphemerides.msg`](GnssEphemerides.msg) | array of `eph_t` and `geph_t` | All satellite ephemerides |
-| [`GnssSolution.msg`](GnssSolution.msg) | RTKLIB `sol_t` + ENU extensions | Position and velocity solution (LLH / ECEF / ENU + covariances) |
+| [`GnssObservation`](GnssObservation.msg) | one signal of one satellite | one signal slot of `obsd_t` |
+| [`GnssObservations`](GnssObservations.msg) | all signals of all satellites at one epoch | `obsd_t[]` |
+| [`GnssEphemeris`](GnssEphemeris.msg) | Kepler ephemeris (GPS, Galileo, QZSS, BeiDou, NavIC) | `eph_t` |
+| [`GlonassEphemeris`](GlonassEphemeris.msg) | GLONASS ephemeris | `geph_t` |
+| [`GnssEphemerides`](GnssEphemerides.msg) | all retained ephemerides and ionosphere parameters | `eph_t[]`, `geph_t[]`, `nav_t.ion_*` |
+| [`GnssSolution`](GnssSolution.msg) | position, velocity, covariances in LLH, ECEF and ENU | `sol_t` |
 
-Per-field semantics (units, enums, frames, NaN/staleness rules) live inline
-in each `.msg` file. Open the file linked in the table above for the full
-spec.
+Units, frames and enumerations are documented in each `.msg` file. Time, missing
+values and per-field rules: [topic contract](../docs/TOPIC_DATA_CONTRACT.md).

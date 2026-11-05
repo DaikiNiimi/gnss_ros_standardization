@@ -9,7 +9,7 @@ single_point_positioning:
     # Input / Output
     
     # TCP port for RTKPLOT stream (providing NMEA output)
-    tcp_port: 8002
+    tcp_port: 8001
     
     # Input topics
     topics:
@@ -17,22 +17,18 @@ single_point_positioning:
       ephemeris: "/gnss/ephemeris"
       solution: "/gnss/solution"
 
-    # Fixed Origin for Local Position (ENU)
-    # If 'pos' is set to non-zero, this position is used as the origin.
-    # If all 0.0, the first valid solution will be used as the origin (Datum).
-    fixed_origin:
-      # Position type (ecef or llh)
-      postype: "llh"
-      # Position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
-      pos: [0.0, 0.0, 0.0]
+    # ENU local origin: "auto" = first valid solution | "fixed" = pos below
+    local_origin:
+      mode: "auto"
+      postype: "llh"                # "llh" | "ecef"
+      pos: [0.0, 0.0, 0.0]          # llh: [lat_deg, lon_deg, h_m]; ecef: [x, y, z] m
 
     # Processing Options
     
     # Excluded Satellites (e.g. ["G01", "R03"])
-    excluded_satellites: [""]
 
     # Elevation mask in degrees
-    elevation_mask_deg: 15.0
+    masks.elevation_deg: 15.0
 
     # SNR mask (dBHz) at 5, 15, 25, 35, 45, 55, 65, 75, 85 deg
     # Set 'enable' to true to apply these masks.
@@ -47,7 +43,7 @@ single_point_positioning:
 
     # Navigation Systems
     # Set to true to enable processing for specific systems
-    nav_systems:
+    navsys:
       gps: true
       glo: true
       gal: true

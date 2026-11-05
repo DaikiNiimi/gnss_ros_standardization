@@ -1,46 +1,52 @@
-# test
+# Tests
 
-Unit tests for the shared GNSS code and standalone checks for the rosbags this
-package produces and consumes. Both are part of the release: the tests are how a
-change is shown not to have broken anything, and the bag checks are how a
-converted dataset is shown to be faithful before any estimator runs on it.
-
-## Unit tests
-
-Built and run by `colcon test` when GTest is available. `CMakeLists.txt` guards
-on this directory, so a checkout without it still configures and builds.
-
-| file | covers |
-|---|---|
-| `test_epoch_matcher.cpp` | rover/base epoch pairing: ordering, reorder window, outage settling, queue overflow |
-| `test_gnss_preprocessor.cpp` | masks, satellite positions, double-difference pairing |
-| `test_gnss_fgo.cpp` | factor adapters, ambiguity resolution gates, gap-bridging predicates |
+## Run
 
 ```bash
-colcon test --packages-select gnss_ros_standardization && colcon test-result --verbose
-```
-
-## Bag verification
-
-Plain `python3` scripts taking `--bag` plus the source file it should agree
-with. Topic names are arguments, not assumptions, so they work on any bag with
-the expected message types. Run them after converting a dataset: a conversion
-that silently drops satellites, mislabels an ephemeris type or applies a frame
-conversion twice otherwise looks like an estimator problem.
-
-| script | checks |
-|---|---|
-| `verify_bag_obs.py` | observation epochs, satellites and signals against the source RINEX |
-| `verify_bag_eph.py` | ephemeris coverage against the satellites the observations actually use |
-| `verify_bag_imu.py` | IMU axes and signs against a reference trajectory, using velocity only so no Euler convention can defeat the test |
-| `verify_bag_reference.py` | reference/truth solution against its source, including attitude sign conventions |
-
-```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --cmake-args -DBUILD_TESTING=ON
 source install/setup.bash
-python3 test/verify_bag_obs.py --bag <bag> --obs <rover.obs>
-python3 test/verify_bag_eph.py --bag <bag> --nav <nav.rnx>
-python3 test/verify_bag_imu.py --bag <bag> --reference <reference.csv>
-python3 test/verify_bag_reference.py --bag <bag> --reference <reference.csv>
+colcon test --packages-select gnss_ros_standardization
+colcon test-result --verbose
 ```
 
-Each exits non-zero and prints the first disagreement it finds.
+Add `-DBUILD_FGO_NODES=ON` to include the FGO tests. The tests use local files, TCP
+sockets and pseudo terminals; no receiver is needed. A single Python test file can
+be run directly, e.g. `python3 test/test_pvt_specification.py --bin-dir build/gnss_ros_standardization`.
+
+## Contents
+
+| Area | Tests |
+|---|---|
+| Receiver messages (UBX, SBF, NovAtel, RTCM, NMEA): observations, navigation, solution, IMU, time | `test_*_specification.py`, `test_rtcm_*.py`, `test_meas3_reference.py`, `test_ssr_output_policy.py`, `test_auxiliary_specification.py`, `test_decoder_boundaries.py` |
+| Receiver nodes end to end (decoders and drivers, serial/TCP/file, reconnect) | `test_receiver_streams.py`, `test_receiver_observations.py`, `test_receiver_sessions.py`, `test_receiver_diagnostics.py` |
+| Driver configuration against a fake receiver (commands, ACK/NAK, timeout) | `test_driver_configuration.py`, `test_rtcm_relay_names.py` |
+| Framing, payloads, NMEA, observation and ephemeris rules | `test_binary_framer.cpp`, `test_receiver_protocol.cpp`, `test_nmea_parser.cpp`, `test_raw_observations.cpp`, `test_observation_validation.cpp`, `test_ephemeris_contract.cpp`, `test_navigation_record_key.cpp`, `test_stream_transport.cpp`, `test_receiver_health.cpp`, `test_tcp_nmea_server.cpp` |
+| Converters (RINEX ⇄ bag, POS ⇄ bag) | `test_converter_roundtrip.py`, `test_rinex_audit.py` |
+| Positioning (SPP, RTK, EKF, matcher, preprocessing) | `test_spp_node.cpp`, `test_rtk_node.cpp`, `test_gnss_imu_ekf.cpp`, `test_epoch_matcher.cpp`, `test_gnss_preprocessor.cpp`, `test_ins_tick_clock.cpp` |
+| FGO | `fgo/` (`test_fgo_*`) |
+| Launch, parameter names, release files | `test_launch_settings.py`, `test_parameter_names.py`, `test_release.py`, `check_diagnostic_*.py`, `test_visualizer_release.py` |
+
+## Installed package
+
+```bash
+bash test/check_install.sh "$PWD/install/gnss_ros_standardization"
+```
+
+Builds an external C++ package against the installed targets and exchanges all six
+message types with Python.
+
+## Bag checks
+
+[`tools/`](tools/) has read-only checks for a converted or recorded bag:
+
+```bash
+python3 test/tools/verify_bag_obs.py --bag <bag> --obs <rover.obs>
+python3 test/tools/verify_bag_eph.py --bag <bag> --nav <nav.rnx>
+python3 test/tools/verify_bag_imu.py --bag <bag> --reference <reference.csv>
+python3 test/tools/verify_bag_timeline.py --bag <bag>
+python3 test/tools/verify_bag_reference.py --bag <bag> --reference <reference.csv>
+python3 test/tools/check_ppc_playback.py --help
+```
+
+Each exits non-zero and prints the first disagreement.

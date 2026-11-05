@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 #include "gnss_ros_standardization/gnss_preprocessor.hpp"
 
 #include <algorithm>
@@ -17,23 +16,6 @@
 #include "gnss_ros_standardization/gnss_utils.hpp"
 
 namespace gnss_utils {
-
-namespace {
-
-// Cross-code DD safety: forming a DD across different rover/base tracking codes
-// on the same band is carrier-integer-safe when there is no half-cycle ambiguity
-// between the codes. Galileo E-band components (pilot Q / data B / combined X)
-// are full-cycle coherent, and the L5/E5a band (band index 2) mixes only pilot
-// Q vs combined X. GPS/QZS L2 is excluded because 2W (codeless P(Y)) carries a
-// possible half cycle relative to L2C. The inter-code bias itself cancels in the
-// DD (see Config::cross_code_carrier), so PR and CP are both admissible here.
-inline bool crossCodeSafe(int sys, int band) {
-  if (sys == SYS_GAL) return true;                    // E1 / E5a / E5b coherent
-  if (band == 2 && (sys == SYS_GPS || sys == SYS_QZS)) return true;  // L5 Q vs X
-  return false;
-}
-
-}  // namespace
 
 // Largest tolerated condition number of the whitened Doppler design matrix.
 // Above it the four unknowns (3 velocity + clock drift) are not separable by
@@ -251,6 +233,10 @@ GnssPreprocessor::GnssPreprocessor(const Config& config) : config_(config) {
 
   spp_opt_ = prcopt_default;
   spp_opt_.mode = PMODE_SINGLE;
+  for (int sat : config_.excluded_satellites) {
+    if (sat < 1 || sat > MAXSAT) throw std::invalid_argument("Invalid excluded satellite number");
+    spp_opt_.exsats[sat-1] = 1;
+  }
   spp_opt_.navsys = config_.navsys | config_.navsys_undifferenced_only;
   spp_opt_.elmin = config_.el_mask_rad;
   spp_opt_.nf = std::min(max_band + 1, NFREQ);
@@ -270,6 +256,7 @@ GnssPreprocessor::GnssPreprocessor(const Config& config) : config_(config) {
   // base outage still yields a rover-only epoch (has_base=false) so a
   // consumer can dead-reckon / keep its state continuous.
   mopt.emit_unmatched_rover = true;
+  mopt.decide_on_push = false; // preserve the pre-navigation intake gate
   matcher_ = RoverBaseEpochMatcher(mopt);  // validates duplicate_tol <= match_tol
 
   std::memset(&nav_, 0, sizeof(nav_));
@@ -279,12 +266,16 @@ GnssPreprocessor::~GnssPreprocessor() { freenav(&nav_, 0xFF); }
 
 void GnssPreprocessor::pushEphemerides(const EphMsg& msg) {
   for (const auto& e : msg.gnss_ephemeris) {
-    if (!e.satid.empty()) eph_store_.ingestEph(msgToEph(e));
+    const auto decoded = msgToEph(e);
+    if (decoded.sat > 0 && !spp_opt_.exsats[decoded.sat-1]) eph_store_.ingestEph(decoded);
   }
   for (const auto& g : msg.glonass_ephemeris) {
-    if (!g.satid.empty()) eph_store_.ingestGeph(msgToGeph(g));
+    const auto decoded = msgToGeph(g);
+    if (decoded.sat > 0 && !spp_opt_.exsats[decoded.sat-1]) eph_store_.ingestGeph(decoded);
   }
-  eph_store_.applyToNav(nav_);
+  eph_store_.ingestIon(msg);
+  eph_store_.applyToNav(nav_, true);
+  matcher_.setDecideOnPush(hasEphemeris());
 }
 
 void GnssPreprocessor::pushRoverObs(ObsMsg::ConstSharedPtr msg) {
@@ -295,18 +286,28 @@ void GnssPreprocessor::pushBaseObs(ObsMsg::ConstSharedPtr msg) {
   matcher_.pushBase(std::move(msg));
 }
 
-std::vector<PreprocessedEpoch> GnssPreprocessor::drainEpochs(
-    const Eigen::Vector3d* approx_rover) {
-  std::vector<PreprocessedEpoch> out;
-  if (!hasEphemeris()) return out;
+std::vector<RoverBaseEpochMatcher::Pair> GnssPreprocessor::drainPairs() {
+  if (!hasEphemeris()) return {};
   auto pairs = matcher_.drainMatches();
-  if (flush_pending_) {  // an EOF flush arrived before ephemeris; run it now
+  if (flush_pending_) {
     flush_pending_ = false;
     auto tail = matcher_.flush();
     pairs.insert(pairs.end(), std::make_move_iterator(tail.begin()),
                  std::make_move_iterator(tail.end()));
   }
-  buildEpochs(pairs, approx_rover, out);
+  return pairs;
+}
+
+bool GnssPreprocessor::buildMatchedEpoch(const RoverBaseEpochMatcher::Pair& pair,
+    const Eigen::Vector3d* approx_rover, PreprocessedEpoch& out) {
+  return buildEpoch(*pair.rover, pair.hasBase() ? pair.base.get() : nullptr,
+                    pair.age_s, approx_rover, out);
+}
+
+std::vector<PreprocessedEpoch> GnssPreprocessor::drainEpochs(
+    const Eigen::Vector3d* approx_rover) {
+  std::vector<PreprocessedEpoch> out;
+  buildEpochs(drainPairs(), approx_rover, out);
   return out;
 }
 
@@ -341,7 +342,15 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg* base,
   // One obsd_t per (receiver, satellite): rover (rcv=1) entries first, then
   // base (rcv=2), each stamped with its own receive time. base is null during
   // a base outage (rover-only epoch).
-  std::vector<obsd_t> obs = buildObsEpoch(rover, base, freq_mask_);
+  // Keep independently usable rover signals for SPP, Doppler and slip checks.
+  // Unlike rtkpos(), this preprocessor groups DDs by BOTH receivers' codes
+  // below and detectSlips() already tracks code changes. Applying the RTK
+  // common-code selector here would discard valid undifferenced observations.
+  std::vector<obsd_t> obs = buildObsEpoch(rover, base, freq_mask_, &observation_reject_);
+  if (obs.empty()) { ++epoch_reject_.no_observations; return false; }
+  const GlonassNavigationView navigation(nav_, gpst2time(rover.week, rover.tow));
+  navigation.filter(obs, observation_reject_);
+  channel_track_.apply(obs);
   if (obs.empty()) { ++epoch_reject_.no_observations; return false; }
   const int n = static_cast<int>(obs.size());
   int n_rover = 0;
@@ -356,7 +365,7 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg* base,
   std::vector<double> rs(6 * n), dts(2 * n), var(n);
   std::vector<int> svh(n);
   const gtime_t t_rover = gpst2time(static_cast<int>(rover.week), rover.tow);
-  satposs(t_rover, obs.data(), n, &nav_, EPHOPT_BRDC,
+  satposs(t_rover, obs.data(), n, &navigation.get(), EPHOPT_BRDC,
           rs.data(), dts.data(), var.data(), svh.data());
 
   // Rover a-priori for elevation masks and as the downstream initial value.
@@ -389,7 +398,7 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg* base,
     std::vector<double> azel(2 * n_rover, 0.0);
     std::vector<ssat_t> ssat(MAXSAT);
     char msg[128] = "";
-    if (pntpos(obs.data(), n_rover, &nav_, &spp_opt_, &sol, azel.data(),
+    if (pntpos(obs.data(), n_rover, &navigation.get(), &spp_opt_, &sol, azel.data(),
                ssat.data(), msg)) {
       spp_pos = Eigen::Vector3d(sol.rr[0], sol.rr[1], sol.rr[2]);
       spp_valid = spp_pos.allFinite() && spp_pos.norm() > 1.0;
@@ -451,6 +460,7 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg* base,
     // Undifferenced admission: navsys plus any system allowed for
     // undifferenced use only (see Config::navsys_undifferenced_only).
     if (!(sys & (config_.navsys | config_.navsys_undifferenced_only))) continue;
+    if (spp_opt_.exsats[o.sat-1]) continue;
     if (svh[i] != 0) continue;
     const double* rs_i = &rs[6 * i];
     if (norm(rs_i, 3) <= 0.0) continue;
@@ -481,7 +491,7 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg* base,
           continue;
         }
       }
-      const double freq = sat2freq(o.sat, o.code[b], &nav_);
+      const double freq = sat2freq(o.sat, o.code[b], &navigation.get());
       if (freq <= 0.0) continue;
 
       SatObs s;
@@ -543,7 +553,7 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg* base,
     for (int i = n_rover; i < n; ++i) base_idx.emplace(obs[i].sat, i);
     // Continuous GPST seconds (not tow alone) so time differences stay positive
     // across the GPS week rollover (tow wraps 604800 -> 0).
-    detectSlips(obs, rover_idx, base_idx, out.week * 604800.0 + out.tow, out);
+    detectSlips(obs, rover_idx, base_idx, out.week * 604800.0 + out.tow, out, navigation.get());
   }
 
   // Undifferenced Doppler rover velocity (loosely-coupled motion aiding for the
@@ -601,7 +611,7 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg* base,
     // cross_code_carrier the code may differ where it is integer-safe: the bias
     // is common to the group's reference and target and cancels in the DD.
     if (ob.code[s.band] != s.code &&
-        !(config_.cross_code_carrier && crossCodeSafe(s.sys, s.band)))
+        !(config_.cross_code_carrier && crossCodePairingSupported(s.sys, s.band)))
       continue;
     // SNR mask on the BASE observation as well. A double difference is only as
     // good as its worst input: masking the rover alone admits a clean rover
@@ -717,9 +727,9 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg* base,
                             const double* azel, double freq) {
         Atmosphere a;
         double vion = 0.0, vtrop = 0.0;
-        ionocorr(time, &nav_, sat, pos, azel, config_.ionoopt,
+        ionocorr(time, &navigation.get(), sat, pos, azel, config_.ionoopt,
                  &a.ion, &vion);
-        tropcorr(time, &nav_, pos, azel, config_.tropopt,
+        tropcorr(time, &navigation.get(), pos, azel, config_.tropopt,
                  &a.trop, &vtrop);
         const double ratio = (freq > 0.0) ? FREQL1 / freq : 1.0;
         const double scale = ratio * ratio;
@@ -735,9 +745,9 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg* base,
       const double freq_ref_rov = CLIGHT / sref.lam;
       const double freq_tar_rov = CLIGHT / star.lam;
       const double freq_ref_base =
-          sat2freq(sref.sat, ob_ref.code[d.band], &nav_);
+          sat2freq(sref.sat, ob_ref.code[d.band], &navigation.get());
       const double freq_tar_base =
-          sat2freq(star.sat, ob_tar.code[d.band], &nav_);
+          sat2freq(star.sat, ob_tar.code[d.band], &navigation.get());
       const gtime_t rover_time = gpst2time(out.week, out.tow);
       const Atmosphere ar_ref = atmosphere(
           rover_time, sref.sat, llh, rover_azel_ref, freq_ref_rov);
@@ -801,7 +811,7 @@ bool GnssPreprocessor::buildEpoch(const ObsMsg& rover, const ObsMsg* base,
 void GnssPreprocessor::detectSlips(const std::vector<obsd_t>& obs,
                                    const std::map<int, int>& rover_idx,
                                    const std::map<int, int>& base_idx,
-                                   double tow, PreprocessedEpoch& out) {
+                                   double tow, PreprocessedEpoch& out, const nav_t& navigation) {
   std::set<std::pair<int, int>> slip, cp_excl, half;
   struct Dop {
     int sat, band;
@@ -820,7 +830,7 @@ void GnssPreprocessor::detectSlips(const std::vector<obsd_t>& obs,
 
     double lam[NFREQ] = {0.0, 0.0, 0.0};
     for (int f = 0; f < NFREQ; ++f) {
-      const double freq = sat2freq(sat, ro.code[f], &nav_);
+      const double freq = sat2freq(sat, ro.code[f], &navigation);
       lam[f] = (freq > 0.0) ? CLIGHT / freq : 0.0;
     }
 

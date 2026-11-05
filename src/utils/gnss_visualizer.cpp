@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 /*
  * gnss_visualizer.cpp
  * A ROS 2 node to visualize GNSS solution and satellite status using OpenCV.
@@ -39,26 +38,29 @@
 using namespace std::chrono_literals;
 
 class GnssVisualizer : public rclcpp::Node {
+  friend struct VisualizerReleaseAccess;
 public:
-  GnssVisualizer() : Node("gnss_visualizer") {
+  explicit GnssVisualizer(const rclcpp::NodeOptions& options=rclcpp::NodeOptions())
+      : Node("gnss_visualizer",options) {
     this->declare_parameter("image_width", 1280);
     this->declare_parameter("image_height", 720);
     this->declare_parameter("font_scale", 1.0);
     this->declare_parameter("render_scale", 2);
-    this->declare_parameter("fixed_latitude", 0.0);
-    this->declare_parameter("fixed_longitude", 0.0);
-    this->declare_parameter("fixed_altitude", 0.0);
+    // Position shown while there is no solution: [lat_deg, lon_deg, h_m] (llh)
+    // or [x, y, z] m (ecef); [0, 0, 0] = none.
+    this->declare_parameter<std::vector<double>>("manual_position.pos", {0.0, 0.0, 0.0});
+    this->declare_parameter<std::string>("manual_position.postype", "llh");
     this->declare_parameter("zoom_level", 0);
     this->declare_parameter("use_gui", true);
 
-    this->declare_parameter<std::string>("obs_topic",   "/gnss/observation");
-    this->declare_parameter<std::string>("nav_topic",   "/gnss/ephemeris");
-    this->declare_parameter<std::string>("sol_topic",   "/gnss/nmea_solution");
-    this->declare_parameter<std::string>("image_topic", "gnss_visualization/dashboard");
+    this->declare_parameter<std::string>("topics.observation",   "/gnss/observation");
+    this->declare_parameter<std::string>("topics.ephemeris",   "/gnss/ephemeris");
+    this->declare_parameter<std::string>("topics.solution",   "/gnss/nmea_solution");
+    this->declare_parameter<std::string>("topics.image", "gnss_visualization/dashboard");
 
     this->declare_parameter<std::string>("view_mode", "fixed");
-    this->declare_parameter("recent_window_sec",   60.0);
-    this->declare_parameter("decimate_old_dt_sec", 1.0);
+    this->declare_parameter("recent_window_s",   60.0);
+    this->declare_parameter("decimate_old_dt_s", 1.0);
     this->declare_parameter("max_history",         50000);
     this->declare_parameter("publish_image",       false);
 
@@ -69,22 +71,39 @@ public:
     ss_ = std::clamp((int)this->get_parameter("render_scale").as_int(), 1, 4);
     font_scale_ = this->get_parameter("font_scale").as_double() * ss_;
 
-    fixed_pos_lla_[0] = this->get_parameter("fixed_latitude").as_double();
-    fixed_pos_lla_[1] = this->get_parameter("fixed_longitude").as_double();
-    fixed_pos_lla_[2] = this->get_parameter("fixed_altitude").as_double();
+    {
+      const auto pos = this->get_parameter("manual_position.pos").as_double_array();
+      const auto type = this->get_parameter("manual_position.postype").as_string();
+      if (type != "llh" && type != "ecef")
+        throw std::invalid_argument("manual_position.postype must be llh or ecef");
+      if (pos.size() != 3 || !std::isfinite(pos[0]) || !std::isfinite(pos[1]) ||
+          !std::isfinite(pos[2]))
+        throw std::invalid_argument("manual_position.pos must be three finite numbers");
+      if (type == "llh" || (pos[0] == 0.0 && pos[1] == 0.0 && pos[2] == 0.0)) {
+        for (int i = 0; i < 3; ++i) fixed_pos_lla_[i] = pos[i];
+      } else {
+        double ecef[3] = {pos[0], pos[1], pos[2]}, llh[3];
+        ecef2pos(ecef, llh);
+        fixed_pos_lla_[0] = llh[0] * R2D;
+        fixed_pos_lla_[1] = llh[1] * R2D;
+        fixed_pos_lla_[2] = llh[2];
+      }
+    }
     zoom_level_ = this->get_parameter("zoom_level").as_int();
     use_gui_ = this->get_parameter("use_gui").as_bool();
 
+    if (!validViewMode(this->get_parameter("view_mode").as_string()))
+      throw std::invalid_argument("view_mode must be fixed, fit or follow");
     view_mode_ = parseViewMode(this->get_parameter("view_mode").as_string());
-    recent_window_sec_   = this->get_parameter("recent_window_sec").as_double();
-    decimate_old_dt_sec_ = this->get_parameter("decimate_old_dt_sec").as_double();
+    recent_window_sec_   = this->get_parameter("recent_window_s").as_double();
+    decimate_old_dt_sec_ = this->get_parameter("decimate_old_dt_s").as_double();
     max_history_         = this->get_parameter("max_history").as_int();
     publish_image_       = this->get_parameter("publish_image").as_bool();
 
-    const std::string obs_topic   = this->get_parameter("obs_topic").as_string();
-    const std::string nav_topic   = this->get_parameter("nav_topic").as_string();
-    const std::string sol_topic   = this->get_parameter("sol_topic").as_string();
-    const std::string image_topic = this->get_parameter("image_topic").as_string();
+    const std::string obs_topic   = this->get_parameter("topics.observation").as_string();
+    const std::string nav_topic   = this->get_parameter("topics.ephemeris").as_string();
+    const std::string sol_topic   = this->get_parameter("topics.solution").as_string();
+    const std::string image_topic = this->get_parameter("topics.image").as_string();
 
     obs_sub_ = this->create_subscription<gnss_ros_standardization::msg::GnssObservations>(
       obs_topic, 10, std::bind(&GnssVisualizer::obsCallback, this, std::placeholders::_1));
@@ -106,10 +125,15 @@ public:
           if (p.get_name() == "zoom_level") {
             zoom_level_ = p.as_int();
           } else if (p.get_name() == "view_mode") {
+            if (!validViewMode(p.as_string())) {
+              result.successful = false;
+              result.reason = "view_mode must be fixed, fit or follow";
+              return result;
+            }
             view_mode_ = parseViewMode(p.as_string());
-          } else if (p.get_name() == "recent_window_sec") {
+          } else if (p.get_name() == "recent_window_s") {
             recent_window_sec_ = p.as_double();
-          } else if (p.get_name() == "decimate_old_dt_sec") {
+          } else if (p.get_name() == "decimate_old_dt_s") {
             decimate_old_dt_sec_ = p.as_double();
           } else if (p.get_name() == "max_history") {
             max_history_ = p.as_int();
@@ -139,6 +163,9 @@ public:
 private:
   enum class ViewMode { FIXED, FIT, FOLLOW };
 
+  static bool validViewMode(const std::string& s) {
+    return s == "fixed" || s == "fit" || s == "follow";
+  }
   static ViewMode parseViewMode(const std::string& s) {
     if (s == "fit") return ViewMode::FIT;
     if (s == "follow") return ViewMode::FOLLOW;
@@ -240,6 +267,7 @@ private:
       case gnss_ros_standardization::msg::GnssSolution::STATUS_DGPS:   return cv::Scalar(200, 50, 50);    // Blue
       case gnss_ros_standardization::msg::GnssSolution::STATUS_SBAS:   return cv::Scalar(200, 50, 50);    // Blue
       case gnss_ros_standardization::msg::GnssSolution::STATUS_PPP:    return cv::Scalar(150, 100, 50);   // Teal
+      case gnss_ros_standardization::msg::GnssSolution::STATUS_DR:     return cv::Scalar(180, 80, 180);   // Purple
       default:                                                          return cv::Scalar(130, 130, 130);
     }
   }
@@ -345,22 +373,21 @@ private:
 
   void ephCallback(const gnss_ros_standardization::msg::GnssEphemerides::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(data_mutex_);
-    for (const auto& e : msg->gnss_ephemeris) { eph_t eph = gnss_utils::msgToEph(e); eph_map_[eph.sat] = eph; }
+    for (const auto& e : msg->gnss_ephemeris) {
+      eph_t eph = gnss_utils::msgToEph(e); eph_map_[eph.sat] = eph;
+    }
     for (const auto& g : msg->glonass_ephemeris) { geph_t geph = gnss_utils::msgToGeph(g); geph_map_[geph.sat] = geph; }
   }
 
   void solCallback(const gnss_ros_standardization::msg::GnssSolution::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(data_mutex_);
     last_sol_ = msg;
-    if (msg->status == gnss_ros_standardization::msg::GnssSolution::STATUS_NONE) return;
+    if (msg->status == gnss_ros_standardization::msg::GnssSolution::STATUS_NONE ||
+        !std::isfinite(msg->pos_enu.x) || !std::isfinite(msg->pos_enu.y) || !std::isfinite(msg->pos_enu.z)) return;
 
-    // Continuous monotonic timestamp from GPS week/tow if available, else node clock.
-    double t_sec;
-    if (msg->time_week > 0) {
-      t_sec = static_cast<double>(msg->time_week) * 604800.0 + msg->time_tow;
-    } else {
-      t_sec = this->now().seconds();
-    }
+    // One time domain for the display window, independent of sensor stamps.
+    const double t_sec = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     pos_history_.push_back({msg->pos_enu.x, msg->pos_enu.y, t_sec, msg->status});
 
     // Safety cap (cheap, O(1) per call).
@@ -370,7 +397,7 @@ private:
 
     // Decimation is O(n); throttle so we don't burn cycles under data_mutex_ on
     // every 10 Hz callback. Triggers:
-    //   - first call after this->now() advances by >= 2 s of sample-time
+    //   - first call after steady elapsed time advances by >= 2 s
     //   - or whenever oldest point is older than recent_window_sec_ (compaction needed)
     // Skip if the whole history is still within the recent window (nothing to drop).
     if (recent_window_sec_ <= 0.0 || decimate_old_dt_sec_ <= 0.0) return;
@@ -425,24 +452,32 @@ private:
     std::set<int> plotted;
 
     for (const auto& obs : last_obs_->observations) {
-      if (plotted.count(obs.sat)) continue;
+      const int sat=gnss_utils::resolveSatellite(obs.satid,obs.system,obs.prn);
+      if (!sat || plotted.count(sat)) continue;
       double rs[6], dts[2], var;
       const eph_t* eph = nullptr; const geph_t* geph = nullptr;
-      int sys = satsys(obs.sat, nullptr);
-      if (sys == SYS_GLO) { if (geph_map_.count(obs.sat)) geph = &geph_map_.at(obs.sat); }
-      else { if (eph_map_.count(obs.sat)) eph = &eph_map_.at(obs.sat); }
+      int sys = satsys(sat, nullptr);
+      if (sys == SYS_GLO) { if (geph_map_.count(sat)) geph = &geph_map_.at(sat); }
+      else { if (eph_map_.count(sat)) eph = &eph_map_.at(sat); }
       if (!eph && !geph) continue;
 
       if (sys == SYS_GLO) { if (geph) geph2pos(t_obs, geph, rs, dts, &var); else continue; }
-      else                { if (eph)  eph2pos(t_obs, eph, rs, dts, &var);  else continue; }
+      else {
+        if (!eph) continue;
+        if (!gnss_utils::supportedByLegacyOrbitModel(*eph)) {
+          RCLCPP_WARN_ONCE(get_logger(), "Skyplot excludes Adot/ndot orbit models unsupported by pinned RTKLIB");
+          continue;
+        }
+        eph2pos(t_obs, eph, rs, dts, &var);
+      }
 
       double e_vec[3], azel[2];
       if (geodist(rs, rr, e_vec) <= 0.0) continue;
       satazel(pos_llh, e_vec, azel);
       if (azel[1] < 0) continue;
 
-      result.push_back({azel[0], azel[1], sys, obs.satid, obs.sat});
-      plotted.insert(obs.sat);
+      result.push_back({azel[0], azel[1], sys, obs.satid, sat});
+      plotted.insert(sat);
     }
     
     cached_sat_azel_ = result;
@@ -533,6 +568,7 @@ private:
         case gnss_ros_standardization::msg::GnssSolution::STATUS_DGPS:   status_str="DGPS";   status_col=statusColor(gnss_ros_standardization::msg::GnssSolution::STATUS_DGPS);  break;
         case gnss_ros_standardization::msg::GnssSolution::STATUS_SBAS:   status_str="SBAS";   status_col=statusColor(gnss_ros_standardization::msg::GnssSolution::STATUS_SBAS);  break;
         case gnss_ros_standardization::msg::GnssSolution::STATUS_PPP:    status_str="PPP";    status_col=statusColor(gnss_ros_standardization::msg::GnssSolution::STATUS_PPP);  break;
+        case gnss_ros_standardization::msg::GnssSolution::STATUS_DR:     status_str="DR";     status_col=statusColor(gnss_ros_standardization::msg::GnssSolution::STATUS_DR);   break;
       }
     }
     if (!last_sol_ || last_sol_->status == gnss_ros_standardization::msg::GnssSolution::STATUS_NONE) {
@@ -749,8 +785,11 @@ private:
     std::map<int, std::vector<SigInfo>> sig_by_sat;
     std::map<int, std::string> sat_ids;
     for (const auto& obs : last_obs_->observations) {
-      sig_by_sat[obs.sat].push_back({obs.snr, obs.code_str});
-      sat_ids[obs.sat] = obs.satid;
+      if (!std::isfinite(obs.snr) || obs.snr < 0) continue;
+      const int sat=gnss_utils::resolveSatellite(obs.satid,obs.system,obs.prn);
+      if (!sat) continue;
+      sig_by_sat[sat].push_back({obs.snr, obs.code_str});
+      sat_ids[sat] = obs.satid;
     }
     if (sig_by_sat.empty()) return;
 
@@ -1111,6 +1150,7 @@ private:
         {gnss_ros_standardization::msg::GnssSolution::STATUS_SINGLE, "SINGLE"},
         {gnss_ros_standardization::msg::GnssSolution::STATUS_DGPS, "DGPS"},
         {gnss_ros_standardization::msg::GnssSolution::STATUS_PPP, "PPP"},
+        {gnss_ros_standardization::msg::GnssSolution::STATUS_DR, "DR"},
       };
       for (const auto& [st, name] : status_list) {
         cv::circle(img, cv::Point(lx, ly), px(4), statusColor(st), -1, cv::LINE_AA);
@@ -1121,9 +1161,17 @@ private:
   }
 };
 
+#ifndef GNSS_VISUALIZER_NO_MAIN
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<GnssVisualizer>());
+  try {
+    rclcpp::spin(std::make_shared<GnssVisualizer>());
+  } catch (const std::exception& error) {
+    RCLCPP_FATAL(rclcpp::get_logger("gnss_visualizer"), "Startup/runtime failure: %s", error.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   rclcpp::shutdown();
   return 0;
 }
+#endif  // GNSS_VISUALIZER_NO_MAIN

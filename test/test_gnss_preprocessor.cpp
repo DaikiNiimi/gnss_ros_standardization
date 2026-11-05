@@ -1,12 +1,13 @@
-// SPDX-License-Identifier: MIT
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <vector>
 
 #include <Eigen/Core>
 #include <gtest/gtest.h>
 
+#include "gnss_ros_standardization/decoder_common.hpp"
 #include "gnss_ros_standardization/gnss_preprocessor.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/msg/gnss_ephemeris.hpp"
@@ -103,6 +104,29 @@ TEST(GnssPreprocessor, RejectsInvalidConfiguration) {
   EXPECT_THROW((void)Preprocessor(cfg), std::invalid_argument);
 }
 
+TEST(GnssPreprocessor, SatelliteExclusionIsConsumerPolicyAndCanBeCleared) {
+  const Eigen::Vector3d approximate(6378137.0, 0.0, 0.0);
+  for (bool exclude : {false,true}) {
+    auto cfg=config();
+    if (exclude) cfg.excluded_satellites={satid2no("G01")};
+    Preprocessor pre(cfg);
+    auto navigation=gpsEphemeris(2200,100000.);
+    pre.pushEphemerides(navigation);
+    EXPECT_EQ(pre.hasEphemeris(),!exclude);
+    auto other=navigation.gnss_ephemeris.front();other.prn=2;other.satid="G02";
+    navigation.gnss_ephemeris.push_back(other);
+    pre.pushEphemerides(navigation);
+    auto input=observationEpoch(2200,100100.);
+    pre.pushRoverObs(input);
+    const auto epochs=pre.flushEpochs(&approximate);
+    ASSERT_EQ(epochs.size(),1u);
+    EXPECT_EQ(epochs[0].rover_sats.empty(),exclude);
+    EXPECT_EQ(input->observations.size(),1u);
+  }
+  auto cfg=config();cfg.excluded_satellites={MAXSAT+1};
+  EXPECT_THROW((void)Preprocessor(cfg),std::invalid_argument);
+}
+
 TEST(GnssPreprocessor, KeepsObservationsUntilLateEphemerisAndDeferredFlush) {
   Preprocessor pre(config());
   const Eigen::Vector3d approximate(6378137.0, 0.0, 0.0);
@@ -140,6 +164,48 @@ TEST(GnssPreprocessor, RetainsExactBaseEpochIdentity) {
   EXPECT_EQ(epochs[0].base_week, 2200U);
   EXPECT_DOUBLE_EQ(epochs[0].base_tow, 100099.8);
   EXPECT_NEAR(epochs[0].age_s, 0.2, 1e-9);
+}
+
+TEST(GnssPreprocessor, RetainsUndifferencedSignalWithoutUnsafeDoubleDifference) {
+  auto cfg = config();
+  cfg.bands = {1};
+  cfg.matcher_reorder_window_s = 0.0;
+  cfg.cross_code_carrier = true;
+  cfg.base_ecef = Eigen::Vector3d(6378137.0, 0.0, 0.0);
+  Preprocessor pre(cfg);
+  auto nav = gpsEphemeris(2200, 100000.0);
+  auto second = nav.gnss_ephemeris.front();
+  second.prn = 2; second.satid = "G02";
+  nav.gnss_ephemeris.push_back(second);
+  pre.pushEphemerides(nav);
+  const auto epoch = [](double tow, const char* code) {
+    auto m = observationEpoch(2200, tow);
+    auto& first = m->observations.front();
+    first.code_str = code; first.code = obs2code(code);
+    auto other = first;
+    other.prn = 2; other.satid = "G02"; other.sat = satid2no("G02");
+    m->observations.push_back(other);
+    return m;
+  };
+  for (int step = 0; step < 3; ++step) {
+    SCOPED_TRACE(step);
+    const double tow = 100100.0 + step;
+    auto rover = epoch(tow, step == 1 ? "2L" : "2W");
+    pre.pushBaseObs(epoch(tow, "2W"));
+    pre.pushRoverObs(rover);
+    const auto out = pre.drainEpochs(&cfg.base_ecef);
+    ASSERT_EQ(out.size(), 1u);
+    ASSERT_EQ(out[0].rover_sats.size(), 2u);
+    for (const auto& sat : out[0].rover_sats) {
+      EXPECT_EQ(sat.code, step == 1 ? CODE_L2L : CODE_L2W);
+      EXPECT_DOUBLE_EQ(sat.doppler, -1200.0);
+      EXPECT_EQ(sat.slip, step != 0);
+    }
+    // Both tracking families remain usable without a base, but W/L must
+    // never become a carrier or pseudorange double difference.
+    EXPECT_EQ(out[0].dd.empty(), step == 1);
+    for (const auto& original : rover->observations) EXPECT_EQ(original.lli, 0);
+  }
 }
 
 TEST(GnssPreprocessor, ExposesMatcherOverflowDiagnosticsBeforeEphemeris) {
@@ -267,6 +333,41 @@ TEST(GnssPreprocessor, UndifferencedOnlySystemReachesRoverSatsButNotDd) {
 // The default must leave existing behaviour untouched.
 TEST(GnssPreprocessor, UndifferencedOnlyDefaultsToNoSplit) {
   EXPECT_EQ(Preprocessor::Config{}.navsys_undifferenced_only, 0);
+}
+
+TEST(GnssPreprocessor, GlonassUsesCurrentNavigationAndReportsConflictingObservations) {
+  for (int channel : {13, 255, 0}) {
+    auto cfg = config(); cfg.navsys = SYS_GLO;
+    Preprocessor pre(cfg);
+    EphMsg nav;
+    geph_t g{}; g.sat = satno(SYS_GLO, 1);
+    g.toe = g.tof = gpst2time(2300, 10000.);
+    g.pos[0] = 19100000.; g.pos[1] = 13400000.; g.pos[2] = 16000000.;
+    g.vel[1] = 1000.; g.frq = -7;
+    auto old = g; old.toe = old.tof = timeadd(g.toe, -MAXDTOE_GLO - 100.);
+    nav.glonass_ephemeris.push_back(gnss_utils::gephToMsg(old));
+    g.frq = 6;
+    nav.glonass_ephemeris.push_back(gnss_utils::gephToMsg(g));
+    pre.pushEphemerides(nav);
+    auto obs = observationEpoch(2300, 10000., 0xc3);
+    auto& value = obs->observations[0];
+    value.system = "R"; value.satid = "R01"; value.sat = g.sat; value.freq = channel;
+    const Eigen::Vector3d approximate(6378137., 0., 0.);
+    pre.pushRoverObs(obs);
+    const auto epochs = pre.flushEpochs(&approximate);
+    if (channel == 0) {
+      EXPECT_TRUE(epochs.empty());
+      EXPECT_EQ(pre.observationRejectCounters().navigation_channel_conflict, 1u);
+    } else {
+      ASSERT_EQ(epochs.size(), 1u);
+      ASSERT_EQ(epochs[0].rover_sats.size(), 1u);
+      EXPECT_DOUBLE_EQ(epochs[0].rover_sats[0].lam, CLIGHT / code2freq(SYS_GLO, CODE_L1C, 6));
+      EXPECT_TRUE(epochs[0].rover_sats[0].slip);
+      EXPECT_EQ(pre.observationRejectCounters().total(), 0u);
+    }
+    EXPECT_EQ(value.freq, channel);
+    EXPECT_EQ(value.lli, 0xc3);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -561,4 +662,268 @@ TEST(PreprocessorConfig, MatcherWindowIsTheDdUsabilityWindow) {
   // No separate looser window exists to disagree with max_age_s: the field is
   // gone, so this compiles only while the contract holds.
   EXPECT_DOUBLE_EQ(cfg.max_age_s, 5.0);
+}
+
+
+namespace decoder_common = gnss_ros_standardization::decoder_common;
+
+// decoder_common::resolveGpsWeekForTow - the +/-302400 s half-week correction
+// that dates a standalone iTOW. It was duplicated verbatim in
+// ubx_decoder_node.cpp and ubx_driver_node.cpp (plus a third private copy,
+// adjweek, in gnss_utils.cpp); pinning it here is what makes it safe to have
+// one implementation.
+TEST(ResolveGpsWeekForTow, InWeekKeepsTheReferenceWeek) {
+  int week = 0;
+  // Reference and tow both mid-week: no correction.
+  EXPECT_TRUE(decoder_common::resolveGpsWeekForTow(
+      gpst2time(2200, 300000.0), 300100.0, week));
+  EXPECT_EQ(week, 2200);
+}
+
+TEST(ResolveGpsWeekForTow, TowJustAfterWeekStartBelongsToTheNextWeek) {
+  int week = 0;
+  // Reference is at the very end of week 2200; the tow is a few seconds past
+  // the rollover, so it is week 2201 - a naive "use the reference week" would
+  // place the measurement almost a full week in the past.
+  EXPECT_TRUE(decoder_common::resolveGpsWeekForTow(
+      gpst2time(2200, 604790.0), 5.0, week));
+  EXPECT_EQ(week, 2201);
+}
+
+TEST(ResolveGpsWeekForTow, TowJustBeforeWeekEndBelongsToThePreviousWeek) {
+  int week = 0;
+  // Mirror case: the reference already rolled over, the tow has not.
+  EXPECT_TRUE(decoder_common::resolveGpsWeekForTow(
+      gpst2time(2201, 5.0), 604790.0, week));
+  EXPECT_EQ(week, 2200);
+}
+
+TEST(ResolveGpsWeekForTow, NoReferenceWeekCannotDateAnything) {
+  int week = 12345;  // must be left untouched
+  gtime_t unset{};   // raw_.time before RTKLIB has decoded RXM-RAWX/SFRBX
+  EXPECT_FALSE(decoder_common::resolveGpsWeekForTow(unset, 300000.0, week));
+  EXPECT_EQ(week, 12345);
+}
+
+TEST(ResolveGpsWeekForTow, OutOfRangeTowIsRefusedRatherThanDatedWrong) {
+  // The RANGE matters, not just finiteness: gpst2time() happily accepts a tow
+  // of -1 or 604800 and returns a time one second outside the week, so a
+  // measurement dated from it would land a week from where it belongs. Same
+  // reasoning as GnssEpochAligner::align's week/tow validation.
+  int week = 0;
+  const gtime_t ref = gpst2time(2200, 300000.0);
+  EXPECT_FALSE(decoder_common::resolveGpsWeekForTow(ref, -1.0, week));
+  EXPECT_FALSE(decoder_common::resolveGpsWeekForTow(ref, 604800.0, week));
+  EXPECT_FALSE(decoder_common::resolveGpsWeekForTow(
+      ref, std::numeric_limits<double>::quiet_NaN(), week));
+  EXPECT_FALSE(decoder_common::resolveGpsWeekForTow(
+      ref, std::numeric_limits<double>::infinity(), week));
+  EXPECT_EQ(week, 0);
+}
+
+
+// decoder_common::TimeBaseLatch - D7. Every decoder and driver used to pick
+// the time base PER MESSAGE, so the stamps jumped from the host clock to
+// UTC(GPST) the moment the receiver acquired time. 18 sites across the three
+// receiver families had the same shape.
+namespace {
+
+// A host clock deliberately far from true UTC, so a base switch is obvious.
+// This is what an unsynced PC looks like; on an NTP-synced one the jump is a
+// few milliseconds and invisible, which is why the bug survived.
+rclcpp::Time hostClock(double offset_s) {
+  return rclcpp::Time(static_cast<int64_t>(offset_s * 1e9), RCL_ROS_TIME);
+}
+
+}  // namespace
+
+TEST(TimeBaseLatch, WaitsForGnssTimeWithoutPublishingHostTime) {
+  decoder_common::TimeBaseLatch policy;
+  auto log = rclcpp::get_logger("test"); rclcpp::Clock clock(RCL_ROS_TIME);
+  EXPECT_FALSE(policy.stamp(true, false, {}, hostClock(1000), log, clock));
+  auto t = gpst2time(2300, 100);
+  auto result = policy.stamp(true, true, t, hostClock(1001), log, clock);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->nanoseconds(), gnss_utils::gpstToUtcRosTime(t).nanoseconds());
+  EXPECT_EQ(result->get_clock_type(), RCL_ROS_TIME);
+}
+TEST(TimeBaseLatch, DoesNotFallBackAfterLossOfTime) {
+  decoder_common::TimeBaseLatch policy;
+  auto log = rclcpp::get_logger("test"); rclcpp::Clock clock(RCL_ROS_TIME);
+  ASSERT_TRUE(policy.stamp(true, true, gpst2time(2300,100), hostClock(1000), log, clock));
+  EXPECT_FALSE(policy.stamp(true, false, {}, hostClock(1001), log, clock));
+  EXPECT_TRUE(policy.stamp(true, true, gpst2time(2300,102), hostClock(1002), log, clock));
+}
+TEST(TimeBaseLatch, HostModeDoesNotRequireGnssTime) {
+  decoder_common::TimeBaseLatch policy;
+  auto log = rclcpp::get_logger("test"); rclcpp::Clock clock(RCL_ROS_TIME);
+  auto result=policy.stamp(false,false,{},hostClock(1000),log,clock);
+  ASSERT_TRUE(result);EXPECT_EQ(result->nanoseconds(),hostClock(1000).nanoseconds());
+}
+TEST(GnssEpochAligner, GnssBackjumpResetsEvenWhenArrivalAdvances) {
+  gnss_utils::GnssEpochAligner::Config cfg;
+  cfg.source=gnss_utils::GnssEpochAligner::Source::TowAutoOffset;
+  gnss_utils::GnssEpochAligner a(cfg);
+  a.align(2300,100,hostClock(1000));
+  std::string warning;
+  const auto out=a.align(2300,10,hostClock(1001),&warning);
+  EXPECT_NEAR(out.seconds(),1001,1e-6);EXPECT_FALSE(warning.empty());
+}
+TEST(GnssTime, KnownUtcDatesAcrossLeapSecondAndWeekBoundary) {
+  const double before[6]={2016,12,31,23,59,59},after[6]={2017,1,1,0,0,0};
+  const auto utc_before=epoch2time(before),utc_after=epoch2time(after);
+  const auto gps_before=utc2gpst(utc_before),gps_after=utc2gpst(utc_after);
+  EXPECT_DOUBLE_EQ(timediff(gps_after,gps_before),2.0);
+  EXPECT_EQ(gnss_utils::gpstToUtcRosTime(gps_after).nanoseconds(),1483228800000000000LL);
+  EXPECT_EQ(gnss_utils::gpstToUtcRosTime(gps_before).nanoseconds(),1483228799000000000LL);
+}
+
+TEST(GnssEpochAligner, RosTimeOverflowFallsBackExplicitlyWithoutIntegerOverflow) {
+  gnss_utils::GnssEpochAligner::Config cfg;
+  cfg.source=gnss_utils::GnssEpochAligner::Source::TowAutoOffset;
+  gnss_utils::GnssEpochAligner aligner(cfg);
+  const rclcpp::Time arrival(100,0,RCL_ROS_TIME); std::string warning;
+  for(uint32_t week:{65534u,std::numeric_limits<uint32_t>::max()}) {
+    EXPECT_EQ(aligner.align(week,100.,arrival,&warning).nanoseconds(),arrival.nanoseconds());
+    EXPECT_FALSE(warning.empty());
+  }
+}
+
+namespace {
+gnss_ros_standardization::msg::GnssObservations selectionEpoch(
+    const std::string& satellite, std::initializer_list<const char*> codes) {
+  gnss_ros_standardization::msg::GnssObservations epoch;
+  epoch.week=2300; epoch.tow=100;
+  for (const auto code:codes) {
+    gnss_ros_standardization::msg::GnssObservation o;
+    o.satid=satellite; o.code_str=code; o.p=21000000; o.l=100000; o.freq=255;
+    epoch.observations.push_back(o);
+  }
+  return epoch;
+}
+}
+TEST(SignalSelection, PairedCodesOutageSwitchAndStickyArc) {
+  gnss_utils::SignalSelection state;
+  gnss_utils::FrequencyMask mask;
+  auto rover=selectionEpoch("G01",{"2W","2L"});
+  auto base=selectionEpoch("G01",{"2W"});
+  auto obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),2u);
+  for (const auto& o:obs) EXPECT_EQ(o.code[1],CODE_L2W);
+  rover=selectionEpoch("G01",{"2L"});
+  obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),1u); EXPECT_EQ(obs[0].rcv,2); EXPECT_EQ(obs[0].code[1],CODE_L2W);
+  EXPECT_EQ(state.selected_.at({SYS_GPS,1})[0],CODE_L2W);
+  rover=selectionEpoch("G01",{"2W","2X"}); base=rover;
+  obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),2u);
+  for (const auto& o:obs) EXPECT_EQ(o.code[1],CODE_L2W);
+  rover=selectionEpoch("G01",{"2X"});
+  obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),2u);
+  for (const auto& o:obs) { EXPECT_EQ(o.code[1],CODE_L2X); EXPECT_TRUE(o.LLI[1]&LLI_SLIP); }
+  for (const auto& o:rover.observations) EXPECT_EQ(o.lli,0);
+  for (const auto& o:base.observations) EXPECT_EQ(o.lli,0);
+  rover=base;
+  obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),2u);
+  for (const auto& o:obs) { EXPECT_EQ(o.code[1],CODE_L2X); EXPECT_FALSE(o.LLI[1]&LLI_SLIP); }
+  state.reset();
+  obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  for (const auto& o:obs) { EXPECT_EQ(o.code[1],CODE_L2W); EXPECT_FALSE(o.LLI[1]&LLI_SLIP); }
+}
+TEST(SignalSelection, GlonassCommonCodeAndSingleReceiverBands) {
+  gnss_utils::SignalSelection state;
+  gnss_utils::FrequencyMask mask;
+  auto rover=selectionEpoch("R01",{"2C","2P"});
+  auto base=selectionEpoch("R01",{"2C"});
+  auto obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),2u);
+  for (const auto& o:obs) EXPECT_EQ(o.code[1],CODE_L2C);
+  rover=selectionEpoch("G01",{"2X"});
+  obs=gnss_utils::buildObsEpoch(rover,nullptr,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),1u); EXPECT_EQ(obs[0].code[1],CODE_L2X);
+  rover=selectionEpoch("G01",{"2W","2X"});
+  obs=gnss_utils::buildObsEpoch(rover,nullptr,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),1u); EXPECT_EQ(obs[0].code[1],CODE_L2X);
+  base=selectionEpoch("G01",{"1C"});
+  obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),2u);
+  EXPECT_EQ(obs[0].code[1],CODE_L2X); EXPECT_EQ(obs[1].code[0],CODE_L1C);
+}
+
+TEST(SignalSelection, PreservesExistingGalileoAndL5ComponentPairing) {
+  gnss_utils::SignalSelection state;
+  gnss_utils::FrequencyMask mask{true,true,true};
+  auto rover=selectionEpoch("E01",{"1C","7Q","5Q"});
+  auto base=selectionEpoch("E01",{"1X","7X","5X"});
+  auto obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),2u);
+  EXPECT_EQ(obs[0].code[0],CODE_L1C); EXPECT_EQ(obs[1].code[0],CODE_L1X);
+  EXPECT_EQ(obs[0].code[1],CODE_L7Q); EXPECT_EQ(obs[1].code[1],CODE_L7X);
+  EXPECT_EQ(obs[0].code[2],CODE_L5Q); EXPECT_EQ(obs[1].code[2],CODE_L5X);
+  rover=selectionEpoch("G01",{"5Q"}); base=selectionEpoch("G01",{"5X"});
+  obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),2u);
+  EXPECT_EQ(obs[0].code[2],CODE_L5Q); EXPECT_EQ(obs[1].code[2],CODE_L5X);
+}
+
+TEST(SignalSelection, L2FixedComponentsCanPairWithCodelessPY) {
+  gnss_utils::FrequencyMask mask;
+  for (const auto& sat:{"G01","J01"}) {
+    gnss_utils::SignalSelection state;
+    auto rover=selectionEpoch(sat,{"2L"}); auto base=selectionEpoch(sat,{"2X"});
+    const auto obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+    ASSERT_EQ(obs.size(),2u);
+    EXPECT_EQ(obs[0].code[1],CODE_L2L); EXPECT_EQ(obs[1].code[1],CODE_L2X);
+    base=selectionEpoch(sat,{"2W"});
+    const auto mixed=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+    ASSERT_EQ(mixed.size(),2u);
+    EXPECT_EQ(mixed[0].code[1],CODE_L2L);EXPECT_EQ(mixed[1].code[1],CODE_L2W);
+    EXPECT_TRUE(mixed[0].LLI[1]&LLI_SLIP);EXPECT_TRUE(mixed[1].LLI[1]&LLI_SLIP);
+    const auto stable=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+    ASSERT_EQ(stable.size(),2u);EXPECT_FALSE(stable[0].LLI[1]&LLI_SLIP);
+    EXPECT_FALSE(stable[1].LLI[1]&LLI_SLIP);
+  }
+}
+
+TEST(SignalSelection, SatelliteOutageDoesNotSwitchConstellationTrackingFamily) {
+  gnss_utils::SignalSelection state;
+  gnss_utils::FrequencyMask mask;
+  auto rover=selectionEpoch("G01",{"2W","2L"});
+  auto base=selectionEpoch("G01",{"2W","2X"});
+  auto r2=selectionEpoch("G02",{"2W"}); auto b2=selectionEpoch("G02",{"2W","2X"});
+  rover.observations.insert(rover.observations.end(),r2.observations.begin(),r2.observations.end());
+  base.observations.insert(base.observations.end(),b2.observations.begin(),b2.observations.end());
+  gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  rover.observations.erase(rover.observations.begin()); // G01 loses W, keeps L.
+  const auto obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  for(const auto& o:obs) EXPECT_EQ(o.code[1],CODE_L2W);
+  EXPECT_EQ(std::count_if(obs.begin(),obs.end(),[](const auto& o){return o.rcv==1 && o.sat==satid2no("G01");}),0);
+  EXPECT_EQ(std::count_if(obs.begin(),obs.end(),[](const auto& o){return o.rcv==2 && o.sat==satid2no("G01");}),1);
+}
+
+TEST(SignalSelection, UnpairedBeiDouBandRemainsAvailable) {
+  gnss_utils::SignalSelection state;
+  gnss_utils::FrequencyMask mask;
+  auto rover=selectionEpoch("C01",{"2I","7I"}); auto base=rover;
+  auto only=selectionEpoch("C19",{"7D"});
+  base.observations.insert(base.observations.end(),only.observations.begin(),only.observations.end());
+  const auto obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  const auto found=std::find_if(obs.begin(),obs.end(),[](const auto& o){return o.sat==satid2no("C19");});
+  ASSERT_NE(found,obs.end()); EXPECT_EQ(found->rcv,2); EXPECT_EQ(found->code[1],CODE_L7D);
+}
+
+TEST(SignalSelection, DiscardedSignalDoesNotHideGlonassChannelConflict) {
+  gnss_utils::SignalSelection state;
+  gnss_utils::FrequencyMask mask;
+  auto rover=selectionEpoch("R01",{"2C","2P"}); auto base=selectionEpoch("R01",{"2C"});
+  rover.observations[1].freq=6;
+  auto obs=gnss_utils::buildObsEpoch(rover,&base,mask,nullptr,&state);
+  ASSERT_EQ(obs.size(),2u); EXPECT_EQ(obs[0].freq,6);
+  rover.observations[0].freq=7;
+  gnss_utils::ObservationRejectCounters counters;
+  obs=gnss_utils::buildObsEpoch(rover,&base,mask,&counters,&state);
+  ASSERT_EQ(obs.size(),1u); EXPECT_EQ(obs[0].rcv,2);
+  EXPECT_EQ(counters.signal_channel_conflict,1u);
 }

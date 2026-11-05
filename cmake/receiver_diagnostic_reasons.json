@@ -1,0 +1,2675 @@
+{
+  "ublox": {
+    "sha256": "16d9dd61a56514b45fd652cb71b17d236957231e8acc33265604ba274ad7552d",
+    "sites": [
+      {
+        "line": 320,
+        "function": "decode_rxmraw",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(4,\"decode_rxmraw: len=%d\\n\",raw->len);\n    if (raw->len < 16) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 332,
+        "function": "decode_rxmraw",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<16+24*nsat) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"ubx rxmraw length error: len=%d nsat=%d\\n\",raw->len,nsat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 403,
+        "function": "decode_rxmrawx",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<24) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"ubx rxmrawx length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 417,
+        "function": "decode_rxmrawx",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "GNSS_RX_EVENT(ver>1 ? GNSS_RX_VERSION : GNSS_RX_TIME,1);\n        trace(2,\"ubx rxmrawx unsupported version or invalid tow\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 422,
+        "function": "decode_rxmrawx",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<24+32*nmeas) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"ubx rxmrawx length error: len=%d nmeas=%d\\n\",raw->len,nmeas);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 634,
+        "function": "decode_trkmeas",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(4,\"decode_trkmeas: len=%d\\n\",raw->len);\n    if (raw->len < 112) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 651,
+        "function": "decode_trkmeas",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<112+nch*56) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"decode_trkmeas: length error len=%d nch=%2d\\n\",raw->len,nch);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 773,
+        "function": "decode_trkd5",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(4,\"decode_trkd5: len=%d\\n\",raw->len);\n    if (raw->len < 9) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 787,
+        "function": "decode_trkd5",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "default: off=78; len=56; break;\n    }\n    if (raw->len < off+2 || (raw->len-off-2)%len) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 901,
+        "function": "decode_eph",
+        "reason": "FAIL_GPS",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "eph_t eph={0};\n    int sys = satsys(sat, NULL);\n    if (!decode_frame(raw->subfrm[sat-1],sys,&eph,NULL,NULL,NULL)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 907,
+        "function": "decode_eph",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "eph.iodc==raw->nav.eph[sat-1].iodc&&\n            timediff(eph.toe,raw->nav.eph[sat-1].toe)==0.0&&\n            timediff(eph.toc,raw->nav.eph[sat-1].toc)==0.0) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 920,
+        "function": "decode_ionutc",
+        "reason": "NAV_AUXILIARY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "double ion[8],utc[8];\n    int sys=satsys(sat,NULL);\n    if (!decode_frame(raw->subfrm[sat-1],sys,NULL,NULL,ion,utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 941,
+        "function": "decode_nav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<48+off) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"ubx rxmsfrbx nav length error: sat=%d len=%d\\n\",sat,raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 945,
+        "function": "decode_nav",
+        "reason": "RECORDED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if ((U4(p)>>24)==PREAMB_CNAV) {\n        GNSS_RX_EVENT(GNSS_RX_NAV_UNSUPPORTED,1); trace(3,\"ubx rxmsfrbx nav unsupported sat=%d len=%d\\n\",sat,raw->len);\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 953,
+        "function": "decode_nav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (id<1||id>5) {\n        trace(2,\"ubx rxmsfrbx nav subframe id error: sat=%d id=%d\\n\",sat,id);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 970,
+        "function": "decode_inav",
+        "reason": "SELECTION",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "static int decode_inav(raw_t *raw, int sat, int off)\n{\n    if (strstr(raw->opt, \"-GALFNAV\")) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 978,
+        "function": "decode_inav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<40+off) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"ubx rxmsfrbx inav length error: sat=%d len=%d\\n\",sat,raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 980,
+        "function": "decode_inav",
+        "reason": "LENGTH",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return gnss_receiver_negative(__func__,__LINE__);\n    }\n    if (raw->len<36+off) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0); /* E5b I/NAV */"
+      },
+      {
+        "line": 992,
+        "function": "decode_inav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (part1!=0||part2!=1) {\n        trace(3,\"ubx rxmsfrbx inav page even/odd error: sat=%d\\n\",sat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 994,
+        "function": "decode_inav",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return gnss_receiver_negative(__func__,__LINE__);\n    }\n    if (page1==1||page2==1) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0); /* alert page */"
+      },
+      {
+        "line": 1001,
+        "function": "decode_inav",
+        "reason": "NAV_QUALITY",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (rtk_crc24q(crc_buff,25)!=getbitu(buff,128+82,24)) {\n        trace(2,\"ubx rxmsfrbx inav crc error: sat=%d\\n\",sat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1005,
+        "function": "decode_inav",
+        "reason": "NAV_PAGE_IGNORED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "type=getbitu(buff,2,6); /* word type */\n    \n    if (type>6) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1015,
+        "function": "decode_inav",
+        "reason": "FAIL_INAV",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "}\n    if (type!=5) return (GNSS_RX_EVENT(GNSS_RX_NAV_WAIT,1),0);\n    if (!decode_gal_inav(raw->subfrm[sat-1],&eph,ion,utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1019,
+        "function": "decode_inav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (eph.sat!=sat) {\n        trace(2,\"ubx rxmsfrbx inav satellite error: sat=%d %d\\n\",sat,eph.sat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1030,
+        "function": "decode_inav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (eph.iode==raw->nav.eph[sat-1].iode&&\n            timediff(eph.toe,raw->nav.eph[sat-1].toe)==0.0&&\n            timediff(eph.toc,raw->nav.eph[sat-1].toc)==0.0) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1040,
+        "function": "decode_fnav",
+        "reason": "SELECTION",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "static int decode_fnav(raw_t *raw, int sat, int off)\n{\n    if (strstr(raw->opt, \"-GALINAV\")) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1044,
+        "function": "decode_fnav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 40 + off) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"ubx rxmsfrbx fnav length error: sat=%d len=%d\\n\", sat, raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1052,
+        "function": "decode_fnav",
+        "reason": "NAV_PAGE_IGNORED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "}\n    int type = getbitu(buff, 0, 6);  // Page type.\n    if (type == 63) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);  // Dummy page."
+      },
+      {
+        "line": 1055,
+        "function": "decode_fnav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (type < 1 || type > 6) {\n      trace(2, \"ubx rxmsfrbx fnav page type error: sat=%d type=%d\\n\", sat, type);\n      return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1064,
+        "function": "decode_fnav",
+        "reason": "FAIL_FNAV",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "eph_t eph = {0};\n    double ion[4] = {0}, utc[8] = {0};\n    if (!decode_gal_fnav(raw->subfrm[sat - 1] + 128, &eph, ion, utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1068,
+        "function": "decode_fnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (eph.sat != sat) {\n        trace(2,\"ubx rxmsfrbx fnav satellite error: sat=%d %d\\n\", sat, eph.sat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1081,
+        "function": "decode_fnav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "fabs(timediff(eph.toe, raw->nav.eph[sat - 1 + MAXSAT].toe)) < 1e-9 &&\n          fabs(timediff(eph.toc, raw->nav.eph[sat - 1 + MAXSAT].toc)) < 1e-9)\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1098,
+        "function": "decode_cnav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<48+off) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"ubx rxmsfrbx cnav length error: sat=%d len=%d\\n\",sat,raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1106,
+        "function": "decode_cnav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (id<1||5<id) {\n        trace(2,\"ubx rxmsfrbx cnav subframe id error: sat=%2d\\n\",sat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1114,
+        "function": "decode_cnav",
+        "reason": "FAIL_BDS1",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (id==3) {\n            if (!decode_bds_d1(raw->subfrm[sat-1],&eph,NULL,NULL)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1117,
+        "function": "decode_cnav",
+        "reason": "NAV_AUXILIARY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "}\n        else if (id==5) {\n            if (!decode_bds_d1(raw->subfrm[sat-1],NULL,ion,utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1122,
+        "function": "decode_cnav",
+        "reason": "WAIT_BDS1",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return 9;\n        }\n        else return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1127,
+        "function": "decode_cnav",
+        "reason": "FIELD",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (id == 1) {\n          pgn = getbitu(buff, 42, 4); // Page numuber.\n          if (pgn < 1 || pgn > 10) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1129,
+        "function": "decode_cnav",
+        "reason": "WAIT_BDS2",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (pgn < 1 || pgn > 10) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);\n          memcpy(raw->subfrm[sat-1]+(pgn-1)*38,buff,38);\n          if (pgn!=10) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1130,
+        "function": "decode_cnav",
+        "reason": "FAIL_BDS2",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "memcpy(raw->subfrm[sat-1]+(pgn-1)*38,buff,38);\n          if (pgn!=10) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);\n          if (!decode_bds_d2(raw->subfrm[sat-1],&eph,NULL)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1134,
+        "function": "decode_cnav",
+        "reason": "NAV_PAGE_IGNORED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "else if (id == 5) {\n          int pgn = getbitu(buff, 43, 7); // Page number.\n          if (pgn != 102) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1136,
+        "function": "decode_cnav",
+        "reason": "NAV_AUXILIARY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (pgn != 102) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);\n          memcpy(raw->subfrm[sat-1]+10*38,buff,38);\n          if (!decode_bds_d2(raw->subfrm[sat-1],NULL,utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1140,
+        "function": "decode_cnav",
+        "reason": "NAV_PAGE_IGNORED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return 9;\n        }\n        else return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1143,
+        "function": "decode_cnav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "}\n    if (!strstr(raw->opt,\"-EPHALL\")) {\n        if (timediff(eph.toe,raw->nav.eph[sat-1].toe)==0.0) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1163,
+        "function": "decode_gnav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<24+off) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"ubx rxmsfrbx gnav length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1171,
+        "function": "decode_gnav",
+        "reason": "NAV_QUALITY",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!test_glostr(buff)) {\n        trace(2,\"ubx rxmsfrbx gnav hamming error: sat=%2d\\n\",sat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1176,
+        "function": "decode_gnav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (m<1||15<m) {\n        trace(2,\"ubx rxmsfrbx gnav string no error: sat=%2d\\n\",sat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1190,
+        "function": "decode_gnav",
+        "reason": "FAIL_GLO",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "geph.tof=raw->time;\n        if (!decode_glostr(raw->subfrm[sat-1],&geph,NULL)||geph.sat!=sat) {\n            return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1195,
+        "function": "decode_gnav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt,\"-EPHALL\")) {\n            if (geph.iode==raw->nav.geph[prn-1].iode) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1203,
+        "function": "decode_gnav",
+        "reason": "NAV_AUXILIARY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "}\n    else if (m==5) {\n        if (!decode_glostr(raw->subfrm[sat-1],NULL,utc_glo)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1207,
+        "function": "decode_gnav",
+        "reason": "WAIT_GLO",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return 9;\n    }\n    return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1217,
+        "function": "decode_snav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<40+off) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"ubx rxmsfrbx snav length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1248,
+        "function": "decode_rxmsfrbx",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sys=ubx_sys(U1(p)))) {\n        trace(2,\"ubx rxmsfrbx sys id error: sys=%d\\n\",U1(p));\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1253,
+        "function": "decode_rxmsfrbx",
+        "reason": "NAV_SATELLITE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!(sat=satno(sys,prn))) {\n        if (sys==SYS_GLO&&prn==255) {\n            return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0); /* suppress error for unknown GLONASS satellite */"
+      },
+      {
+        "line": 1256,
+        "function": "decode_rxmsfrbx",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n        trace(2,\"ubx rxmsfrbx sat number error: sys=%d prn=%d\\n\",sys,prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1269,
+        "function": "decode_rxmsfrbx",
+        "reason": "RECORDED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "// Signal E6B, E6 CNAV.\n            GNSS_RX_EVENT(GNSS_RX_NAV_UNSUPPORTED,1); trace(3, \"ubx rxmsfrbx Galileo E6 CNAV unsupported: sys=%d prn=%3d sigid=%d\\n\", U1(p), U1(p + 1), U1(p + 2));\n            return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1280,
+        "function": "decode_rxmsfrbx",
+        "reason": "RECORDED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "// Signal B1C, B-CNAV1.\n            GNSS_RX_EVENT(GNSS_RX_NAV_UNSUPPORTED,1); trace(3, \"ubx rxmsfrbx BDS B-CNAV1 unsupported: sys=%d prn=%3d sigid=%d\\n\", U1(p), U1(p + 1), U1(p + 2));\n            return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1285,
+        "function": "decode_rxmsfrbx",
+        "reason": "RECORDED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "// Signal B2a, B-CNAV2.\n            GNSS_RX_EVENT(GNSS_RX_NAV_UNSUPPORTED,1); trace(3, \"ubx rxmsfrbx BDS B-CNAV2 unsupported: sys=%d prn=%3d sigid=%d\\n\", U1(p), U1(p + 1), U1(p + 2));\n            return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1291,
+        "function": "decode_rxmsfrbx",
+        "reason": "NAV_UNSUPPORTED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "case SYS_SBS: return decode_snav(raw,prn,8);\n    }\n    return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1305,
+        "function": "decode_trksfrbx",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sys=ubx_sys(U1(p+1)))) {\n        trace(2,\"ubx trksfrbx sys id error: sys=%d\\n\",U1(p+1));\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1310,
+        "function": "decode_trksfrbx",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(sys,prn))) {\n        trace(2,\"ubx trksfrbx sat number error: sys=%d prn=%d\\n\",sys,prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1320,
+        "function": "decode_trksfrbx",
+        "reason": "NAV_UNSUPPORTED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "case SYS_SBS: return decode_snav(raw,sat,13);\n    }\n    return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1334,
+        "function": "decode_rxmsfrb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<42) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"ubx rxmsfrb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1341,
+        "function": "decode_rxmsfrb",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(sys,prn))) {\n        trace(2,\"ubx rxmsfrb satellite error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1354,
+        "function": "decode_rxmsfrb",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "else {\n        for (i=0,p+=2;i<10;i++,p+=4) words[i]=U4(p);\n        if (!sbsdecodemsg(raw->time,prn,words,&raw->sbsmsg)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1357,
+        "function": "decode_rxmsfrb",
+        "reason": "WAIT_LEGACY_GPS",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return 3;\n    }\n    return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1423,
+        "function": "decode_ubx",
+        "reason": "CHECKSUM",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!checksum(raw->buff,raw->len)) {\n        trace(2,\"ubx checksum error: type=%04x len=%d\\n\",type,raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1499,
+        "function": "input_ubx",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(2,\"ubx length error: len=%d\\n\",raw->len);\n            raw->nbyte=0;\n            return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1534,
+        "function": "input_ubxf",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(2,\"ubx length error: len=%d\\n\",raw->len);\n        raw->nbyte=0;\n        return gnss_receiver_negative(__func__,__LINE__);"
+      }
+    ]
+  },
+  "novatel": {
+    "sha256": "27916efd4f05296ee25776c6cedff4aa860b9aeb9b555f11a71d9c355ddfc105",
+    "sites": [
+      {
+        "line": 176,
+        "function": "obsindex",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int i,j;\n    \n    if (obs->n>=MAXOBS) { GNSS_RX_EVENT(GNSS_RX_CAPACITY_ATTEMPTS,1); return gnss_receiver_negative(__func__,__LINE__); }"
+      },
+      {
+        "line": 322,
+        "function": "decode_track_stat",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "default:\n            GNSS_RX_EVENT(GNSS_RX_SATELLITE,1); trace(2,\"oem4 unknown system: sys=%d\\n\",satsys);\n            return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 326,
+        "function": "decode_track_stat",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(*code=sig2code(*sys,sigtype))||(idx=code2idx(*sys,*code))<0) {\n        GNSS_RX_EVENT(GNSS_RX_SIGNAL,1); trace(2,\"oem4 signal type error: sys=%d sigtype=%d\\n\",*sys,sigtype);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 377,
+        "function": "decode_rangecmpb",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if ((q=strstr(raw->opt,\"-GLOBIAS=\"))) sscanf(q,\"-GLOBIAS=%lf\",&glo_bias);\n    \n    if (raw->len < OEM4HLEN+4) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 381,
+        "function": "decode_rangecmpb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (U4(p) > (unsigned)(raw->len-OEM4HLEN-4)/24) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 rangecmpb length error: len=%d nobs=%d\\n\",raw->len,nobs);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 471,
+        "function": "decode_rangeb",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if ((q=strstr(raw->opt,\"-GLOBIAS=\"))) sscanf(q,\"-GLOBIAS=%lf\",&glo_bias);\n    \n    if (raw->len < OEM4HLEN+4) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 475,
+        "function": "decode_rangeb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (U4(p) > (unsigned)(raw->len-OEM4HLEN-4)/44) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 rangeb length error: len=%d nobs=%d\\n\",raw->len,nobs);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 553,
+        "function": "decode_rawephemb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+102) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 rawephemb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 558,
+        "function": "decode_rawephemb",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(SYS_GPS,prn))) {\n        trace(2,\"oem4 rawephemb satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 567,
+        "function": "decode_rawephemb",
+        "reason": "NAV_INCONSISTENT",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!decode_frame(subframe,SYS_GPS,&eph,NULL,NULL,NULL)) {\n        trace(2,\"oem4 rawephemb subframe error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 571,
+        "function": "decode_rawephemb",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt,\"-EPHALL\")) {\n        if (eph.iode==raw->nav.eph[sat-1].iode&&\n            eph.iodc==raw->nav.eph[sat-1].iodc) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 587,
+        "function": "decode_ionutcb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+108) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 ionutcb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 608,
+        "function": "decode_rawwaasframeb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+48) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 rawwaasframeb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 612,
+        "function": "decode_rawwaasframeb",
+        "reason": "NAV_SATELLITE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "prn=U4(p+4);\n    if ((prn<MINPRNSBS||prn>MAXPRNSBS)&&(prn<MINPRNQZS_S||prn>MAXPRNQZS_S)) {\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 638,
+        "function": "decode_gloephemerisb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+144) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 gloephemerisb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 644,
+        "function": "decode_gloephemerisb",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(SYS_GLO,prn))) {\n        trace(2,\"oem4 gloephemerisb prn error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 677,
+        "function": "decode_gloephemerisb",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt,\"-EPHALL\")) {\n        if (fabs(timediff(geph.toe,raw->nav.geph[prn-1].toe))<1.0&&\n            geph.svh==raw->nav.geph[prn-1].svh) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0); /* unchanged */"
+      },
+      {
+        "line": 694,
+        "function": "decode_qzssrawephemb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+102) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 qzssrawephemb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 699,
+        "function": "decode_qzssrawephemb",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(SYS_QZS,prn))) {\n        trace(2,\"oem4 qzssrawephemb satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 708,
+        "function": "decode_qzssrawephemb",
+        "reason": "NAV_INCONSISTENT",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!decode_frame(subfrm,SYS_QZS,&eph,NULL,NULL,NULL)) {\n        trace(3,\"oem4 qzssrawephemb ephemeris error: prn=%d\\n\",prn);\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 712,
+        "function": "decode_qzssrawephemb",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt,\"-EPHALL\")) {\n        if (eph.iodc==raw->nav.eph[sat-1].iodc&&\n            eph.iode==raw->nav.eph[sat-1].iode) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0); /* unchanged */"
+      },
+      {
+        "line": 730,
+        "function": "decode_qzssrawsubframeb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+44) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 qzssrawsubframeb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 736,
+        "function": "decode_qzssrawsubframeb",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(SYS_QZS,prn))) {\n        trace(2,\"oem4 qzssrawsubframeb satellite error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 743,
+        "function": "decode_qzssrawsubframeb",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (id<1||id>5) {\n        trace(2,\"oem4 qzssrawsubframeb subfrm id error: prn=%d id=%d\\n\",prn,id);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 748,
+        "function": "decode_qzssrawsubframeb",
+        "reason": "FAIL_GPS",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (id==3) {\n        if (!decode_frame(raw->subfrm[sat-1],SYS_QZS,&eph,NULL,NULL,NULL)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 751,
+        "function": "decode_qzssrawsubframeb",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt,\"-EPHALL\")) {\n            if (eph.iodc==raw->nav.eph[sat-1].iodc&&\n                eph.iode==raw->nav.eph[sat-1].iode) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0); /* unchanged */"
+      },
+      {
+        "line": 760,
+        "function": "decode_qzssrawsubframeb",
+        "reason": "NAV_AUXILIARY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "}\n    else if (id==4||id==5) {\n        if (!decode_frame(raw->subfrm[sat-1],SYS_QZS,NULL,NULL,ion,utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 766,
+        "function": "decode_qzssrawsubframeb",
+        "reason": "WAIT_GPS",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return 9;\n    }\n    return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 776,
+        "function": "decode_qzssionutcb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+108) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 qzssionutcb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 800,
+        "function": "decode_galephemerisb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+220) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 galephemrisb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 842,
+        "function": "decode_galephemerisb",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(SYS_GAL,prn))) {\n        trace(2,\"oemv galephemeris satellite error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 848,
+        "function": "decode_galephemerisb",
+        "reason": "SELECTION",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "}\n    set=rcv_fnav?1:0; /* 0:I/NAV,1:F/NAV */\n    if (!(sel_eph&1)&&set==0) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 849,
+        "function": "decode_galephemerisb",
+        "reason": "SELECTION",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "set=rcv_fnav?1:0; /* 0:I/NAV,1:F/NAV */\n    if (!(sel_eph&1)&&set==0) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);\n    if (!(sel_eph&2)&&set==1) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 875,
+        "function": "decode_galephemerisb",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "fabs(timediff(eph.toe,raw->nav.eph[sat-1+MAXSAT*set].toe)) < 1e-9 &&\n            fabs(timediff(eph.toc,raw->nav.eph[sat-1+MAXSAT*set].toc)) < 1e-9) {\n            return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0); /* unchanged */"
+      },
+      {
+        "line": 892,
+        "function": "decode_galclockb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+64) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 galclockb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 925,
+        "function": "decode_galionob",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+29) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 galionob length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 949,
+        "function": "decode_bdsephemerisb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+196) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 bdsephemrisb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 982,
+        "function": "decode_bdsephemerisb",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(SYS_CMP,prn))) {\n        trace(2,\"oemv bdsephemeris satellite error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 996,
+        "function": "decode_bdsephemerisb",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt,\"-EPHALL\")) {\n        if (fabs(timediff(raw->nav.eph[sat-1].toe,eph.toe)) < 1e-9 &&\n            fabs(timediff(raw->nav.eph[sat-1].toc,eph.toc)) < 1e-9) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1013,
+        "function": "decode_navicephemerisb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len<OEM4HLEN+204) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem4 navicephemrisb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1050,
+        "function": "decode_navicephemerisb",
+        "reason": "TIME",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (toc!=eph.toes) { /* toe and toc should be matched */\n        trace(2,\"oem4 navicephemrisb toe and toc unmatch prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1054,
+        "function": "decode_navicephemerisb",
+        "reason": "NAV_SATELLITE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!(sat=satno(SYS_IRN,prn))) {\n        trace(2,\"oemv navicephemeris satellite error: prn=%d\\n\",prn);\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1071,
+        "function": "decode_navicephemerisb",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt,\"-EPHALL\")) {\n        if (fabs(timediff(raw->nav.eph[sat-1].toe,eph.toe)) < 1e-9 &&\n            raw->nav.eph[sat-1].iode==eph.iode) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0); /* unchanged */"
+      },
+      {
+        "line": 1092,
+        "function": "decode_rgeb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len!=OEM3HLEN+20+nobs*44) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem3 regb length error: len=%d nobs=%d\\n\",raw->len,nobs);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1150,
+        "function": "decode_rged",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len!=OEM3HLEN+12+nobs*20) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem3 regd length error: len=%d nobs=%d\\n\",raw->len,nobs);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1210,
+        "function": "decode_repb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len!=OEM3HLEN+96) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem3 repb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1215,
+        "function": "decode_repb",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(SYS_GPS,prn))) {\n        trace(2,\"oem3 repb satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1219,
+        "function": "decode_repb",
+        "reason": "NAV_INCONSISTENT",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!decode_frame(p+4,SYS_GPS,&eph,NULL,NULL,NULL)) {\n        trace(2,\"oem3 repb subframe error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1247,
+        "function": "decode_frmb",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (prn<MINPRNSBS||MAXPRNSBS<prn) {\n        trace(2,\"oem3 frmb satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1263,
+        "function": "decode_ionb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len!=64+OEM3HLEN) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem3 ionb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1275,
+        "function": "decode_utcb",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len!=40+OEM3HLEN) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"oem3 utcb length error: len=%d\\n\",raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1296,
+        "function": "decode_oem4",
+        "reason": "CHECKSUM",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (rtk_crc32(raw->buff,raw->len)!=U4(raw->buff+raw->len)) {\n        trace(2,\"oem4 crc error: type=%3d len=%d\\n\",type,raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1346,
+        "function": "decode_oem3",
+        "reason": "CHECKSUM",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (chksum(raw->buff,raw->len)) {\n        trace(2,\"oem3 checksum error: type=%3d len=%d\\n\",type,raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1411,
+        "function": "input_oem4",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(2,\"oem4 length error: len=%d\\n\",raw->len);\n        raw->nbyte=0;\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1439,
+        "function": "input_oem3",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(2,\"oem3 length error: len=%d\\n\",raw->len);\n        raw->nbyte=0;\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1473,
+        "function": "input_oem4f",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(2,\"oem4 length error: len=%d\\n\",raw->len);\n        raw->nbyte=0;\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1507,
+        "function": "input_oem3f",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(2,\"oem3 length error: len=%d\\n\",raw->len);\n        raw->nbyte=0;\n        return gnss_receiver_negative(__func__,__LINE__);"
+      }
+    ]
+  },
+  "septentrio": {
+    "sha256": "863e0dff3f2d9f2b87cb75de712220daf841d3b6674769748cf05fdcacc405c1",
+    "sites": [
+      {
+        "line": 561,
+        "function": "meas2_sig2idx",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int idx, sys = satsys(sat, NULL);\n\n    if (sig<0 || sig>SBF_MAXSIG || sig_tbl[sig][0]!=sys) { GNSS_RX_EVENT(GNSS_RX_SIGNAL,1); return gnss_receiver_negative(__func__,__LINE__); }"
+      },
+      {
+        "line": 575,
+        "function": "meas3_sig2idx",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int idx;\n\n    if (sig<0 || sig>=MEAS3_SIG_MAX) { GNSS_RX_EVENT(GNSS_RX_SIGNAL,1); return gnss_receiver_negative(__func__,__LINE__); }"
+      },
+      {
+        "line": 576,
+        "function": "meas3_sig2idx",
+        "reason": "SIGNAL",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (sig<0 || sig>=MEAS3_SIG_MAX) { GNSS_RX_EVENT(GNSS_RX_SIGNAL,1); return gnss_receiver_negative(__func__,__LINE__); }\n    if (sbf_navsys<0 || sbf_navsys>=MEAS3_SYS_MAX) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 720,
+        "function": "decode_measepoch",
+        "reason": "raw->len<20 ? GNSS_RX_LENGTH : GNSS_RX_QUALITY",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int doppler1_valid;\n    /* Validate the entire layout before changing the pending epoch. */\n    if (raw->len < 20 || (U1(p+3)&0x80)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 723,
+        "function": "decode_measepoch",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        unsigned offset=20, row, count=U1(p), a=U1(p+1), b=U1(p+2);\n        if (a < 20) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 726,
+        "function": "decode_measepoch",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "for (row=0; row<count; ++row) {\n            unsigned children;\n            if (offset+a > (unsigned)raw->len) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 728,
+        "function": "decode_measepoch",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (offset+a > (unsigned)raw->len) return gnss_receiver_negative(__func__,__LINE__);\n            children=U1(raw->buff+offset+19);\n            if (children && b < 12) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 730,
+        "function": "decode_measepoch",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (children && b < 12) return gnss_receiver_negative(__func__,__LINE__);\n            offset+=a+b*children;\n            if (offset > (unsigned)raw->len) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 895,
+        "function": "decode_measepochextra",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int ant_sel = 0; /* antenna selection (0:main) */\n    if (raw->len < 20 || U1(p+7) < 10 ||\n        20u + U1(p+6)*(unsigned)U1(p+7) > (unsigned)raw->len) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 971,
+        "function": "decode_meas3ranges",
+        "reason": "raw->len<20 ? GNSS_RX_LENGTH : (U2(raw->buff+4)>>13)!=0 ? GNSS_RX_VERSION : GNSS_RX_FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "uint8_t *p = raw->buff+8;\n    int n = 0, idx = 0, ret = 0;\n    if (raw->len < 20 || (U2(raw->buff+4)>>13) != 0 || U1(p+11)>31 || (U1(p+6)&0x80)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 998,
+        "function": "decode_meas3ranges",
+        "reason": "ARRAY",
+        "target": "goto invalid_meas3;",
+        "context": "// if (clkJumps >= 128) clkJumps -= 256; /* cummulated clock jumps in ms */\n    uint16_t constellations = U2(p+8);\n    if (constellations & ~0x7f) goto invalid_meas3;"
+      },
+      {
+        "line": 1024,
+        "function": "decode_meas3ranges",
+        "reason": "LENGTH",
+        "target": "goto invalid_meas3;",
+        "context": "p += 12; // jump to start of data\n#define MEAS3_NEED(offset, count) do { \\\n    if ((offset)<0 || (size_t)(offset)+(size_t)(count) > (size_t)(raw->len-20)) goto invalid_meas3; \\"
+      },
+      {
+        "line": 1034,
+        "function": "decode_meas3ranges",
+        "reason": "RECORDED",
+        "target": "goto invalid_meas3;",
+        "context": "(!sbf->meas3_reference_valid ||\n         fabs(timediff(raw->time,sbf->meas3_reference_time)-(TOW%refEpochInterval)*.001)>1e-6)) {\n        GNSS_RX_EVENT(GNSS_RX_REFERENCE,1); goto invalid_meas3;"
+      },
+      {
+        "line": 1052,
+        "function": "decode_meas3ranges",
+        "reason": "REFERENCE",
+        "target": "goto invalid_meas3;",
+        "context": "if (U1(p+idx) == 0) {\n                if (TOW%refEpochInterval==0 || sbf->meas3_refEpoch.constellationHeader[navsys][0]==0)\n                    goto invalid_meas3;"
+      },
+      {
+        "line": 1064,
+        "function": "decode_meas3ranges",
+        "reason": "ARRAY",
+        "target": "goto invalid_meas3;",
+        "context": "if (nB == 7) nB = 8;\n\n            if ((size_t)idx_navsys+nB > header_size) goto invalid_meas3;"
+      },
+      {
+        "line": 1073,
+        "function": "decode_meas3ranges",
+        "reason": "ARRAY",
+        "target": "goto invalid_meas3;",
+        "context": "if ((size_t)idx_navsys+(navsys==1 ? (nSats+1)/2 : navsys==3 ? 2 : 0)+signalExcludedPresent > header_size)\n                goto invalid_meas3;"
+      },
+      {
+        "line": 1092,
+        "function": "decode_meas3ranges",
+        "reason": "ARRAY",
+        "target": "goto invalid_meas3;",
+        "context": "if ((TOW % refEpochInterval) == 0) { // reference epoche\n                if (idx_navsys > sizeof(sbf->meas3_refEpoch.constellationHeader[navsys]))\n                    goto invalid_meas3;"
+      },
+      {
+        "line": 1135,
+        "function": "decode_meas3ranges",
+        "reason": "RECORDED",
+        "target": "goto invalid_meas3;",
+        "context": "double prbase = (satCnt<16 && (bdsLongRange & (1u << satCnt))) ? 34e6 : PRBase[navsys];\n                MEAS3_NEED(idx,1);\n                if (n>=MAXOBS) { GNSS_RX_EVENT(GNSS_RX_CAPACITY_ATTEMPTS,1); goto invalid_meas3; }"
+      },
+      {
+        "line": 1201,
+        "function": "decode_meas3ranges",
+        "reason": "ARRAY",
+        "target": "goto invalid_meas3;",
+        "context": "if (((signalMask >> masterSignalIndex) & 1) != 0)\n                            break;\n                    if (masterSignalIndex>=MEAS3_SIG_MAX) goto invalid_meas3;"
+      },
+      {
+        "line": 1229,
+        "function": "decode_meas3ranges",
+        "reason": "RECORDED",
+        "target": "goto invalid_meas3;",
+        "context": "// Master long delta\n                    MEAS3_NEED(idx,5);\n                    if (TOW%refEpochInterval==0 || !sbf->meas3_reference_sat[navsys][svid]) { GNSS_RX_EVENT(GNSS_RX_REFERENCE,1); goto invalid_meas3; }"
+      },
+      {
+        "line": 1264,
+        "function": "decode_meas3ranges",
+        "reason": "RECORDED",
+        "target": "goto invalid_meas3;",
+        "context": "// Master short delta\n                    MEAS3_NEED(idx,4);\n                    if (TOW%refEpochInterval==0 || !sbf->meas3_reference_sat[navsys][svid]) { GNSS_RX_EVENT(GNSS_RX_REFERENCE,1); goto invalid_meas3; }"
+      },
+      {
+        "line": 1293,
+        "function": "decode_meas3ranges",
+        "reason": "ARRAY",
+        "target": "goto invalid_meas3;",
+        "context": "}\n\n                if (slaveSignalMask & ~0xffffu) goto invalid_meas3;"
+      },
+      {
+        "line": 1421,
+        "function": "decode_meas3ranges",
+        "reason": "REFERENCE",
+        "target": "goto invalid_meas3;",
+        "context": "if (TOW%refEpochInterval==0 || masterRefFreqIdx<0 || slaveRefFreqIdx<0 ||\n                                    masterRefFreqIdx>=NFREQ+NEXOBS || slaveRefFreqIdx>=NFREQ+NEXOBS) goto invalid_meas3;"
+      },
+      {
+        "line": 1496,
+        "function": "gnss_meas3_extra",
+        "reason": "raw->len<16 ? GNSS_RX_LENGTH : GNSS_RX_VERSION",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "float values[MAXOBS][NFREQ+NEXOBS];\n    unsigned char present[MAXOBS][NFREQ+NEXOBS]={{0}};\n    if (raw->len<16 || (U2(raw->buff+4)>>13)!=0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1507,
+        "function": "gnss_meas3_extra",
+        "reason": "REFERENCE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "sys=satsys(obs->sat,&prn);\n        for (navsys=0;navsys<MEAS3_SYS_MAX;navsys++) if (Meas3_NavSys[navsys]==sys) break;\n        if (navsys==MEAS3_SYS_MAX) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1509,
+        "function": "gnss_meas3_extra",
+        "reason": "REFERENCE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (navsys==MEAS3_SYS_MAX) return gnss_receiver_negative(__func__,__LINE__);\n        int svid=prn-Meas3_SVIDBase[navsys];\n        if (svid<0 || svid>=MEAS3_SAT_MAX) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1514,
+        "function": "gnss_meas3_extra",
+        "reason": "ARRAY",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int index=sbf->meas3_freqAssignment[navsys][svid][k];\n            if (index==-2) break;\n            if (index>=NFREQ+NEXOBS || index < -1) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1516,
+        "function": "gnss_meas3_extra",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (index>=NFREQ+NEXOBS || index < -1) return gnss_receiver_negative(__func__,__LINE__);\n            if (doppler) {\n                if (offset>=(size_t)raw->len) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1518,
+        "function": "gnss_meas3_extra",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (offset>=(size_t)raw->len) return gnss_receiver_negative(__func__,__LINE__);\n                unsigned first=raw->buff[offset], bytes=(first&2)==0 ? 1 : (first&6)==2 ? 2 : (first&14)==6 ? 3 : 4;\n                if (offset+bytes>(size_t)raw->len) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1532,
+        "function": "gnss_meas3_extra",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n            } else {\n                if (16+nibble/2>=(size_t)raw->len) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1559,
+        "function": "decode_gpsionutc",
+        "reason": "NAV_AUXILIARY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "double ion[8], utc[8];\n\n    if (!decode_frame(raw->subfrm[sat-1], SYS_GPS, NULL, NULL, ion, utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1587,
+        "function": "decode_gpsrawcanav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 60) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_gpsrawcanav block length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1596,
+        "function": "decode_gpsrawcanav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!sat || satsys(sat, &prn) != sys) {\n        trace(2, \"sbf rawca svid error: sys=%d svid=%d\\n\", sys, svid);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1601,
+        "function": "decode_gpsrawcanav",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!U1(raw->buff+15)) {\n        trace(3, \"sbf rawca parity/crc error: sys=%d prn=%d\\n\", sys, prn);\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1629,
+        "function": "decode_gpsrawcanav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (id<1 || id>5) {\n        trace(2, \"sbf rawca subframe id error: sys=%d prn=%d id=%d\\n\", sys, prn, id);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1637,
+        "function": "decode_gpsrawcanav",
+        "reason": "FAIL_GPS",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "eph_t eph = {0};\n        if (!decode_frame(raw->subfrm[sat-1], sys, &eph, NULL, NULL, NULL))\n            return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1643,
+        "function": "decode_gpsrawcanav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "eph.iodc == raw->nav.eph[sat-1].iodc &&\n                timediff(eph.toe, raw->nav.eph[sat-1].toe) == 0.0 &&\n                timediff(eph.toc, raw->nav.eph[sat-1].toc) == 0.0) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1669,
+        "function": "decode_gpsrawcnav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 60) {\n    GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_gpsrawcnav block length error: len=%d\\n\", raw->len);\n    return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1678,
+        "function": "decode_gpsrawcnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!sat || satsys(sat, &prn) != sys) {\n    trace(2, \"sbf rawcnav svid error: sys=%d svid=%d\\n\", sys, svid);\n    return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1683,
+        "function": "decode_gpsrawcnav",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!U1(raw->buff + 15)) {\n    trace(3, \"sbf rawcnav parity/crc error: sys=%d svid=%d\\n\", sys, svid);\n    return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1696,
+        "function": "decode_gpsrawcnav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (preamble != 0x8b) {\n    trace(2, \"sbf rawcnav unexpected preamble %02x\\n\", preamble);\n    return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1736,
+        "function": "decode_gpsrawcnav",
+        "reason": "NAV_UNSUPPORTED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "// TODO\n\n  return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1743,
+        "function": "decode_glorawcanav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 32) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"sbf glorawca length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1754,
+        "function": "decode_glorawcanav",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!U1(raw->buff+15)) {\n        trace(3, \"sbf glorawca parity/crc error: prn=%d\\n\", prn);\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1766,
+        "function": "decode_glorawcanav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (m<1 || m>15) {\n        trace(2, \"sbf glorawca string number error: prn=%d m=%d\\n\", prn, m);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1775,
+        "function": "decode_glorawcanav",
+        "reason": "WAIT_GLO",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "}\n    memcpy(raw->subfrm[sat-1]+(m-1)*10, buff, 10);\n    if (m != 4) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1780,
+        "function": "decode_glorawcanav",
+        "reason": "FAIL_GLO",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "geph.tof = raw->time;\n    double utc[8] = {0};\n    if (!decode_glostr(raw->subfrm[sat-1], &geph, utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1786,
+        "function": "decode_glorawcanav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (geph.sat != sat) {\n        trace(2, \"sbf glorawca satellite error: sat=%d %d\\n\", sat, geph.sat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1793,
+        "function": "decode_glorawcanav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (geph.iode == raw->nav.geph[prn-1].iode &&\n            geph.svh == raw->nav.geph[prn - 1].svh &&\n            timediff(geph.toe, raw->nav.geph[prn-1].toe) == 0.0) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1805,
+        "function": "decode_galrawfnav",
+        "reason": "SELECTION",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "static int decode_galrawfnav(raw_t *raw)\n{\n    if (strstr(raw->opt, \"-GALINAV\")) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1809,
+        "function": "decode_galrawfnav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 52) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"sbf galrawfnav length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1818,
+        "function": "decode_galrawfnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!sat || satsys(sat, &prn) != SYS_GAL) {\n        trace(2, \"sbf galrawfnav svid error: svid=%d src=%d\\n\", svid, src);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1822,
+        "function": "decode_galrawfnav",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!U1(raw->buff+15)) {\n        trace(3, \"sbf galrawfnav parity/crc error: prn=%d src=%d\\n\", prn, src);\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1829,
+        "function": "decode_galrawfnav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (src!=20 && src!=22) { /* E5a or E5 AltBOC */\n        trace(2, \"sbf galrawfnav source error: prn=%d src=%d\\n\", prn, src);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1837,
+        "function": "decode_galrawfnav",
+        "reason": "NAV_PAGE_IGNORED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "int type = getbitu(buff, 0, 6); /* page type */\n\n    if (type == 63) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0); /* dummy page */"
+      },
+      {
+        "line": 1840,
+        "function": "decode_galrawfnav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (type<1 || type>6) {\n        trace(2, \"sbf galrawfnav page type error: prn=%d type=%d\\n\", prn, type);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1845,
+        "function": "decode_galrawfnav",
+        "reason": "WAIT_FNAV",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "memcpy(raw->subfrm[sat-1]+128+(type-1)*31, buff, 31);\n\n    if (type != 4) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1848,
+        "function": "decode_galrawfnav",
+        "reason": "FAIL_FNAV",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "eph_t eph = {0};\n    double ion[4] = {0}, utc[8] = {0};\n    if (!decode_gal_fnav(raw->subfrm[sat-1]+128, &eph, ion, utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1852,
+        "function": "decode_galrawfnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (eph.sat != sat) {\n        trace(2, \"sbf galrawfnav satellite error: sat=%d %d\\n\", sat, eph.sat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1864,
+        "function": "decode_galrawfnav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (eph.iode == raw->nav.eph[sat-1+MAXSAT].iode &&\n            timediff(eph.toe, raw->nav.eph[sat-1+MAXSAT].toe) == 0.0 &&\n            timediff(eph.toc, raw->nav.eph[sat-1+MAXSAT].toc) == 0.0) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1880,
+        "function": "decode_galrawinav",
+        "reason": "SELECTION",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "int i, j, svid, src, sat, prn;\n\n    if (strstr(raw->opt, \"-GALFNAV\")) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1884,
+        "function": "decode_galrawinav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 52) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"sbf galrawinav length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1892,
+        "function": "decode_galrawinav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!sat || satsys(sat, &prn)!=SYS_GAL) {\n        trace(2, \"sbf galrawinav svid error: svid=%d src=%d\\n\", svid, src);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1896,
+        "function": "decode_galrawinav",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!U1(p+1)) {\n        trace(3, \"sbf galrawinav parity/crc error: prn=%d src=%d\\n\", prn, src);\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1903,
+        "function": "decode_galrawinav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (src!=17 && src!=21 && src!=22) { /* E1, E5b or E5 AltBOC */\n        trace(2, \"sbf galrawinav source error: prn=%d src=%d\\n\", prn, src);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1915,
+        "function": "decode_galrawinav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (part1!=0 || part2!=1) {\n        trace(3, \"sbf galrawinav part error: prn=%d even/odd=%d %d\\n\", prn, part1, part2);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1917,
+        "function": "decode_galrawinav",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return gnss_receiver_negative(__func__,__LINE__);\n    }\n    if (page1==1 || page2==1) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0); /* alert page */"
+      },
+      {
+        "line": 1921,
+        "function": "decode_galrawinav",
+        "reason": "NAV_PAGE_IGNORED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "type = getbitu(buff, 2, 6); /* word type */\n\n    if (type > 6) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1930,
+        "function": "decode_galrawinav",
+        "reason": "WAIT_INAV",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "raw->subfrm[sat-1][type*16+i] = getbitu(buff, j, 8);\n    }\n    if (type != 5) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1931,
+        "function": "decode_galrawinav",
+        "reason": "FAIL_INAV",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "}\n    if (type != 5) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);\n    if (!decode_gal_inav(raw->subfrm[sat-1], &eph, ion, utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1935,
+        "function": "decode_galrawinav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (eph.sat != sat) {\n        trace(2, \"sbf galrawinav satellite error: sat=%d %d\\n\", sat, eph.sat);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1948,
+        "function": "decode_galrawinav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (eph.iode == raw->nav.eph[sat-1].iode &&\n            timediff(eph.toe,raw->nav.eph[sat-1].toe) == 0.0 &&\n            timediff(eph.toc,raw->nav.eph[sat-1].toc) == 0.0) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 1963,
+        "function": "decode_georaw",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 52) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"sbf georawl1 length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1970,
+        "function": "decode_georaw",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!sat || satsys(sat, &prn)!=SYS_SBS) {\n        trace(2, \"sbf georawl1 svid error: svid=%d\\n\", svid);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1974,
+        "function": "decode_georaw",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!U1(p+1)) {\n        trace(3, \"sbf georaw parity/crc error: prn=%d err=%d\\n\", prn, U1(p+2));\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2000,
+        "function": "decode_cmpraw",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 52) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"sbf cmpraw length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2006,
+        "function": "decode_cmpraw",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!sat || satsys(sat, &prn) != SYS_CMP) {\n        trace(2, \"sbf cmpraw svid error: svid=%d\\n\", svid);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2010,
+        "function": "decode_cmpraw",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!U1(p+1)) {\n        trace(3, \"sbf cmpraw parity/crc error: prn=%d\\n\", prn);\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2021,
+        "function": "decode_cmpraw",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (id<1 || id>5) {\n        trace(2, \"sbf cmpraw id error: prn=%d id=%d\\n\", prn, id);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2027,
+        "function": "decode_cmpraw",
+        "reason": "FAIL_BDS1",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (id == 3) {\n            if (!decode_bds_d1(raw->subfrm[sat-1], &eph, NULL, NULL)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2030,
+        "function": "decode_cmpraw",
+        "reason": "NAV_AUXILIARY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "}\n        else if (id == 5) {\n            if (!decode_bds_d1(raw->subfrm[sat-1], NULL, ion, utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2035,
+        "function": "decode_cmpraw",
+        "reason": "WAIT_BDS1",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return 9;\n        }\n        else return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2040,
+        "function": "decode_cmpraw",
+        "reason": "FIELD",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (id == 1) {\n        int pgn = getbitu(buff, 42, 4);  // Page number.\n        if (pgn < 1 || pgn > 10) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2042,
+        "function": "decode_cmpraw",
+        "reason": "WAIT_BDS2",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (pgn < 1 || pgn > 10) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);\n        memcpy(raw->subfrm[sat - 1] + (pgn - 1) * 38, buff, 38);\n        if (pgn != 10) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2043,
+        "function": "decode_cmpraw",
+        "reason": "FAIL_BDS2",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "memcpy(raw->subfrm[sat - 1] + (pgn - 1) * 38, buff, 38);\n        if (pgn != 10) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);\n        if (!decode_bds_d2(raw->subfrm[sat - 1], &eph, NULL)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2046,
+        "function": "decode_cmpraw",
+        "reason": "NAV_PAGE_IGNORED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "} else if (id == 5) {\n        int pgn = getbitu(buff, 43, 7);  // Page number.\n        if (pgn != 102) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2049,
+        "function": "decode_cmpraw",
+        "reason": "NAV_AUXILIARY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "memcpy(raw->subfrm[sat - 1] + 10 * 38, buff, 38);\n        double utc[8];\n        if (!decode_bds_d2(raw->subfrm[sat - 1], NULL, utc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2053,
+        "function": "decode_cmpraw",
+        "reason": "NAV_PAGE_IGNORED",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return 9;\n      } else\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2057,
+        "function": "decode_cmpraw",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt, \"-EPHALL\")) {\n        if (timediff(eph.toe, raw->nav.eph[sat-1].toe) == 0.0)\n            return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2072,
+        "function": "decode_navicraw",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 60) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"sbf navicraw length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2078,
+        "function": "decode_navicraw",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!sat || satsys(sat,&prn)!=SYS_IRN) {\n        trace(2, \"sbf navicraw svid error: svid=%d\\n\", svid);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2082,
+        "function": "decode_navicraw",
+        "reason": "NAV_QUALITY",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!U1(raw->buff+15)) {\n        trace(3, \"sbf navicraw parity/crc error: prn=%d err=%d\\n\", prn, U1(raw->buff+16));\n        return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2097,
+        "function": "decode_navicraw",
+        "reason": "FAIL_IRN",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (id==1) { /* subframe 2 */\n        eph_t eph = {0};\n        if (!decode_irn_nav(raw->subfrm[sat-1], &eph, NULL, NULL)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2102,
+        "function": "decode_navicraw",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (eph.iode==raw->nav.eph[sat-1].iode &&\n                timediff(eph.toe, raw->nav.eph[sat-1].toe)==0.0) {\n                return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2126,
+        "function": "decode_navicraw",
+        "reason": "WAIT_IRN",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "return ret;\n    }\n    return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2142,
+        "function": "decode_naviclnav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 148) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_naviclnav frame length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2148,
+        "function": "decode_naviclnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "sat = satno(SYS_IRN, prn);\n\n    if (sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2152,
+        "function": "decode_naviclnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(prn>=1 && prn<=37)){\n        trace(2, \"SBF decode_naviclnav prn error: sat=%d\\n\", prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2222,
+        "function": "decode_gpsnav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 140) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_gpsnav frame length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2228,
+        "function": "decode_gpsnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "uint8_t sat = satno(SYS_GPS, prn);\n\n    if (sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2232,
+        "function": "decode_gpsnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(prn >= 1 && prn <= 37)) {\n        trace(2, \"SBF decode_gpsnav prn error: sat=%d\\n\", prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2286,
+        "function": "decode_gpsnav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt, \"-EPHALL\")) {\n        if ((eph.iode == raw->nav.eph[sat-1].iode) &&\n            (eph.iodc == raw->nav.eph[sat-1].iodc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2309,
+        "function": "decode_gpsalm",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_gpsalm: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2330,
+        "function": "decode_gpsalm",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* byte 51: health summary on 6 bits (from subframe 4, page 25 and sub-frame 5 page 25) */\n\n    if (alm.sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2352,
+        "function": "decode_gpsion",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1,\"SBF decode_gpsion: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2382,
+        "function": "decode_gpsutc",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_gpsutc: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2415,
+        "function": "decode_gpscnav",
+        "reason": "(U2(raw->buff+4)>>13)!=0 ? GNSS_RX_VERSION : sbf_id!=ID_GPSCNAV ? GNSS_RX_PAYLOAD_UNSUPPORTED : GNSS_RX_LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (sbf_id != ID_GPSCNAV || (U2(raw->buff+4)>>13) != 0 || raw->len != 172) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_gpscnav frame length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2421,
+        "function": "decode_gpscnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "sat = satno(SYS_GPS, prn);\n\n    if (sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2425,
+        "function": "decode_gpscnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(prn>=1 && prn<=37)){\n        trace(2, \"SBF decode_gpscnav prn error: sat=%d\\n\", prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2479,
+        "function": "decode_gpscnav",
+        "reason": "TIME",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "eph.iodc = 0; /* No IOD in GPS CNAV; prediction time is not represented in eph_t. */\n    eph.iode = 0;\n    if (tops >= 604800 || eph.toes >= 604800 || tocs >= 604800) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2491,
+        "function": "decode_gpscnav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt, \"-EPHALL\")) {\n        if ((eph.iode == raw->nav.eph[sat-1].iode) &&\n            (eph.iodc == raw->nav.eph[sat-1].iodc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2518,
+        "function": "decode_glonav",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < ((U2(raw->buff+4)>>13) ? 100 : 96)) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_glonav frame length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2523,
+        "function": "decode_glonav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "sat = satno(SYS_GLO, prn);\n\n    if (sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2527,
+        "function": "decode_glonav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(prn>=1 && prn<=24)){\n        trace(2, \"SBF decode_glonav prn error: sat=%d\\n\", prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2551,
+        "function": "decode_glonav",
+        "reason": "TIME",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "eph.age    = U1(p +  76);\n    eph.svh    = U1(p +  77) >> 2;  /* 3-bit health flag, satellite unhealthy if MSB set */\n    if (U2(p+78) >= 1440 || U2(p+78)%15) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2565,
+        "function": "decode_glonav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int i, p1 = U1(p+74);\n        for (i=0;i<15;++i) if (U2(p+86)==ft[i]) eph.sva=i;\n        if (p1 != 0 && p1 != 30 && p1 != 45 && p1 != 60) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2566,
+        "function": "decode_glonav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "for (i=0;i<15;++i) if (U2(p+86)==ft[i]) eph.sva=i;\n        if (p1 != 0 && p1 != 30 && p1 != 45 && p1 != 60) return gnss_receiver_negative(__func__,__LINE__);\n        if (U1(p+75)>1 || U1(p+80)>3 || U1(p+81)>3 || U1(p+82)>1 || U1(p+83)>1) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2573,
+        "function": "decode_glonav",
+        "reason": "TIME",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "eph.svh |= 4|(U1(p+88)<<1);\n    }\n    if (toes >= 604800) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2583,
+        "function": "decode_glonav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt, \"-EPHALL\")) {\n        if (eph.iode == raw->nav.geph[prn-1].iode) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2605,
+        "function": "decode_gloutc",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_gloutc: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2641,
+        "function": "decode_galnav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 149) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_galnav frame length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2647,
+        "function": "decode_galnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "sat = satno(SYS_GAL, prn);\n\n    if (sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2651,
+        "function": "decode_galnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(prn>=1 && prn<=36)){\n        trace(2, \"SBF decode_galnav prn error: sat=%d\\n\", prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2660,
+        "function": "decode_galnav",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (code != 2 && code != 16) {\n        trace(2, \"SBF decode_galnav code error: sat=%d code=%d\\n\", prn, code);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2718,
+        "function": "decode_galnav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt, \"-EPHALL\")) {\n        if (eph.iode == raw->nav.eph[sat-1].iode) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2741,
+        "function": "decode_galalm",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_galalm: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2767,
+        "function": "decode_galalm",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* byte 51: IODa, 4-bit Issue of Data for the almanac */\n\n    if (alm.sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2786,
+        "function": "decode_galion",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_galion: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2813,
+        "function": "decode_galutc",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_galutc: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2843,
+        "function": "decode_cmpnav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 140) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_cmpnav frame length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2849,
+        "function": "decode_cmpnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int sat = svid2sat(U1(raw->buff + 14));\n\n    if (!sat || satsys(sat, &prn) != SYS_CMP) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2853,
+        "function": "decode_cmpnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (prn < MINPRNCMP || prn > MAXPRNCMP) {\n        trace(2, \"SBF decode_cmpnav prn error: sat=%d\\n\", prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2900,
+        "function": "decode_cmpnav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt, \"-EPHALL\")) {\n        if (eph.iode == raw->nav.eph[sat - 1].iode) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 2923,
+        "function": "decode_cmpcnav2",
+        "reason": "(U2(raw->buff+4)>>13)!=0 ? GNSS_RX_VERSION : GNSS_RX_LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if ((U2(raw->buff+4)>>13) != 0 || raw->len != (sbf_id == ID_BDSCNAV3 ? 152 : 160)) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_cmpcnav2 frame length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2929,
+        "function": "decode_cmpcnav2",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "sat = satno(SYS_CMP, prn);\n\n    if (sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2933,
+        "function": "decode_cmpcnav2",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(prn>=1 && prn<=MAXPRNCMP)){\n        trace(2, \"SBF decode_cmpcnav2 prn error: sat=%d\\n\", prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2989,
+        "function": "decode_cmpcnav2",
+        "reason": "TIME",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "eph.iodc = sbf_id == ID_BDSCNAV3 ? 0 : U2(p + 138);\n    eph.iode = sbf_id == ID_BDSCNAV3 ? 0 : U1(p + 137);\n    if (tops >= 604800 || eph.toes >= 604800 || tocs >= 604800) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3012,
+        "function": "decode_cmpcnav2",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt, \"-EPHALL\")) {\n        if ((eph.iode == raw->nav.eph[sat-1].iode) &&\n            (eph.iodc == raw->nav.eph[sat-1].iodc)) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 3036,
+        "function": "decode_cmpalm",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_cmpalm: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3057,
+        "function": "decode_cmpalm",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "alm.toa   = gpst2time(alm.week, alm.toas);\n\n    if (alm.sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3078,
+        "function": "decode_cmpion",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_cmpion: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3109,
+        "function": "decode_cmputc",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_cmputc: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3139,
+        "function": "decode_qzssnav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 140) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_qzssnav frame length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3147,
+        "function": "decode_qzssnav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (sat == 0 || satsys(sat, NULL) != SYS_QZS) {\n        trace(2, \"SBF decode_qzssnav svid error: svid=%d prn=%d\\n\", svid, svid - 180);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3195,
+        "function": "decode_qzssnav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (!strstr(raw->opt, \"-EPHALL\")) {\n        if (eph.iode == raw->nav.eph[sat-1].iode) return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 3219,
+        "function": "decode_qzssalm",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_cmpalm: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3242,
+        "function": "decode_qzssalm",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "alm.toa   = gpst2time(alm.week, alm.toas);\n\n    if (alm.sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3268,
+        "function": "decode_geonav",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 104) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"SBF decode_geonav frame length error: len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3275,
+        "function": "decode_geonav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(prn>=120 && prn<=140)){\n        trace(2, \"SBF decode_geonav prn error: sat=%d\\n\", prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3278,
+        "function": "decode_geonav",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n\n    if (sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3312,
+        "function": "decode_geonav",
+        "reason": "NAV_DUPLICATE",
+        "target": "(GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0)",
+        "context": "if (fabs(timediff(eph.t0, raw->nav.seph[prn-120].t0)) < 1.0 &&\n            eph.sva == raw->nav.seph[prn-120].sva)\n            return (GNSS_RX_EVENT(GNSS_RX_NAV_NO_OUTPUT,1),0);"
+      },
+      {
+        "line": 3340,
+        "function": "decode_sbsfast",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_sbsfast: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3345,
+        "function": "decode_sbsfast",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* get satellite number */\n    prn = U1(p+6);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3346,
+        "function": "decode_sbsfast",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "prn = U1(p+6);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);\n    if (prn > 140) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3349,
+        "function": "decode_sbsfast",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "sat = satno(SYS_SBS, prn);\n    if (sat == 0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3364,
+        "function": "decode_sbsfast",
+        "reason": "FIELD",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "sbLength = U1(p+11);\n\n    if (type > 5 || type == 1) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3402,
+        "function": "decode_sbsprnmask",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_sbsprnmask: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3407,
+        "function": "decode_sbsprnmask",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* get satellite number */\n    prn = U1(p+6);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3408,
+        "function": "decode_sbsprnmask",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "prn = U1(p+6);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);\n    if (prn > 139) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3448,
+        "function": "decode_sbsintegriy",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_sbsintegriy: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3453,
+        "function": "decode_sbsintegriy",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* get satellite number */\n    prn = U1(p+8);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3454,
+        "function": "decode_sbsintegriy",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "prn = U1(p+8);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);\n    if (prn > 139) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3485,
+        "function": "decode_sbsfastcorrdegr",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_sbsfastcorrdegr: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3490,
+        "function": "decode_sbsfastcorrdegr",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* get satellite number */\n    prn = U1(p+8);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3491,
+        "function": "decode_sbsfastcorrdegr",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "prn = U1(p+8);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);\n    if (prn > 139) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3519,
+        "function": "decode_sbsionodelay",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_sbsionodelay: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3524,
+        "function": "decode_sbsionodelay",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* get satellite number */\n    prn = U1(p+6);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3525,
+        "function": "decode_sbsionodelay",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "prn = U1(p+6);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);\n    if (prn > 139) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3544,
+        "function": "decode_sbsionodelay",
+        "reason": "ARRAY",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_sbsionodelay: wrong number of IDC blocks: %d\\n\", count);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3577,
+        "function": "decode_sbsigpmask",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_sbsigpmask: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3582,
+        "function": "decode_sbsigpmask",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* get satellite number */\n    prn = U1(p+6);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3583,
+        "function": "decode_sbsigpmask",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "prn = U1(p+6);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);\n    if (prn > 139) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3625,
+        "function": "decode_sbslongcorrh",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_sbslongcorrh: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3630,
+        "function": "decode_sbslongcorrh",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* get satellite number */\n    prn = U1(p+6);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3631,
+        "function": "decode_sbslongcorrh",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "prn = U1(p+6);\n    if (prn < 120) return gnss_receiver_negative(__func__,__LINE__);\n    if (prn > 139) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3643,
+        "function": "decode_sbslongcorrh",
+        "reason": "ARRAY",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "sbLength = U1(p+8);\n\n    if (count > 4) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3693,
+        "function": "decode_extevent",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n        trace(1, \"SBF decode_extevent: Block too short\\n\");\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3724,
+        "function": "decode_rxsetup",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 264) {\n        trace(1, \"SBF decode_rxsetup: Block too short len=%d\\n\", raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3845,
+        "function": "decode_sbf",
+        "reason": "CHECKSUM",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (sbf_checksum(raw->buff+4, raw->len-4) !=  crc){\n        trace(2, \"sbf checksum error: type=%04x len=%d\\n\", type, raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3850,
+        "function": "decode_sbf",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (raw->len < 14) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2, \"sbf length error: type=%d len=%d\\n\", type, raw->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 3905,
+        "function": "decode_sbf",
+        "reason": "TIME",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "// Don't want to miss some blocks, that don't need the time.\n        if (type != ID_RXSETUP) {\n            return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 4253,
+        "function": "input_sbf",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(2, \"sbf length error: len=%d\\n\", raw->len);\n        raw->nbyte = 0;\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 4290,
+        "function": "input_sbff",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(2, \"sbf length error: len=%d\\n\", raw->len);\n        raw->nbyte = 0;\n        return gnss_receiver_negative(__func__,__LINE__);"
+      }
+    ]
+  },
+  "rtcm3": {
+    "sha256": "2ee9df70fee3b2999d72597cb7863c4840faa534c1523bac88645f7c283dc226",
+    "sites": [
+      {
+        "line": 231,
+        "function": "obsindex",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (obs->data[i].sat==sat) return i; /* field already exists */\n    }\n    if (i>=MAXOBS) { GNSS_RX_EVENT(GNSS_RX_CAPACITY_ATTEMPTS,1); return gnss_receiver_negative(__func__,__LINE__); } /* overflow */"
+      },
+      {
+        "line": 288,
+        "function": "decode_head1001",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d\\n\",type,rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 291,
+        "function": "decode_head1001",
+        "reason": "STATION",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n    /* test station ID */\n    if (!test_staid(rtcm,staid)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 308,
+        "function": "decode_type1001",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n    int sync;\n    if (decode_head1001(rtcm,&sync)<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 318,
+        "function": "decode_type1002",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int i=24+64,j,index,nsat,sync,prn,code,sat,ppr1,lock1,amb,sys;\n    \n    if ((nsat=decode_head1001(rtcm,&sync))<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 359,
+        "function": "decode_type1003",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n    int sync;\n    if (decode_head1001(rtcm,&sync)<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 371,
+        "function": "decode_type1004",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int lock1,lock2,amb,sys;\n    \n    if ((nsat=decode_head1001(rtcm,&sync))<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 447,
+        "function": "decode_type1005",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1005 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 457,
+        "function": "decode_type1005",
+        "reason": "STATION",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n    /* test station id */\n    if (!test_staid(rtcm,staid)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 486,
+        "function": "decode_type1006",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1006 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 496,
+        "function": "decode_type1006",
+        "reason": "STATION",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n    /* test station id */\n    if (!test_staid(rtcm,staid)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 527,
+        "function": "decode_type1007",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1007 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 534,
+        "function": "decode_type1007",
+        "reason": "STATION",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n    /* test station ID */\n    if (!test_staid(rtcm,staid)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 566,
+        "function": "decode_type1008",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1008 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 573,
+        "function": "decode_type1008",
+        "reason": "STATION",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n    /* test station ID */\n    if (!test_staid(rtcm,staid)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 600,
+        "function": "decode_head1009",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d\\n\",type,rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 603,
+        "function": "decode_head1009",
+        "reason": "STATION",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n    /* test station ID */\n    if (!test_staid(rtcm,staid)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 620,
+        "function": "decode_type1009",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n    int sync;\n    if (decode_head1009(rtcm,&sync)<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 630,
+        "function": "decode_type1010",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int i=24+61,j,index,nsat,sync,prn,sat,code,fcn,ppr1,lock1,amb,sys=SYS_GLO;\n    \n    if ((nsat=decode_head1009(rtcm,&sync))<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 669,
+        "function": "decode_type1011",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "{\n    int sync;\n    if (decode_head1009(rtcm,&sync)<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 680,
+        "function": "decode_type1012",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "int lock1,lock2,amb,sys=SYS_GLO;\n    \n    if ((nsat=decode_head1009(rtcm,&sync))<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 740,
+        "function": "decode_type1013",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (i + 58 > rtcm->len * 8) {\n    GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1013 length error: len=%d\\n\", rtcm->len);\n    return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 756,
+        "function": "decode_type1013",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (i + nmsg * 29 > rtcm->len * 8) {\n    GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1013 length error: len=%d nm=%d\\n\", rtcm->len, nmsg);\n    return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 825,
+        "function": "decode_type1019",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1019 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 839,
+        "function": "decode_type1019",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(sys,prn))) {\n        trace(2,\"rtcm3 1019 satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 869,
+        "function": "decode_type1020",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (i+348 > rtcm->len*8) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1020 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 905,
+        "function": "decode_type1020",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(sys,prn))) {\n        trace(2,\"rtcm3 1020 satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1003,
+        "function": "decode_type1029",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1029 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1007,
+        "function": "decode_type1029",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (i+nchar*8>rtcm->len*8) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1029 length error: len=%d nchar=%d\\n\",rtcm->len,nchar);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1083,
+        "function": "decode_type1033",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1033 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1090,
+        "function": "decode_type1033",
+        "reason": "STATION",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n    /* test station id */\n    if (!test_staid(rtcm,staid)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1176,
+        "function": "decode_type1041",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1041 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1187,
+        "function": "decode_type1041",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(sys,prn))) {\n        trace(2,\"rtcm3 1041 satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1249,
+        "function": "decode_type1044",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1044 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1260,
+        "function": "decode_type1044",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(sys,prn))) {\n        trace(2,\"rtcm3 1044 satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1324,
+        "function": "decode_type1045",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1045 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1335,
+        "function": "decode_type1045",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(sys,prn))) {\n        trace(2,\"rtcm3 1045 satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1405,
+        "function": "decode_type1046",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1046 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1416,
+        "function": "decode_type1046",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(sys,prn))) {\n        trace(2,\"rtcm3 1046 satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1482,
+        "function": "decode_type1042",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1042 length error: len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1493,
+        "function": "decode_type1042",
+        "reason": "NAV_SATELLITE",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (!(sat=satno(sys,prn))) {\n        trace(2,\"rtcm3 1042 satellite number error: prn=%d\\n\",prn);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1552,
+        "function": "decode_ssr1_head",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (subtype==0) { /* RTCM SSR */\n        ns=(sys==SYS_QZS)?4:6;\n        if (i+((sys==SYS_GLO)?53:50+ns)>rtcm->len*8) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1556,
+        "function": "decode_ssr1_head",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else { /* IGS SSR */\n        ns=6;\n        if (i+3+8+50+ns>rtcm->len*8) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1594,
+        "function": "decode_ssr2_head",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (subtype==0) { /* RTCM SSR */\n        ns=(sys==SYS_QZS)?4:6;\n        if (i+((sys==SYS_GLO)?52:49+ns)>rtcm->len*8) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1598,
+        "function": "decode_ssr2_head",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        ns=6;\n        if (i+3+8+49+ns>rtcm->len*8) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1631,
+        "function": "decode_ssr1",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if ((nsat=decode_ssr1_head(rtcm,sys,subtype,&sync,&iod,&udint,&refd,&i))<0) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d\\n\",type,rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1691,
+        "function": "decode_ssr2",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if ((nsat=decode_ssr2_head(rtcm,sys,subtype,&sync,&iod,&udint,&i))<0) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d\\n\",type,rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1740,
+        "function": "decode_ssr3",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if ((nsat=decode_ssr2_head(rtcm,sys,subtype,&sync,&iod,&udint,&i))<0) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d\\n\",type,rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1805,
+        "function": "decode_ssr4",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if ((nsat=decode_ssr1_head(rtcm,sys,subtype,&sync,&iod,&udint,&refd,&i))<0) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d\\n\",type,rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1870,
+        "function": "decode_ssr5",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if ((nsat=decode_ssr2_head(rtcm,sys,subtype,&sync,&iod,&udint,&i))<0) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d\\n\",type,rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1913,
+        "function": "decode_ssr6",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if ((nsat=decode_ssr2_head(rtcm,sys,subtype,&sync,&iod,&udint,&i))<0) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d\\n\",type,rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1956,
+        "function": "decode_ssr7_head",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (subtype==0) { /* RTCM SSR */\n        ns=(sys==SYS_QZS)?4:6;\n        if (i+((sys==SYS_GLO)?54:51+ns)>rtcm->len*8) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1960,
+        "function": "decode_ssr7_head",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else { /* IGS SSR */\n        ns=6;\n        if (i+3+8+51+ns>rtcm->len*8) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 1998,
+        "function": "decode_ssr7",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "&i))<0) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d\\n\",type,rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2271,
+        "function": "decode_msm_head",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "else {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d\\n\",type,rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2274,
+        "function": "decode_msm_head",
+        "reason": "STATION",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n    /* test station id */\n    if (!test_staid(rtcm,staid)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2279,
+        "function": "decode_msm_head",
+        "reason": "ARRAY",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "trace(2,\"rtcm3 %d number of sats and sigs error: nsat=%d nsig=%d\\n\",\n              type,h->nsat,h->nsig);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2284,
+        "function": "decode_msm_head",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 %d length error: len=%d nsat=%d nsig=%d\\n\",type,\n              rtcm->len,h->nsat,h->nsig);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2311,
+        "function": "decode_msm0",
+        "reason": "PAYLOAD_UNSUPPORTED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "rtcm->obs.n=0;\n    rtcm->obsflag=1;\n    return gnss_receiver_negative(__func__,__LINE__); /* MSM1/2/3 are not decoded; do not complete prior fragments. */"
+      },
+      {
+        "line": 2323,
+        "function": "decode_msm4",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* decode msm header */\n    if ((ncell=decode_msm_head(rtcm,sys,&sync,&iod,&h,&i))<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2330,
+        "function": "decode_msm4",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "rtcm->obs.n=0;\n        rtcm->obsflag=1;\n        return gnss_receiver_negative(__func__,__LINE__); /* A truncated final fragment never completes an epoch. */"
+      },
+      {
+        "line": 2379,
+        "function": "decode_msm5",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* decode msm header */\n    if ((ncell=decode_msm_head(rtcm,sys,&sync,&iod,&h,&i))<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2386,
+        "function": "decode_msm5",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "rtcm->obs.n=0;\n        rtcm->obsflag=1;\n        return gnss_receiver_negative(__func__,__LINE__); /* A truncated final fragment never completes an epoch. */"
+      },
+      {
+        "line": 2447,
+        "function": "decode_msm6",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* decode msm header */\n    if ((ncell=decode_msm_head(rtcm,sys,&sync,&iod,&h,&i))<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2454,
+        "function": "decode_msm6",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "rtcm->obs.n=0;\n        rtcm->obsflag=1;\n        return gnss_receiver_negative(__func__,__LINE__); /* A truncated final fragment never completes an epoch. */"
+      },
+      {
+        "line": 2503,
+        "function": "decode_msm7",
+        "reason": "PROPAGATED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "/* decode msm header */\n    if ((ncell=decode_msm_head(rtcm,sys,&sync,&iod,&h,&i))<0) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2510,
+        "function": "decode_msm7",
+        "reason": "LENGTH",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "rtcm->obs.n=0;\n        rtcm->obsflag=1;\n        return gnss_receiver_negative(__func__,__LINE__); /* A truncated final fragment never completes an epoch. */"
+      },
+      {
+        "line": 2574,
+        "function": "decode_type1230",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (i+20>rtcm->len*8) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 1230: length error len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2587,
+        "function": "decode_type1230",
+        "reason": "STATION",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "}\n    /* test station ID */\n    if (!test_staid(rtcm,staid)) return gnss_receiver_negative(__func__,__LINE__);"
+      },
+      {
+        "line": 2622,
+        "function": "decode_type4076",
+        "reason": "RECORDED",
+        "target": "gnss_receiver_negative(__func__,__LINE__)",
+        "context": "if (i+3+8>=rtcm->len*8) {\n        GNSS_RX_EVENT(GNSS_RX_LENGTH,1); trace(2,\"rtcm3 4076: length error len=%d\\n\",rtcm->len);\n        return gnss_receiver_negative(__func__,__LINE__);"
+      }
+    ]
+  }
+}

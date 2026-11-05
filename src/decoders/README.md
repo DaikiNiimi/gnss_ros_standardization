@@ -1,266 +1,138 @@
 # Decoders
 
-Decoder nodes receive a **binary GNSS byte stream** (via NTRIP, TCP, or Serial), parse the protocol using the embedded **RTKLIB (rtklibexplorer fork)** library, and publish standardized ROS 2 messages.
+Decoders read a receiver byte stream that is already configured and publish the
+common GNSS messages. They never configure the receiver (see [drivers](../drivers/README.md)
+for that).
 
-Unlike the drivers in [`../drivers/`](../drivers/), decoders are **passive and do not configure the receiver** — this also holds when the RTCM relay below is enabled: correction bytes are forwarded verbatim. The single exception is the NovAtel decoder's dedicated correction port, which receives one `INTERFACEMODE` command over that port itself (never over the decoded-log port); see the relay section.
+| Executable | Input |
+|---|---|
+| `ubx_decoder_node` | u-blox UBX (+ NMEA) |
+| `sbf_decoder_node` | Septentrio SBF (+ NMEA) |
+| `novatel_decoder_node` | NovAtel OEM4/6/7 binary (+ NMEA) |
+| `rtcm_decoder_node` | RTCM 3 |
 
-## Supported Decoders
+```bash
+ros2 run gnss_ros_standardization ubx_decoder_node --ros-args \
+  -p stream_path:=serial:///dev/ttyACM0:115200
+```
 
-| Node | Executable | Input Protocol / Format | Published data |
-|---|---|---|---|
-| **RTCM3 Decoder** | `rtcm_decoder_node` | RTCM 3.x (MSM4/MSM7 + Ephemeris) | Observations, Ephemerides |
-| **u-blox Decoder** | `ubx_decoder_node` | UBX (u-blox proprietary binary) | Observations, Ephemerides, PVT, IMU |
-| **Septentrio Decoder** | `sbf_decoder_node` | SBF (Septentrio Binary Format) | Observations, Ephemerides, PVT, IMU |
-| **NovAtel Decoder** | `novatel_decoder_node` | OEM4 / OEM6 / OEM7 binary | Observations, Ephemerides, PVT, IMU |
+## Stream URI (`stream_path`)
 
----
+| Source | Example |
+|---|---|
+| Serial | `serial:///dev/ttyUSB0:115200` |
+| TCP client | `tcpcli://192.168.1.100:9000` |
+| TCP server | `tcpsvr://:5556` |
+| NTRIP | `ntrip://user:pass@caster.example.com:2101/MOUNT` |
+| File | `file:///path/to/log.ubx` |
 
-## Stream Connection & URI
+## Topics
 
-All decoders accept a `stream_path` parameter specifying the source stream. The connection is managed and opened via RTKLIB's stream interface (`stropen`).
-
-### Supported URI Schemes
-| Scheme | Format / Example | Description |
+| Topic | Type | Content |
 |---|---|---|
-| **NTRIP** | `ntrip://user:pass@caster.example.com:2101/MOUNT` | Connects to an NTRIP caster mountpoint. |
-| **TCP Client** | `tcpcli://192.168.1.100:9000` | Connects to a TCP server broadcasting GNSS data. |
-| **TCP Server** | `tcpsvr://:5556` | Hosts a TCP server and accepts pushed data. |
-| **Serial** | `serial:///dev/ttyUSB0:115200` | Connects to a local serial port. |
-| **File** | `file:///path/to/log.bin` | Replays a recorded raw log. |
+| `/gnss/observation` | `GnssObservations` | raw observations, one message per epoch |
+| `/gnss/ephemeris` | `GnssEphemerides` | broadcast ephemerides (`transient_local`) |
+| `/gnss/nmea_solution` | `GnssSolution` | receiver solution (binary PVT, otherwise NMEA) |
+| `/gnss/imu/data_raw` | `sensor_msgs/Imu` | raw IMU (UBX ESF-RAW, SBF ExtSensorMeas, NovAtel RAWIMUSX) |
+| `/gnss/imu/data` | `sensor_msgs/Imu` | receiver-corrected IMU (UBX ESF-INS, NovAtel CORRIMUDATA) |
 
----
+The RTCM decoder publishes only observations and ephemerides.
 
-### Common Parameters
-| Parameter | Type | Default | Description |
+## Parameters
+
+| Parameter | Default | Nodes | Meaning |
 |---|---|---|---|
-| `stream_path` | `string` | (Varies) | Connection URI for the input GNSS stream. |
-| `frame_id` | `string` | `"gnss_link"` | ROS TF frame ID attached to the published message headers. |
-| `observation_topic` | `string` | `/gnss/observation` | Topic for raw GNSS observations (`GnssObservations`). |
-| `ephemeris_topic` | `string` | `/gnss/ephemeris` | Topic for GNSS ephemerides (`GnssEphemerides`). Uses `transient_local` durability QoS. |
-| `solution_topic` | `string` | `/gnss/nmea_solution` | Topic for receiver position solutions from binary PVT or NMEA (`GnssSolution`). *Not used by RTCM3 decoder.* |
-| `imu_raw_topic` | `string` | `/gnss/imu/data_raw` | Topic for uncalibrated raw IMU measurements (`sensor_msgs/Imu`). *Not used by RTCM3 decoder.* |
-| `imu_topic` | `string` | `/gnss/imu/data` | Topic for calibrated IMU measurements (`sensor_msgs/Imu`). *Used only by UBX/NovAtel decoders.* |
-| `ephemeris.snapshot_period_s` | `double` | `30.0` | Period (in seconds) to republish the current ephemeris cache as a heartbeat. |
-| `ephemeris.max_age_s` | `double` | `0.0` | Maximum age of ephemeris to keep in cache (seconds). `0.0` keeps all received ephemerides. |
-| `use_gps_timestamp` | `bool` | `false` | If `true`, the ROS message headers will use GPS/GPST time instead of the ROS system clock. |
-| `origin` | `double[]` | `[0.0, 0.0, 0.0]` | Fixed ECEF/ENU local origin `[Latitude (deg), Longitude (deg), Altitude (m)]` for ENU local coordinates. |
-| `rtcm_relay` | `string` | `""` (disabled) | Listen URI for incoming RTCM corrections, written back down the receiver stream for on-chip RTK (see below). On `rtcm_decoder_node` the direction is reversed: it is the *output* URI the decoded source bytes are forwarded to. |
-| `rtcm_relay_output` | `string` | `""` | *NovAtel decoder only.* OS device of the dedicated RTCMV3 correction port (e.g. `serial:///dev/ttyUSB2:230400`). Empty writes corrections to the main stream (not supported on NovAtel hardware). |
-| `rtcm_relay_correction_port` | `string` | `"THISPORT"` | *NovAtel decoder only.* `INTERFACEMODE` target, sent over `rtcm_relay_output` itself — leave `THISPORT`. |
+| `stream_path` | node specific | all | input stream URI |
+| `frame_id` | `gnss_link` | UBX, SBF, NovAtel | header frame |
+| `topics.observation`, `topics.ephemeris` | `/gnss/observation`, `/gnss/ephemeris` | all | output topics |
+| `topics.solution`, `topics.imu_raw` | `/gnss/nmea_solution`, `/gnss/imu/data_raw` | UBX, SBF, NovAtel | output topics |
+| `topics.imu` | `/gnss/imu/data` | UBX, NovAtel | output topic |
+| `use_gps_timestamp` | `false` | all | header stamp: `false` = host receive time, `true` = GNSS time converted to UTC |
+| `ephemeris.snapshot_period_s` | `30.0` | all | republish the full ephemeris set every N s |
+| `ephemeris.max_age_s` | `0.0` | all | drop ephemerides older than N s (`0` keeps all) |
+| `local_origin.mode`, `.pos`, `.postype` | `auto`, `[0,0,0]`, `llh` | UBX, SBF, NovAtel | ENU origin of the solution: `auto` = first valid solution, `fixed` = `pos` ([details](../../docs/PARAMETER_NAMES.md#enu-origin)) |
+| `nmea.reference_date` | `[]` | UBX, SBF, NovAtel | `[year, month, day]` for a GGA-only NMEA stream |
+| `rtcm_input.listen` | `""` | UBX, SBF, NovAtel | listen URI for RTCM corrections written to the receiver (see below) |
+| `rtcm_input.receiver_stream`, `rtcm_input.receiver_port` | `""`, `THISPORT` | NovAtel | dedicated correction port (see below) |
+| `rawx_layout` | `auto` | UBX | RXM-RAWX layout: `auto`, `data0`, `data1_pre27` |
+| `imu.sttag_tick_s` | `39.0625e-6` | UBX | ESF-RAW time-tag tick |
+| `imu_scale_override.accel`, `.gyro` | `0.0` | NovAtel | RAWIMUSX scale factors; `0` selects them from the IMU type |
+| `reference_week`, `reference_tow` | `0`, `0.0` | RTCM | GPS week/TOW near the start of a recorded RTCM stream (`0` = from the stream or host date) |
+| `station_id` | `-1` | RTCM | accept only this station ID (`-1` = any) |
+| `observation.excluded_systems` | `[]` | RTCM | constellations to drop: `G R E C J I S` |
+| `rtcm_output.destination` | `""` | RTCM | forward the input bytes to this URI |
 
----
+## Decoded messages
 
-## RTCM correction relay (receiver on-chip RTK)
+### u-blox UBX
 
-A decoder owns the receiver port read-only, so on single-port wiring (a u-blox USB
-cable, a lone UART to an OEM board) there is otherwise no path to feed RTK
-corrections. Set `rtcm_relay` to a listen URI and the decoder hosts a TCP server,
-writing any RTCM bytes pushed there down the receiver stream; the receiver then
-computes RTK on-chip and its Fix appears in the decoded PVT.
-
-```bash
-# Rover decoder hosts the correction server (u-blox example)
-ros2 run gnss_ros_standardization ubx_decoder_node --ros-args \
-  -p stream_path:="serial:///dev/ttyACM0:115200" -p rtcm_relay:="tcpsvr://:5556"
-# Correction source: decode a base stream to topics AND forward it
-ros2 run gnss_ros_standardization rtcm_decoder_node --ros-args \
-  -p stream_path:="ntrip://user:pass@caster:2101/MOUNT" -p rtcm_relay:="tcpcli://127.0.0.1:5556"
-```
-
-Recommended ports (match the drivers): **ubx 5556, sbf 5557, novatel 5558**. The
-receiver port must accept RTCMv3 input — set it up once:
-
-| Receiver | One-time setup |
+| Topic | Messages |
 |---|---|
-| u-blox | include RTCM3 in the port's `inProtoMask` (F9P default already does) |
-| Septentrio | `setDataInOut, COM1, RTCMv3, +SBF` (WebUI or RxTools) |
-| NovAtel | needs a **dedicated** port (RTCMV3 rx cannot share the NOVATEL log port): point `rtcm_relay_output` at a second `/dev` device — the decoder sets it to RTCMV3 via `INTERFACEMODE THISPORT RTCMV3 NONE OFF`. Single-UART-only wiring cannot receive corrections. |
+| observation | RXM-RAWX (and RXM-RAW) |
+| ephemeris | RXM-SFRBX: GPS/QZSS LNAV, GLONASS, Galileo I/NAV and F/NAV, BeiDou D1/D2 |
+| solution | NAV-PVT, NAV-HPPOSLLH, NAV-HPPOSECEF, NAV-POSECEF, NAV-VELECEF, NAV-COV, NAV-DOP; NMEA GGA/RMC/GSA/GST |
+| imu_raw / imu | ESF-RAW / ESF-INS |
 
-The drivers offer the same relay for configured operation; see
-[`../drivers/`](../drivers/).
+### Septentrio SBF
 
----
-
-## Detailed Node Reference
-
-### `rtcm_decoder_node`
-
-```bash
-ros2 run gnss_ros_standardization rtcm_decoder_node --ros-args \
-  -p stream_path:="ntrip://user:password@host:port/mountpoint"
-```
-
-### Decoded RTCM messages
-
-| Group | RTCM message types |
+| Topic | Blocks |
 |---|---|
-| MSM4 observations | 1074 (GPS), 1084 (GLO), 1094 (GAL), 1104 (SBAS), 1114 (QZS), 1124 (BDS), 1134 (NavIC) |
-| MSM7 observations | 1077 (GPS), 1087 (GLO), 1097 (GAL), 1107 (SBAS), 1117 (QZS), 1127 (BDS), 1137 (NavIC) |
-| GPS ephemeris | 1019 |
-| GLONASS ephemeris | 1020 |
-| Galileo ephemeris | 1045 (F/NAV), 1046 (I/NAV) |
-| BeiDou ephemeris | 1042 |
-| QZSS ephemeris | 1044 |
-| NavIC ephemeris | 1041 |
-| Station info | 1005, 1006, 1007, 1008, 1033 (parsed but not republished) |
+| observation | MeasEpoch (4027), MeasExtra, Meas3 |
+| ephemeris | GPSNav 5891, GLONav 4004, GALNav 4002, BDSNav 4081, QZSNav 4095; GPSRawCA 4017, GLORawCA 4026, GALRawINAV 4023, GALRawFNAV 4022, BDSRaw 4047, QZSRawL1CA 4066, NAVICRaw 4093 |
+| solution | PVTGeodetic 4007, PVTCartesian 4006, PosCovGeodetic 5906, VelCovGeodetic 5908, PosCovCartesian 5905, VelCovCartesian 5907, DOP 4001; NMEA GGA/RMC/GSA/GST |
+| imu_raw | ExtSensorMeas 4050 |
 
----
+### NovAtel OEM4/6/7
 
-### `ubx_decoder_node`
+| Topic | Logs |
+|---|---|
+| observation | RANGECMPB 140, RANGEB 43 |
+| ephemeris | RAWEPHEMB 41, GLOEPHEMERISB 723, GALEPHEMERISB 1122, BDSEPHEMERISB 1696, QZSSRAWEPHEMB 1331, NAVICEPHEMERISB 2123, IONUTCB 8, GALIONOB 1127, QZSSIONUTCB 1347 |
+| solution | BESTPOSB 42, BESTVELB 99, BESTXYZB 241, PSRDOPB 174; NMEA GGA/RMC/GSA/GST |
+| imu_raw / imu | RAWIMUSXB 1462 / CORRIMUDATAB 812 |
+
+NovAtel IMU messages keep the receiver axes (X lateral, Y longitudinal, Z up).
+
+### RTCM 3
+
+| Topic | Message types |
+|---|---|
+| observation | MSM4–7 (GPS 1074–1077, GLONASS 1084–1087, Galileo 1094–1097, SBAS 1104–1107, QZSS 1114–1117, BeiDou 1124–1127, NavIC 1134–1137); 1002, 1004, 1010, 1012 |
+| ephemeris | 1019 GPS, 1020 GLONASS, 1041 NavIC, 1042 BeiDou, 1044 QZSS, 1045 Galileo F/NAV, 1046 Galileo I/NAV |
+
+## Time stamps
+
+| `use_gps_timestamp` | Observations / solutions | IMU |
+|---|---|---|
+| `false` | host receive time | host receive time |
+| `true` | GNSS epoch as UTC | measurement time as UTC (UBX ESF-RAW: receiver time tag mapped onto GNSS time) |
+
+With `true`, a message without valid GNSS time is not published. The GNSS epoch is
+always in the `week` / `tow` fields.
+
+A recorded RTCM stream without a full GPS week needs `reference_week` and
+`reference_tow` set to a time within half a week of the recording.
+
+## RTCM corrections to the receiver (on-chip RTK)
+
+`rtcm_input.listen` makes the decoder host a TCP server and write the RTCM bytes
+it receives to the receiver, so the receiver can compute RTK itself:
 
 ```bash
 ros2 run gnss_ros_standardization ubx_decoder_node --ros-args \
-  -p stream_path:="serial:///dev/ttyACM0:115200"
+  -p stream_path:=serial:///dev/ttyACM0:115200 -p rtcm_input.listen:=tcpsvr://:5556
+ros2 run gnss_ros_standardization rtcm_decoder_node --ros-args \
+  -p stream_path:=ntrip://user:pass@caster:2101/MOUNT \
+  -p rtcm_output.destination:=tcpcli://127.0.0.1:5556
 ```
 
-### Decoded UBX messages
+| Receiver | Port | Receiver setup |
+|---|---|---|
+| u-blox | 5556 | RTCM3 enabled in the port's `inProtoMask` (F9P default) |
+| Septentrio | 5557 | `setDataInOut, COM1, RTCMv3, +SBF` |
+| NovAtel | 5558 | a second port: `rtcm_input.receiver_stream:=serial:///dev/ttyUSB2:230400`; the decoder sends `INTERFACEMODE THISPORT RTCMV3 NONE OFF` on it |
 
-`/gnss/observation`:
+The [`onboard_rtk` pipeline](../../launch/README.md#on-chip-rtk-through-the-rtcm-relay)
+starts both nodes together.
 
-| Message | ID | Contents | Notes |
-|---|---|---|---|
-| `UBX-RXM-RAWX` | `0x02 / 0x15` | Raw pseudorange, carrier phase, Doppler, and SNR for all tracked signals |  |
-
-`/gnss/ephemeris`:
-
-| Message | ID | Contents | Notes |
-|---|---|---|---|
-| `UBX-RXM-SFRBX` | `0x02 / 0x13` | Raw navigation subframes for GPS/GLO/GAL/BDS/QZS/NavIC/SBAS | Assembled into ephemerides by RTKLIB |
-
-`/gnss/nmea_solution`:
-
-| Message | ID | Contents | Notes |
-|---|---|---|---|
-| `UBX-NAV-PVT` | `0x01 / 0x07` | Receiver PVT solution | Binary solution source when present during startup grace |
-| `UBX-NAV-DOP` | `0x01 / 0x04` | GDOP, PDOP, TDOP, VDOP, HDOP, NDOP, and EDOP | Applied when fresh for the PVT epoch |
-| `UBX-NAV-COV` | `0x01 / 0x36` | Position and velocity covariance in the receiver's navigation frame | Refines covariance when emitted by the receiver |
-| `UBX-NAV-POSECEF` | `0x01 / 0x01` | Receiver ECEF position | Optional native ECEF position source |
-| `UBX-NAV-VELECEF` | `0x01 / 0x11` | Receiver ECEF velocity | Optional native ECEF velocity source |
-| `UBX-NAV-HPPOSLLH` | `0x01 / 0x14` | High-precision geodetic position (1e-9 deg / 0.1 mm) | Highest-priority LLH source; overrides NAV-PVT position |
-| `UBX-NAV-HPPOSECEF` | `0x01 / 0x13` | High-precision ECEF position (0.1 mm) | Highest-priority ECEF source; overrides NAV-POSECEF |
-| NMEA `GGA/RMC/GSA/GST` | — | NMEA position, velocity, DOP, and covariance fallback | Used only when no binary PVT is selected |
-
-`/gnss/imu/data_raw`:
-
-| Message | ID | Contents | Requirement |
-|---|---|---|---|
-| `UBX-ESF-RAW` | `0x10 / 0x03` | Raw IMU sensor samples (accel + gyro, internal scale) | u-blox receiver with ESF raw output |
-
-`/gnss/imu/data`:
-
-| Message | ID | Contents | Requirement |
-|---|---|---|---|
-| `UBX-ESF-INS` | `0x10 / 0x15` | Receiver-calibrated angular rate [rad/s] and linear acceleration [m/s²] | u-blox receiver with ESF INS output |
-
----
-
-### `sbf_decoder_node`
-
-```bash
-ros2 run gnss_ros_standardization sbf_decoder_node --ros-args \
-  -p stream_path:="serial:///dev/ttyUSB0:115200"
-```
-
-### Decoded SBF blocks
-
-`/gnss/observation`:
-
-| Block | ID | Contents | Notes |
-|---|---|---|---|
-| `MeasEpoch` | 4027 | Raw carrier phase, code range, Doppler, and SNR for all signals |  |
-
-`/gnss/ephemeris` (receiver-assembled — single block = complete ephemeris):
-
-| Block | ID | Contents | Notes |
-|---|---|---|---|
-| `GPSNav` | 5891 | GPS Keplerian ephemeris |  |
-| `GLONav` | 4004 | GLONASS state-vector ephemeris |  |
-| `GALNav` | 4002 | Galileo Keplerian ephemeris |  |
-| `BDSNav` | 4081 | BeiDou Keplerian ephemeris |  |
-| `QZSNav` | 4095 | QZSS Keplerian ephemeris |  |
-| `NavICNav` | 4099 | NavIC Keplerian ephemeris |  |
-
-`/gnss/ephemeris` (raw subframe blocks — decoded by RTKLIB, duplicates filtered by IODE/IODC):
-
-| Block | ID | Contents | Notes |
-|---|---|---|---|
-| `GPSRawCA` | 4017 | GPS L1 C/A navigation subframe |  |
-| `GLORawCA` | 4026 | GLONASS L1 C/A navigation string |  |
-| `GALRawINAV` | 4023 | Galileo I/NAV page |  |
-| `GALRawFNAV` | 4022 | Galileo F/NAV page |  |
-| `BDSRaw` | 4047 | BeiDou navigation message |  |
-| `QZSRawL1CA` | 4066 | QZSS L1 C/A subframe |  |
-| `NAVICRaw` | 4093 | NavIC navigation message |  |
-
-`/gnss/nmea_solution`:
-
-| Block | ID | Contents | Notes |
-|---|---|---|---|
-| `PVTGeodetic` | 4007 | Receiver LLH position and ENU velocity | Binary solution source when present during startup grace |
-| `PVTCartesian` | 4006 | Receiver ECEF position and velocity | Binary solution source when present during startup grace |
-| `PosCovGeodetic` | 5906 | Position covariance in geodetic/local navigation frame | Used with `PVTGeodetic` |
-| `VelCovGeodetic` | 5908 | Velocity covariance in geodetic/local navigation frame | Used with `PVTGeodetic` |
-| `PosCovCartesian` | 5905 | Position covariance in ECEF | Used with `PVTCartesian` |
-| `VelCovCartesian` | 5907 | Velocity covariance in ECEF | Used with `PVTCartesian` |
-| `DOP` | 4001 | GDOP, PDOP, TDOP, HDOP, VDOP, and related DOP values | Applied when fresh for the PVT epoch |
-| NMEA `GGA/RMC/GSA/GST` | — | NMEA position, velocity, DOP, and covariance fallback | Used only when no binary PVT is selected |
-
-`/gnss/imu/data_raw`:
-
-| Block | ID | Contents | Requirement |
-|---|---|---|---|
-| `ExtSensorMeas` | 4050 | Linear acceleration [m/s²] (type 0) and angular velocity [rad/s] (type 1) | AsteRx-i / mosaic-X5 with IMU |
-
----
-
-### `novatel_decoder_node`
-
-```bash
-ros2 run gnss_ros_standardization novatel_decoder_node --ros-args \
-  -p stream_path:="serial:///dev/ttyUSB0:115200"
-```
-
-### Decoded NovAtel logs
-
-`/gnss/observation`:
-
-| Log | ID | Contents | Notes |
-|---|---|---|---|
-| `RANGECMPB` | 140 | Compressed pseudorange, carrier phase, Doppler, and SNR | Recommended |
-| `RANGEB` | 43 | Uncompressed pseudorange, carrier phase, Doppler, and SNR |  |
-
-`/gnss/ephemeris`:
-
-| Log | ID | Contents | Notes |
-|---|---|---|---|
-| `RAWEPHEMB` | 41 | GPS raw ephemeris | RTKLIB does not decode `GPSEPHEMB` ID 7 |
-| `GLOEPHEMERISB` | 723 | GLONASS ephemeris |  |
-| `GALEPHEMERISB` | 1122 | Galileo ephemeris | Contains both I/NAV and F/NAV |
-| `BDSEPHEMERISB` | 1696 | BeiDou ephemeris |  |
-| `QZSSRAWEPHEMB` | 1331 | QZSS raw ephemeris | RTKLIB does not decode `QZSSEPHEMERISB` ID 1336 |
-| `NAVICEPHEMERISB` | 2123 | NavIC ephemeris |  |
-| `IONUTCB` | 8 | GPS ionosphere and UTC parameters |  |
-| `GALIONOB` | 1127 | Galileo ionosphere parameters |  |
-| `QZSSIONUTCB` | 1347 | QZSS ionosphere and UTC parameters |  |
-
-`/gnss/nmea_solution`:
-
-| Log | ID | Contents | Notes |
-|---|---|---|---|
-| `BESTPOSB` | 42 | Receiver LLH position, solution status, satellite count, differential age, and position sigma | Binary solution source when present during startup grace |
-| `BESTVELB` | 99 | Receiver horizontal speed, track over ground, and vertical speed | Complements `BESTPOSB` velocity fields |
-| `BESTXYZB` | 241 | Receiver ECEF position/velocity and covariance diagonals | Optional native ECEF source for the same solution |
-| `PSRDOPB` | 174 | GDOP, PDOP, HDOP, HTDOP, TDOP, and cutoff angle | Applied when fresh for the PVT epoch |
-| NMEA `GGA/RMC/GSA/GST` | — | NMEA position, velocity, DOP, and covariance fallback | Used only when no binary PVT is selected |
-
-`/gnss/imu/data_raw`:
-
-| Log | ID | Contents | Requirement |
-|---|---|---|---|
-| `RAWIMUSXB` | 1462 | Raw IMU delta-velocity and delta-angle counts with IMU-type-specific scaling | NovAtel receiver + IMU |
-
-`/gnss/imu/data`:
-
-| Log | ID | Contents | Requirement |
-|---|---|---|---|
-| `CORRIMUDATAB` | 812 | Bias-, gravity-, and earth-rate-corrected linear acceleration [m/s²] and angular velocity [rad/s] | SPAN-capable receiver + IMU |
+Field definitions of the published messages: [topic contract](../../docs/TOPIC_DATA_CONTRACT.md).

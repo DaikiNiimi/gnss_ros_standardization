@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: MIT
 #pragma once
+#include "gnss_ros_standardization/receiver_diagnostics.h"
 /// @file sbf_protocol.hpp
 /// @brief Septentrio SBF protocol constants and utility types.
 ///
@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include "gnss_ros_standardization/measurement_validation.hpp"
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -14,7 +16,7 @@
 #include <vector>
 
 // Include rtklib.h for STR_ constants
-#include "rtklib.h"
+#include "gnss_ros_standardization/rtklib_compat.hpp"
 
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
@@ -48,7 +50,7 @@ namespace ext_sensor_meas {
   constexpr int SB_MIN_LEN        = 28;
   constexpr int MIN_BODY_LEN      = 8;
   constexpr uint8_t TYPE_ACCEL    = 0;   // Accelerations [m/s²]
-  constexpr uint8_t TYPE_GYRO     = 1;   // Angular rates [rad/s]
+  constexpr uint8_t TYPE_GYRO     = 1;   // Wire angular rates [degree/s]; ROS uses rad/s
 }
 
 // SBF Block IDs
@@ -111,7 +113,6 @@ constexpr const char* BLOCK_GLONAV    = "GLONav";
 constexpr const char* BLOCK_GALNAV    = "GALNav";
 constexpr const char* BLOCK_BDSNAV    = "BDSNav";
 constexpr const char* BLOCK_QZSNAV    = "QZSNav";
-constexpr const char* BLOCK_NAVICNAV  = "NavICNav";
 
 constexpr const char* BLOCK_PVTGEODETIC = "PVTGeodetic";
 constexpr const char* BLOCK_POSCOVGEODETIC = "PosCovGeodetic";
@@ -257,7 +258,8 @@ inline uint8_t mapModeToStatus(uint8_t mode_byte) {
   const uint8_t mode = mode_byte & 0x0F;
   switch (mode) {
     case MODE_NO_PVT:       return S::STATUS_NONE;
-    case MODE_STANDALONE:   return S::STATUS_SINGLE;
+    case MODE_STANDALONE:
+    case 3: /* fixed location, not a measured RTK fix */ return S::STATUS_SINGLE;
     case MODE_DIFFERENTIAL: return S::STATUS_DGPS;
     case MODE_RTK_FIXED:
     case MODE_MOVING_BASE:  return S::STATUS_FIX;
@@ -280,16 +282,37 @@ inline uint16_t getWeek(const uint8_t* p, size_t len) {
   return read_le<uint16_t>(p + SBF_BODY_OFFSET_WNC);
 }
 
+// A PVT block with Mode "no PVT" or a non-zero Error is a timed epoch without
+// a solution: it is published as STATUS_NONE (positions become NaN downstream),
+// not dropped. Returns false when the epoch itself is not usable.
+inline bool pvtEpochWithoutSolution(const uint8_t* p, uint32_t tow_ms, uint16_t wnc,
+                                    gnss_ros_standardization::msg::GnssSolution& out,
+                                    bool& no_solution) {
+  if (wnc == 0 || wnc == 0xFFFF || tow_ms >= 604800000u) return GNSS_RX_REJECT(GNSS_RX_TIME);
+  no_solution = (p[SBF_BODY_OFFSET_MODE] & 0x0F) == MODE_NO_PVT || p[7] != 0;
+  if (no_solution) {
+    GNSS_RX_EVENT(GNSS_RX_QUALITY, 1);
+    out.status    = gnss_ros_standardization::msg::GnssSolution::STATUS_NONE;
+    out.num_sats  = 0;
+    out.time_tow  = static_cast<double>(tow_ms) * 1e-3;
+    out.time_week = wnc;
+  }
+  return true;
+}
+
 /// Parse PVTGeodetic body into GnssSolution.
 /// Fills: status, num_sats, time_tow, time_week, latitude, longitude, altitude, vel_enu.
+/// Velocity Do-Not-Use leaves the position valid and the velocity NaN.
 inline bool parsePVTGeodetic(const uint8_t* p, size_t len,
                              gnss_ros_standardization::msg::GnssSolution& out) {
-  if (len < static_cast<size_t>(PVT_GEO_MIN_LEN)) return false;
+  if (len < static_cast<size_t>(PVT_GEO_MIN_LEN)) return GNSS_RX_REJECT(GNSS_RX_LENGTH);
 
   const uint32_t tow_ms = read_le<uint32_t>(p + SBF_BODY_OFFSET_TOW);
   const uint16_t wnc    = read_le<uint16_t>(p + SBF_BODY_OFFSET_WNC);
   const uint8_t  mode   = p[SBF_BODY_OFFSET_MODE];
-  if ((mode & 0x0F) == MODE_NO_PVT) return false;
+  bool no_solution = false;
+  if (!pvtEpochWithoutSolution(p, tow_ms, wnc, out, no_solution)) return false;
+  if (no_solution) return true;
 
   const double lat_rad = read_le<double>(p + PVT_GEO_OFFSET_LAT);
   const double lon_rad = read_le<double>(p + PVT_GEO_OFFSET_LON);
@@ -299,6 +322,11 @@ inline bool parsePVTGeodetic(const uint8_t* p, size_t len,
   const float  vu      = read_le<float>(p + PVT_GEO_OFFSET_VU);
   const uint8_t nr_sv  = p[PVT_GEO_OFFSET_NRSV];
 
+  if (!std::isfinite(lat_rad) || !std::isfinite(lon_rad) ||
+      std::abs(lat_rad) > 1.5707963267948966 || std::abs(lon_rad) > 3.141592653589793 ||
+      !std::isfinite(hgt) || hgt == -2e10) return GNSS_RX_REJECT(GNSS_RX_VALUE);
+  const bool vel_ok = std::isfinite(vn) && std::isfinite(ve) && std::isfinite(vu) &&
+                      vn != -2e10f && ve != -2e10f && vu != -2e10f;
   constexpr double kRad2Deg = 180.0 / 3.14159265358979323846;
   out.status    = mapModeToStatus(mode);
   out.num_sats  = nr_sv;
@@ -307,9 +335,13 @@ inline bool parsePVTGeodetic(const uint8_t* p, size_t len,
   out.latitude  = lat_rad * kRad2Deg;
   out.longitude = lon_rad * kRad2Deg;
   out.altitude  = hgt;
-  out.vel_enu.x = static_cast<double>(ve);
-  out.vel_enu.y = static_cast<double>(vn);
-  out.vel_enu.z = static_cast<double>(vu);
+  if (vel_ok) {
+    out.vel_enu.x = static_cast<double>(ve);
+    out.vel_enu.y = static_cast<double>(vn);
+    out.vel_enu.z = static_cast<double>(vu);
+  } else {
+    out.vel_enu.x = out.vel_enu.y = out.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
+  }
   return true;
 }
 
@@ -317,12 +349,14 @@ inline bool parsePVTGeodetic(const uint8_t* p, size_t len,
 /// Fills: status, num_sats, time_tow, time_week, pos_ecef, vel_ecef.
 inline bool parsePVTCartesian(const uint8_t* p, size_t len,
                               gnss_ros_standardization::msg::GnssSolution& out) {
-  if (len < static_cast<size_t>(PVT_XYZ_MIN_LEN)) return false;
+  if (len < static_cast<size_t>(PVT_XYZ_MIN_LEN)) return GNSS_RX_REJECT(GNSS_RX_LENGTH);
 
   const uint32_t tow_ms = read_le<uint32_t>(p + SBF_BODY_OFFSET_TOW);
   const uint16_t wnc    = read_le<uint16_t>(p + SBF_BODY_OFFSET_WNC);
   const uint8_t  mode   = p[SBF_BODY_OFFSET_MODE];
-  if ((mode & 0x0F) == MODE_NO_PVT) return false;
+  bool no_solution = false;
+  if (!pvtEpochWithoutSolution(p, tow_ms, wnc, out, no_solution)) return false;
+  if (no_solution) return true;
 
   const double x  = read_le<double>(p + PVT_XYZ_OFFSET_X);
   const double y  = read_le<double>(p + PVT_XYZ_OFFSET_Y);
@@ -332,6 +366,10 @@ inline bool parsePVTCartesian(const uint8_t* p, size_t len,
   const float  vz = read_le<float>(p + PVT_XYZ_OFFSET_VZ);
   const uint8_t nr_sv = p[PVT_XYZ_OFFSET_NRSV];
 
+  if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+      x == -2e10 || y == -2e10 || z == -2e10) return GNSS_RX_REJECT(GNSS_RX_VALUE);
+  const bool vel_ok = std::isfinite(vx) && std::isfinite(vy) && std::isfinite(vz) &&
+                      vx != -2e10f && vy != -2e10f && vz != -2e10f;
   out.status     = mapModeToStatus(mode);
   out.num_sats   = nr_sv;
   out.time_tow   = static_cast<double>(tow_ms) * 1e-3;
@@ -339,17 +377,32 @@ inline bool parsePVTCartesian(const uint8_t* p, size_t len,
   out.pos_ecef.x = x;
   out.pos_ecef.y = y;
   out.pos_ecef.z = z;
-  out.vel_ecef.x = vx;
-  out.vel_ecef.y = vy;
-  out.vel_ecef.z = vz;
+  if (vel_ok) {
+    out.vel_ecef.x = vx;
+    out.vel_ecef.y = vy;
+    out.vel_ecef.z = vz;
+  } else {
+    out.vel_ecef.x = out.vel_ecef.y = out.vel_ecef.z = std::numeric_limits<double>::quiet_NaN();
+  }
   return true;
+}
+
+inline bool validCovarianceBlock(const uint8_t* p) {
+  if (p[7] != 0 || (p[6] & 0x0f) == 0 || read_le<uint16_t>(p + 4) == 65535 ||
+      read_le<uint32_t>(p) >= 604800000) return GNSS_RX_REJECT(p[7]!=0 || (p[6]&0x0f)==0 ? GNSS_RX_QUALITY : GNSS_RX_TIME);
+  for (int offset : {8, 12, 16, 24, 28, 36})
+    if (read_le<float>(p + offset) == -2e10f) return GNSS_RX_REJECT(GNSS_RX_VALUE);
+  return validation::covariance(read_le<float>(p + 8), read_le<float>(p + 12),
+      read_le<float>(p + 16), read_le<float>(p + 24), read_le<float>(p + 28),
+      read_le<float>(p + 36)) || GNSS_RX_REJECT(GNSS_RX_VALUE);
 }
 
 /// Parse PosCovGeodetic body into GnssSolution's pos_enu_cov (row-major E,N,U).
 /// Septentrio convention: lat≡N, lon≡E, hgt≡U.
 inline bool parsePosCovGeodetic(const uint8_t* p, size_t len,
                                 gnss_ros_standardization::msg::GnssSolution& out) {
-  if (len < static_cast<size_t>(POSCOV_GEO_MIN_LEN)) return false;
+  if (len < static_cast<size_t>(POSCOV_GEO_MIN_LEN)) return GNSS_RX_REJECT(GNSS_RX_LENGTH);
+  if (!validCovarianceBlock(p)) return false;
   const float c_lat_lat = read_le<float>(p + POSCOV_GEO_OFFSET_LATLAT);
   const float c_lon_lon = read_le<float>(p + POSCOV_GEO_OFFSET_LONLON);
   const float c_hgt_hgt = read_le<float>(p + POSCOV_GEO_OFFSET_HGTHGT);
@@ -373,7 +426,8 @@ inline bool parsePosCovGeodetic(const uint8_t* p, size_t len,
 /// Parse PosCovCartesian body into GnssSolution's pos_cov_ecef (row-major).
 inline bool parsePosCovCartesian(const uint8_t* p, size_t len,
                                  gnss_ros_standardization::msg::GnssSolution& out) {
-  if (len < static_cast<size_t>(POSCOV_XYZ_MIN_LEN)) return false;
+  if (len < static_cast<size_t>(POSCOV_XYZ_MIN_LEN)) return GNSS_RX_REJECT(GNSS_RX_LENGTH);
+  if (!validCovarianceBlock(p)) return false;
   const float c_xx = read_le<float>(p + POSCOV_XYZ_OFFSET_XX);
   const float c_yy = read_le<float>(p + POSCOV_XYZ_OFFSET_YY);
   const float c_zz = read_le<float>(p + POSCOV_XYZ_OFFSET_ZZ);
@@ -397,7 +451,8 @@ inline bool parsePosCovCartesian(const uint8_t* p, size_t len,
 /// Septentrio convention: Vn≡N, Ve≡E, Vu≡U.
 inline bool parseVelCovGeodetic(const uint8_t* p, size_t len,
                                 gnss_ros_standardization::msg::GnssSolution& out) {
-  if (len < static_cast<size_t>(VELCOV_GEO_MIN_LEN)) return false;
+  if (len < static_cast<size_t>(VELCOV_GEO_MIN_LEN)) return GNSS_RX_REJECT(GNSS_RX_LENGTH);
+  if (!validCovarianceBlock(p)) return false;
   const float c_vn_vn = read_le<float>(p + VELCOV_GEO_OFFSET_VNVN);
   const float c_ve_ve = read_le<float>(p + VELCOV_GEO_OFFSET_VEVE);
   const float c_vu_vu = read_le<float>(p + VELCOV_GEO_OFFSET_VUVU);
@@ -421,7 +476,8 @@ inline bool parseVelCovGeodetic(const uint8_t* p, size_t len,
 /// Parse VelCovCartesian body into GnssSolution's vel_cov_ecef (row-major).
 inline bool parseVelCovCartesian(const uint8_t* p, size_t len,
                                  gnss_ros_standardization::msg::GnssSolution& out) {
-  if (len < static_cast<size_t>(VELCOV_XYZ_MIN_LEN)) return false;
+  if (len < static_cast<size_t>(VELCOV_XYZ_MIN_LEN)) return GNSS_RX_REJECT(GNSS_RX_LENGTH);
+  if (!validCovarianceBlock(p)) return false;
   const float c_vx_vx = read_le<float>(p + VELCOV_XYZ_OFFSET_VXVX);
   const float c_vy_vy = read_le<float>(p + VELCOV_XYZ_OFFSET_VYVY);
   const float c_vz_vz = read_le<float>(p + VELCOV_XYZ_OFFSET_VZVZ);
@@ -445,21 +501,22 @@ inline bool parseVelCovCartesian(const uint8_t* p, size_t len,
 /// since the Septentrio DOP block exposes only PDOP/TDOP/HDOP/VDOP.
 inline bool parseDop(const uint8_t* p, size_t len,
                      gnss_ros_standardization::msg::GnssSolution& out) {
-  if (len < static_cast<size_t>(DOP_MIN_LEN)) return false;
+  if (len < static_cast<size_t>(DOP_MIN_LEN)) return GNSS_RX_REJECT(GNSS_RX_LENGTH);
+  if (read_le<uint16_t>(p + 4) == 65535 || read_le<uint32_t>(p) >= 604800000) return GNSS_RX_REJECT(GNSS_RX_TIME);
   const uint16_t pdop_raw = read_le<uint16_t>(p + DOP_OFFSET_PDOP);
   const uint16_t tdop_raw = read_le<uint16_t>(p + DOP_OFFSET_TDOP);
   const uint16_t hdop_raw = read_le<uint16_t>(p + DOP_OFFSET_HDOP);
   const uint16_t vdop_raw = read_le<uint16_t>(p + DOP_OFFSET_VDOP);
 
-  const float pdop = (pdop_raw == DOP_NOT_AVAILABLE) ? 0.0f : pdop_raw * 0.01f;
-  const float tdop = (tdop_raw == DOP_NOT_AVAILABLE) ? 0.0f : tdop_raw * 0.01f;
-  const float hdop = (hdop_raw == DOP_NOT_AVAILABLE) ? 0.0f : hdop_raw * 0.01f;
-  const float vdop = (vdop_raw == DOP_NOT_AVAILABLE) ? 0.0f : vdop_raw * 0.01f;
+  const float pdop = (pdop_raw == DOP_NOT_AVAILABLE) ? std::numeric_limits<float>::quiet_NaN() : pdop_raw * 0.01f;
+  const float tdop = (tdop_raw == DOP_NOT_AVAILABLE) ? std::numeric_limits<float>::quiet_NaN() : tdop_raw * 0.01f;
+  const float hdop = (hdop_raw == DOP_NOT_AVAILABLE) ? std::numeric_limits<float>::quiet_NaN() : hdop_raw * 0.01f;
+  const float vdop = (vdop_raw == DOP_NOT_AVAILABLE) ? std::numeric_limits<float>::quiet_NaN() : vdop_raw * 0.01f;
 
   out.pdop = pdop;
   out.hdop = hdop;
   out.vdop = vdop;
-  out.gdop = (pdop > 0.0f || tdop > 0.0f) ? std::sqrt(pdop * pdop + tdop * tdop) : 0.0f;
+  out.gdop = std::hypot(pdop, tdop);
   return true;
 }
 
@@ -467,3 +524,62 @@ inline bool parseDop(const uint8_t* p, size_t len,
 
 }  // namespace sbf
 }  // namespace gnss_ros_standardization
+
+// ---- sbf navigation ----
+#include "gnss_ros_standardization/binary_framer.hpp"
+
+namespace gnss_ros_standardization {
+// No model/provenance side channel is part of the ROS navigation contract.
+// Do not publish CNAV as indistinguishable legacy eph_t, even with zero rates.
+// Keep this gate before input_sbf so rejected frames cannot alter cached nav.
+inline bool supportedSbfNavigation(const wire::Frame& f) {
+  switch (f.id) {
+    case 4254:  // NavICLNav is disabled in the normal backend build.
+    case 4042: case 4258: case 4251: case 4252: case 4253: return false;
+    case 4004: return f.payload.size() >= (f.revision == 0 ? 88u : 92u);
+    default: return true;
+  }
+}
+}  // namespace gnss_ros_standardization
+
+// ---- sbf observation completion ----
+#include <chrono>
+#include <cmath>
+#include <stdexcept>
+extern "C" {
+#include "gnss_ros_standardization/rtklib_compat.hpp"
+// Defined in the narrowly patched build-tree copy of septentrio.c.
+int gnss_flush_sbf_observations(raw_t* raw);
+}
+
+namespace gnss_ros_standardization {
+// MeasEpoch is a complete, CRC-checked measurement block. Wait for its optional
+// MeasExtra/EndOfMeas, but release it after a quiet period even at EOF or a lost
+// connection. Meas3Ranges follows the same deadline; optional blocks only extend
+// a pending validated epoch. A partial wire frame is never a measurement.
+class SbfObservationCompletion {
+ public:
+  using Clock = std::chrono::steady_clock;
+  void configure(double seconds) {
+    if (!std::isfinite(seconds) || seconds <= 0 || seconds > 5)
+      throw std::invalid_argument("observation.assembly_timeout_s must be in (0, 5]");
+    timeout_ = std::chrono::duration<double>(seconds);
+  }
+  void decoded(uint16_t id, const raw_t& raw, Clock::time_point now=Clock::now()) {
+    if (id == 4027 || id == 4109) { armed_ = raw.obuf.n > 0; updated_ = now; }
+    else if ((id == 4000 || id == 4110 || id == 4111) && armed_ &&
+             raw.obuf.n > 0 && timediff(raw.time,raw.obuf.data[0].time)==0) updated_ = now;
+    if (raw.obuf.n == 0) armed_ = false;
+  }
+  void reset() { armed_=false; }
+  bool flushIfDue(raw_t& raw, Clock::time_point now=Clock::now()) {
+    if (!armed_ || now-updated_ < timeout_) return false;
+    armed_ = false;
+    return gnss_flush_sbf_observations(&raw) == 1;
+  }
+ private:
+  bool armed_{false};
+  std::chrono::duration<double> timeout_{0.2};
+  Clock::time_point updated_{};
+};
+} // namespace gnss_ros_standardization

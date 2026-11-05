@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 #ifndef GNSS_ROS_STANDARDIZATION_EPOCH_MATCHER_HPP
 #define GNSS_ROS_STANDARDIZATION_EPOCH_MATCHER_HPP
 
@@ -15,24 +14,29 @@
 
 #include "gnss_ros_standardization/msg/gnss_observations.hpp"
 
-extern "C" {
-#include "rtklib.h"
-}
+#include "gnss_ros_standardization/rtklib_compat.hpp"
 
 namespace gnss_utils {
 
 // Rover/base observation epoch matcher shared by the RTK node and the
-// tightly-coupled FGO examples. Pairs each rover epoch with a base epoch:
+// tightly-coupled FGO nodes. Pairs each rover epoch with a base epoch:
 // EXACT within match_tol_s when available, otherwise the most recent base
 // epoch up to max_tdiff_s old (AGED); with emit_unmatched_rover, a rover epoch
 // with no usable base is emitted UNMATCHED (base outage) rather than dropped.
 //
-// Losslessness: both streams are kept in full-GPST order (callback order does
-// not change the result), duplicates / out-of-order / overflow / invalid-time
-// inputs are reason-tagged and counted (never silently dropped), and flush()
-// finalizes the newest buffered epoch at end-of-stream so nothing is left
-// unprocessed. Bounded reorder (reorder_window_s) prevents publishing a newer
-// exact pair before an older one that is still within the window.
+// Both streams are kept in full-GPST order and rover epochs are decided in that
+// order. A rover epoch whose base(T) is present is decided at once; one that
+// only has an older base is decided at once when the observed base cadence
+// rules out a closer base, and otherwise waits until a later rover epoch
+// arrives, so base(T) may still arrive within one rover interval. A rover epoch arriving after a
+// newer one was decided is a counted LateArrival. Duplicates / out-of-order /
+// overflow / invalid-time inputs are reason-tagged and counted (never silently
+// dropped), and flush() finalizes the newest buffered epoch at end-of-stream so
+// nothing is left unprocessed.
+//
+// Base history is pruned by usefulness: once every undecided rover epoch is
+// later than T, only the newest base not after T and newer bases can still be
+// selected, so older ones are retired. The newest base is never evicted.
 //
 // Not thread-safe: the caller serializes pushRover/pushBase/drainMatches/flush.
 class RoverBaseEpochMatcher {
@@ -55,6 +59,7 @@ class RoverBaseEpochMatcher {
     double reorder_window_s{0.05};  // hold a rover until the watermark advances
     double drop_ahead_s{2.0};    // base this far ahead -> the rover is decidable
     std::size_t queue_limit{50};
+    bool decide_on_push{true};  // decisions follow intake order, not consumer cadence
     bool emit_unmatched_rover{false};  // emit rover-only epochs on base outage
   };
 
@@ -109,20 +114,32 @@ class RoverBaseEpochMatcher {
     event_limit_ = std::max<std::size_t>(opt_.queue_limit, 64);
   }
 
+  // Explicit session boundary (bag loop/seek or receiver clock reset).
+  // Keep lifetime counters, discard queues and timestamp floors together.
+  void reset() {
+    rover_queue_.clear(); base_queue_.clear(); base_times_.clear(); ready_.clear();
+    dropped_.clear(); drop_events_.clear();
+    have_rover_floor_ = have_base_floor_ = false;
+  }
+
   void pushRover(ObsMsg::ConstSharedPtr msg) {
     ++counters_.pushed_rover;
     insert(Stream::Rover, rover_queue_, std::move(msg));
+    if (opt_.decide_on_push) collect(false);
   }
 
   void pushBase(ObsMsg::ConstSharedPtr msg) {
     insert(Stream::Base, base_queue_, std::move(msg));
+    if (opt_.decide_on_push) collect(false);
   }
 
   // Decide every rover epoch that can be decided now; hold the rest.
-  std::vector<Pair> drainMatches() { return process(false); }
+  std::vector<Pair> drainMatches() { collect(false); return takeReady(); }
+
+  void setDecideOnPush(bool enabled) { opt_.decide_on_push = enabled; }
 
   // End-of-stream: finalize the newest epoch too, so nothing is left pending.
-  std::vector<Pair> flush() { return process(true); }
+  std::vector<Pair> flush() { collect(true); return takeReady(); }
 
   const Counters& counters() const { return counters_; }
   std::size_t pendingRoverCount() const { return rover_queue_.size(); }
@@ -208,7 +225,7 @@ class RoverBaseEpochMatcher {
 
   // Sorted, deduplicated, late-tagged insertion with bounded overflow.
   void insert(Stream stream, Queue& q, ObsMsg::ConstSharedPtr msg) {
-    if (!validTow(msg->tow)) { recordDrop(stream, DropReason::InvalidTimestamp, *msg); return; }
+    if (msg->week == 0 || !validTow(msg->tow)) { recordDrop(stream, DropReason::InvalidTimestamp, *msg); return; }
     const gtime_t t = msgTime(*msg);
     for (const auto& e : q) {
       if (std::fabs(timediff(msgTime(*e), t)) <= opt_.duplicate_tol_s) {
@@ -233,27 +250,25 @@ class RoverBaseEpochMatcher {
         base_times_.erase(base_times_.begin(),
                           base_times_.end() - kCadenceWindow);
     }
-    while (q.size() > opt_.queue_limit) {
-      // Evict the end that is USELESS to the rover being matched, which is not
-      // always the oldest. A consumer that cannot keep up processes rover
-      // epochs behind the wall clock, so the base queue fills with epochs
-      // AHEAD of the rover; its front is then the epoch the lagging rover is
-      // about to need, and dropping it is the one thing that must not happen.
-      // Drop the back instead whenever the front is still inside the matching
-      // window. (Instrumented on a 5 Hz rover / 1 Hz base course: the base
-      // stream arrived exactly on time while pendingBaseCount climbed to the
-      // limit and pinned there, evicting the front on every subsequent push.)
-      bool drop_front = true;
-      if (stream == Stream::Base && !rover_queue_.empty()) {
-        const gtime_t oldest_rover = msgTime(*rover_queue_.front());
-        drop_front =
-            timediff(oldest_rover, msgTime(*q.front())) > opt_.max_tdiff_s;
-      }
-      const ObsMsg& victim = drop_front ? *q.front() : *q.back();
-      if (drop_front) setFloor(stream, msgTime(victim));
+    // Decisions are taken at intake, so a lagging consumer cannot fill these
+    // queues; overflow means a stream outran the other. Evict from the front
+    // only: the newest epoch is the one the next decision needs.
+    const std::size_t limit = stream == Stream::Base ? baseQueueLimit() : opt_.queue_limit;
+    while (q.size() > limit) {
+      const ObsMsg& victim = *q.front();
+      setFloor(stream, msgTime(victim));
       recordDrop(stream, DropReason::QueueOverflow, victim);
-      if (drop_front) q.pop_front(); else q.pop_back();
+      q.pop_front();
     }
+  }
+
+  // The base queue must hold every base up to drop_ahead_s ahead of the oldest
+  // undecided rover; size that from the observed base cadence.
+  std::size_t baseQueueLimit() const {
+    const double interval = estimatedBaseInterval();
+    if (!(interval > 0.0)) return opt_.queue_limit;
+    const double needed = std::ceil(opt_.drop_ahead_s / interval) + 2.0;
+    return std::max(opt_.queue_limit, static_cast<std::size_t>(std::min(needed, 1e6)));
   }
 
   void setFloor(Stream stream, const gtime_t& t) {
@@ -268,42 +283,31 @@ class RoverBaseEpochMatcher {
 
   std::vector<Pair> process(bool end_of_stream) {
     std::vector<Pair> out;
-    // Prune base epochs no pending rover can still use. The reference is the
-    // OLDEST queued rover - the next one to be decided - not the newest: a base
-    // is only dead once the rover at the head of the queue has outrun it by
-    // max_tdiff. Measuring from the newest discards base history the rovers
-    // behind it still need, in proportion to how deep the queue is.
-    if (!rover_queue_.empty() && base_queue_.size() > 1) {
-      const gtime_t oldest_rover = msgTime(*rover_queue_.front());
-      while (base_queue_.size() > 1 &&
-             timediff(oldest_rover, msgTime(*base_queue_.front())) > opt_.max_tdiff_s) {
-        setFloor(Stream::Base, msgTime(*base_queue_.front()));
-        base_queue_.pop_front();
-      }
-    }
-
     const bool have_newest = !rover_queue_.empty();
     const gtime_t newest_rover =
         have_newest ? msgTime(*rover_queue_.back()) : gtime_t{};
 
+    // Rover epochs are decided strictly in time order: an epoch that has to
+    // wait holds every later one, so output order never depends on which epoch
+    // happened to get its base first.
     auto it = rover_queue_.begin();
     while (it != rover_queue_.end()) {
       const ObsMsg::ConstSharedPtr rover_msg = *it;
       const gtime_t rover_time = msgTime(*rover_msg);
       const bool is_newest = (std::next(it) == rover_queue_.end());
-      // Bounded reorder: hold a rover until the watermark is reorder_window past
-      // it, unless we are flushing. The base stream is an equally good witness
-      // that time has moved on, and the only one available during a rover
-      // outage - there the newest rover IS this one, so `behind` stays 0 and
-      // the epoch would be held for the whole outage.
+      // A waiting epoch is settled once a later rover epoch reaches the reorder
+      // window (1 us tolerance: GPST seconds near 1.4e9 resolve only ~2e-7 s, and
+      // a rover interval equal to the window must still settle), at flush, or
+      // when the base stream is drop_ahead_s past it - the only witness during
+      // a rover outage, where the newest rover IS this one.
       const double behind = timediff(newest_rover, rover_time);
-      bool settled = end_of_stream || (behind >= opt_.reorder_window_s);
+      bool settled = end_of_stream || (behind + 1e-6 >= opt_.reorder_window_s);
       if (!settled && !base_queue_.empty() &&
           timediff(msgTime(*base_queue_.back()), rover_time) >=
               opt_.drop_ahead_s)
         settled = true;
 
-      // Exact base within match_tol.
+      // Exact base within match_tol: nothing better can arrive, decide now.
       ObsMsg::ConstSharedPtr exact;
       for (const auto& b : base_queue_)
         if (std::fabs(timediff(msgTime(*b), rover_time)) <= opt_.match_tol_s) {
@@ -311,7 +315,6 @@ class RoverBaseEpochMatcher {
           break;
         }
       if (exact) {
-        if (!settled) { ++it; continue; }
         setFloor(Stream::Rover, rover_time);
         ++counters_.emitted_rover;
         out.push_back({rover_msg, exact, PairKind::Exact,
@@ -332,12 +335,14 @@ class RoverBaseEpochMatcher {
       }
       if (aged) {
         // Wait for a closer base only while unsettled and a newer one is due.
+        // With the observed base cadence, the next base is due one interval
+        // after the aged one; if that is after this rover epoch, no closer
+        // base can come (e.g. a 5 Hz rover between 1 Hz base epochs).
         bool wait = !settled;
         const double base_interval = estimatedBaseInterval();
-        if (wait && !is_newest && base_interval > 0.0 &&
-            best_age < base_interval - 0.01)
+        if (wait && base_interval > 0.0 && best_age < base_interval - 0.01)
           wait = false;  // the base before it is already the best
-        if (wait) { ++it; continue; }
+        if (wait) break;
         setFloor(Stream::Rover, rover_time);
         ++counters_.emitted_rover;
         out.push_back({rover_msg, aged, PairKind::Aged, best_age});
@@ -346,7 +351,7 @@ class RoverBaseEpochMatcher {
       }
 
       // No usable base. Decide only when settled (or at EOF).
-      if (!settled) { ++it; continue; }
+      if (!settled) break;
       if (opt_.emit_unmatched_rover) {
         setFloor(Stream::Rover, rover_time);
         ++counters_.emitted_unmatched;
@@ -372,8 +377,9 @@ class RoverBaseEpochMatcher {
         it = rover_queue_.erase(it);
         continue;
       }
-      ++it;
+      break;
     }
+    pruneBaseHistory();
     // End-of-stream: no further rover can arrive, so leftover base history is
     // no longer needed. Retire it so nothing stays pending (not a data loss:
     // any base that could pair already has).
@@ -384,6 +390,51 @@ class RoverBaseEpochMatcher {
     return out;
   }
 
+  // Every rover epoch still to be decided is later than T = min(rover floor,
+  // oldest pending rover). Such an epoch selects either an exact base (within
+  // match_tol of a time after T) or the newest base not after it, which is at
+  // least the newest base not after T. Older bases can never be selected again.
+  void pruneBaseHistory() {
+    bool have_t = !rover_queue_.empty();
+    gtime_t t = have_t ? msgTime(*rover_queue_.front()) : gtime_t{};
+    if (have_rover_floor_ && (!have_t || timediff(rover_floor_, t) < 0.0)) {
+      t = rover_floor_;
+      have_t = true;
+    }
+    if (!have_t || base_queue_.size() < 2) return;
+    bool found = false;
+    gtime_t keep{};
+    for (const auto& b : base_queue_) {
+      if (timediff(msgTime(*b), t) > opt_.match_tol_s) break;
+      keep = msgTime(*b);
+      found = true;
+    }
+    if (!found) return;
+    while (base_queue_.size() > 1) {
+      const gtime_t front = msgTime(*base_queue_.front());
+      if (timediff(front, keep) >= 0.0 || timediff(front, t) >= -opt_.match_tol_s) break;
+      setFloor(Stream::Base, front);
+      base_queue_.pop_front();
+    }
+  }
+
+  void collect(bool eof) {
+    for (auto& pair : process(eof)) {
+      ready_.push_back(std::move(pair));
+      if (ready_.size() > opt_.queue_limit) {
+        recordDrop(Stream::Rover, DropReason::QueueOverflow, *ready_.front().rover);
+        --counters_.emitted_rover;
+        if (ready_.front().kind == PairKind::Unmatched) --counters_.emitted_unmatched;
+        ready_.pop_front();
+      }
+    }
+  }
+  std::vector<Pair> takeReady() {
+    std::vector<Pair> out(std::make_move_iterator(ready_.begin()),
+                          std::make_move_iterator(ready_.end()));
+    ready_.clear(); return out;
+  }
+  std::deque<Pair> ready_;
   Options opt_;
   Queue rover_queue_;
   Queue base_queue_;

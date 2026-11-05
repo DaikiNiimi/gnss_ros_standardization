@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 #ifndef GNSS_ROS_STANDARDIZATION_GNSS_PREPROCESSOR_HPP
 #define GNSS_ROS_STANDARDIZATION_GNSS_PREPROCESSOR_HPP
 
@@ -17,9 +16,7 @@
 #include "gnss_ros_standardization/msg/gnss_observations.hpp"
 #include "gnss_ros_standardization/obs_converter.hpp"
 
-extern "C" {
-#include "rtklib.h"
-}
+#include "gnss_ros_standardization/rtklib_compat.hpp"
 
 namespace gnss_utils {
 
@@ -211,6 +208,7 @@ class GnssPreprocessor {
   using EphMsg = gnss_ros_standardization::msg::GnssEphemerides;
 
   struct Config {
+    std::vector<int> excluded_satellites;  // RTKLIB satellite numbers; consumer policy only
     double el_mask_rad{15.0 * D2R};
     // Flat SNR mask [dBHz]; 0 disables. Applied to BOTH receivers: a double
     // difference inherits the noise of its worst input, so masking the rover
@@ -332,6 +330,16 @@ class GnssPreprocessor {
   void pushRoverObs(ObsMsg::ConstSharedPtr msg);
   void pushBaseObs(ObsMsg::ConstSharedPtr msg);
 
+  // G2: match on intake, defer state-dependent preprocessing until the solver
+  // reaches each pair. Caller serializes these operations with push*.
+  std::vector<RoverBaseEpochMatcher::Pair> drainPairs();
+  std::vector<RoverBaseEpochMatcher::Pair> flushPairs() {
+    if (!hasEphemeris()) { flush_pending_ = true; return {}; }
+    return matcher_.flush();
+  }
+  bool buildMatchedEpoch(const RoverBaseEpochMatcher::Pair& pair,
+                         const Eigen::Vector3d* approx_rover, PreprocessedEpoch& out);
+
   // Process every rover/base epoch that can be decided now. approx_rover is
   // the fallback rover position (e.g. the optimizer's last estimate) used for
   // masks and as the published a-priori when SPP fails for an epoch.
@@ -376,6 +384,9 @@ class GnssPreprocessor {
   const EpochRejectCounters& epochRejectCounters() const {
     return epoch_reject_;
   }
+  const ObservationRejectCounters& observationRejectCounters() const {
+    return observation_reject_;
+  }
 
   // Rover epochs dropped by the matcher since the last call.
   // Newest buffered base epoch [GPST continuous s], or -1 (base-outage detection).
@@ -385,6 +396,11 @@ class GnssPreprocessor {
     return matcher_.takeDropped();
   }
 
+  void resetTemporalState() {
+    matcher_.reset(); slip_track_.clear(); channel_track_.clear(); last_apriori_valid_ = false;
+    flush_pending_ = false;
+  }
+
   bool hasEphemeris() const { return nav_.n > 0 || nav_.ng > 0; }
 
  private:
@@ -392,6 +408,8 @@ class GnssPreprocessor {
   // Doppler velocity and rover_sats are still populated, dd is left empty, and
   // has_base / base_tow / age_s are cleared.
   EpochRejectCounters epoch_reject_;
+  ObservationRejectCounters observation_reject_;
+  GlonassChannelTracker channel_track_;
 
   bool buildEpoch(const ObsMsg& rover, const ObsMsg* base, double age_s,
                   const Eigen::Vector3d* approx_rover, PreprocessedEpoch& out);
@@ -410,7 +428,7 @@ class GnssPreprocessor {
   void detectSlips(const std::vector<obsd_t>& obs,
                    const std::map<int, int>& rover_idx,
                    const std::map<int, int>& base_idx, double tow,
-                   PreprocessedEpoch& out);
+                   PreprocessedEpoch& out, const nav_t& navigation);
 
   Config config_;
   FrequencyMask freq_mask_;

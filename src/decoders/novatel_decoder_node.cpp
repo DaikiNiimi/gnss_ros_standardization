@@ -1,4 +1,6 @@
-// SPDX-License-Identifier: MIT
+#include "gnss_ros_standardization/receiver_health.hpp"
+#include "gnss_ros_standardization/receiver_session.hpp"
+#include "gnss_ros_standardization/binary_framer.hpp"
 #include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
@@ -15,7 +17,6 @@
 #include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
 #include "gnss_ros_standardization/ins_utils.hpp"
-#include "gnss_ros_standardization/novatel_imu_scales.hpp"
 #include "gnss_ros_standardization/novatel_protocol.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 
@@ -27,7 +28,7 @@ namespace gnss_ros_standardization {
 namespace {
 
 constexpr auto kTimerInterval  = 10ms;
-constexpr double kPvtWatchdogTimeoutSec = 1.5;
+
 
 }  // namespace
 
@@ -49,7 +50,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     openRtcmRelay();
     startPolling();
 
-    RCLCPP_INFO(get_logger(), "NovAtel Decoder initialized (format: %s)", format_.c_str());
+    RCLCPP_INFO(get_logger(), "NovAtel Decoder initialized");
   }
 
   ~NovatelDecoderNode() override {
@@ -64,66 +65,57 @@ class NovatelDecoderNode : public rclcpp::Node {
  private:
   // Initialization
 
+  decoder_common::EpochFlushPolicy epoch_flush_;
+  wire::ReceiverHealth receiver_health_;
   void initializeParameters() {
+    receiver_health_.configure(5.0);
+    receiver_health_.limits(MAXOBS, NFREQ, NEXOBS, MAXPRNCMP);
+    epoch_flush_.configure(0.05);
     declare_parameter<std::string>("stream_path", "serial:///dev/ttyUSB0:115200");
-    declare_parameter<std::string>("format", "oem4");
     // frame_id: ROS TF frame name attached to the GNSS antenna phase center.
     // Default "gnss_link" — override in launch to integrate with vehicle TF tree.
     declare_parameter<std::string>("frame_id", "gnss_link");
-    declare_parameter<std::string>("observation_topic", "/gnss/observation");
-    declare_parameter<std::string>("ephemeris_topic", "/gnss/ephemeris");
-    declare_parameter<std::string>("solution_topic", "/gnss/nmea_solution");
-    declare_parameter<std::string>("imu_topic",      "/gnss/imu/data");
-    declare_parameter<std::string>("imu_raw_topic",  "/gnss/imu/data_raw");
+    declare_parameter<std::string>("topics.observation", "/gnss/observation");
+    declare_parameter<std::string>("topics.ephemeris", "/gnss/ephemeris");
+    declare_parameter<std::string>("topics.solution", "/gnss/nmea_solution");
+    declare_parameter<std::string>("topics.imu",      "/gnss/imu/data");
+    declare_parameter<std::string>("topics.imu_raw",  "/gnss/imu/data_raw");
     declare_parameter<double>("imu_scale_override.accel", 0.0);
     declare_parameter<double>("imu_scale_override.gyro",  0.0);
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
     declare_parameter<double>("ephemeris.max_age_s", 0.0);  // 0 = keep all
     declare_parameter<bool>("use_gps_timestamp", false);
-    declare_parameter<std::vector<double>>("origin", {0.0, 0.0, 0.0});
     // RTCM relay (opt-in, see openRtcmRelay): listen URI for corrections plus
     // the dedicated RTCMV3 output port. See src/decoders/README.md.
-    declare_parameter<std::string>("rtcm_relay", "");
-    declare_parameter<std::string>("rtcm_relay_output", "");
-    declare_parameter<std::string>("rtcm_relay_correction_port", "THISPORT");
+    declare_parameter<std::string>("rtcm_input.listen", "");
+    declare_parameter<std::string>("rtcm_input.receiver_stream", "");
+    declare_parameter<std::string>("rtcm_input.receiver_port", "THISPORT");
     use_gps_timestamp_ = get_parameter("use_gps_timestamp").as_bool();
-    {
-      const auto v = get_parameter("origin").as_double_array();
-      if (v.size() == 3) {
-        origin_latitude_  = v[0];
-        origin_longitude_ = v[1];
-        origin_altitude_  = v[2];
-      }
-    }
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
+    constexpr int history_limit = 8;
+    eph_store_.setHistoryPerSatellite(static_cast<size_t>(history_limit));
 
-    format_   = get_parameter("format").as_string();
     frame_id_ = get_parameter("frame_id").as_string();
-
-    if (format_ != "oem4") {
-      RCLCPP_WARN(get_logger(), "Unknown format '%s', defaulting to oem4", format_.c_str());
-      format_ = "oem4";
-    }
   }
 
   void initializePublishers() {
-    obs_pub_ = create_publisher<msg::GnssObservations>(get_parameter("observation_topic").as_string(), 10);
-    eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("ephemeris_topic").as_string(), rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
-    sol_pub_ = create_publisher<msg::GnssSolution>(get_parameter("solution_topic").as_string(), 10);
-    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_topic").as_string(), 10);
-    imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("imu_raw_topic").as_string(), 10);
+    decoder_common::configureNmeaDate(*this, nmea_parser_);
+    obs_pub_ = create_publisher<msg::GnssObservations>(get_parameter("topics.observation").as_string(), 10);
+    eph_pub_ = create_publisher<msg::GnssEphemerides>(get_parameter("topics.ephemeris").as_string(), rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
+    sol_pub_ = create_publisher<msg::GnssSolution>(get_parameter("topics.solution").as_string(), 10);
+    imu_pub_     = create_publisher<sensor_msgs::msg::Imu>(get_parameter("topics.imu").as_string(), decoder_common::kImuPublisherDepth);
+    imu_raw_pub_ = create_publisher<sensor_msgs::msg::Imu>(get_parameter("topics.imu_raw").as_string(), decoder_common::kImuPublisherDepth);
     imu_scale_override_accel_ = get_parameter("imu_scale_override.accel").as_double();
     imu_scale_override_gyro_  = get_parameter("imu_scale_override.gyro").as_double();
 
-    if (origin_latitude_ != 0.0 || origin_longitude_ != 0.0) {
-      local_origin_pos_[0] = origin_latitude_  * (M_PI / 180.0);
-      local_origin_pos_[1] = origin_longitude_ * (M_PI / 180.0);
-      local_origin_pos_[2] = origin_altitude_;
-      pos2ecef(local_origin_pos_, local_origin_ecef_);
+    const auto origin = gnss_utils::declareLocalOrigin(*this);
+    if (origin.fixed) {
+      std::copy_n(origin.llh, 3, local_origin_pos_);
+      std::copy_n(origin.ecef, 3, local_origin_ecef_);
       has_local_origin_ = true;
       RCLCPP_INFO(get_logger(), "ENU origin set from config: lat=%.6f lon=%.6f alt=%.2f",
-        origin_latitude_, origin_longitude_, origin_altitude_);
+        local_origin_pos_[0] * R2D, local_origin_pos_[1] * R2D, local_origin_pos_[2]);
     }
     logConfiguration();
   }
@@ -132,9 +124,9 @@ class NovatelDecoderNode : public rclcpp::Node {
     auto on = [](bool v) { return v ? "ON" : "OFF"; };
     RCLCPP_INFO(get_logger(), "Configuration:");
     RCLCPP_INFO(get_logger(), "  GPS timestamp : %s", on(use_gps_timestamp_));
-    if (origin_latitude_ != 0.0 || origin_longitude_ != 0.0) {
+    if (has_local_origin_) {
       RCLCPP_INFO(get_logger(), "  ENU origin    : fixed (lat=%.6f lon=%.6f alt=%.2f)",
-        origin_latitude_, origin_longitude_, origin_altitude_);
+        local_origin_pos_[0] * R2D, local_origin_pos_[1] * R2D, local_origin_pos_[2]);
     } else {
       RCLCPP_INFO(get_logger(), "  ENU origin    : auto (first valid solution)");
     }
@@ -151,6 +143,7 @@ class NovatelDecoderNode : public rclcpp::Node {
       RCLCPP_ERROR(get_logger(), "Failed to initialize raw decoder");
       throw std::runtime_error("init_raw failed");
     }
+    std::strcpy(raw_.opt, "-EPHALL");
   }
 
   void startPolling() {
@@ -163,8 +156,8 @@ class NovatelDecoderNode : public rclcpp::Node {
     // Main-port RW is only needed for the single-port relay fallback (no
     // dedicated output); otherwise keep the passive read-only open.
     const bool relay_to_main =
-        !get_parameter("rtcm_relay").as_string().empty() &&
-        get_parameter("rtcm_relay_output").as_string().empty();
+        !get_parameter("rtcm_input.listen").as_string().empty() &&
+        get_parameter("rtcm_input.receiver_stream").as_string().empty();
     if (!decoder_common::openStreamPath(get_logger(), stream_,
                                         get_parameter("stream_path").as_string(),
                                         relay_to_main ? STR_MODE_RW : STR_MODE_R,
@@ -175,13 +168,13 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   // RTCM relay (RTKLIB STRSVR-style): host a TCP server for incoming
   // base-station corrections and write them to the receiver in pollStream().
-  // NovAtel: corrections go to a DEDICATED port (`rtcm_relay_output`), same
+  // NovAtel: corrections go to a DEDICATED port (`rtcm_input.receiver_stream`), same
   // design as novatel_driver_node — the port is put into RTCMV3 input mode by
   // sending INTERFACEMODE over that very port (THISPORT), so the user never
   // needs its NovAtel logical name and the main decoded-log port stays
   // untouched (passive).
   void openRtcmRelay() {
-    const std::string listen = get_parameter("rtcm_relay").as_string();
+    const std::string listen = get_parameter("rtcm_input.listen").as_string();
     if (listen.empty()) return;
     if (get_parameter("stream_path").as_string().rfind("file://", 0) == 0) {
       RCLCPP_WARN(get_logger(),
@@ -192,12 +185,12 @@ class NovatelDecoderNode : public rclcpp::Node {
       throw std::runtime_error("RTCM relay stropen failed");
     }
 
-    const std::string output = get_parameter("rtcm_relay_output").as_string();
+    const std::string output = get_parameter("rtcm_input.receiver_stream").as_string();
     if (output.empty()) {
       RCLCPP_WARN(get_logger(),
-        "rtcm_relay_output is empty: corrections go to the main port. NovAtel "
+        "rtcm_input.receiver_stream is empty: corrections go to the main port. NovAtel "
         "cannot mix RTCM input with NOVATEL logs on one logical port — set "
-        "rtcm_relay_output to a second /dev device for on-chip RTK.");
+        "rtcm_input.receiver_stream to a second /dev device for on-chip RTK.");
       return;
     }
     if (!decoder_common::openStreamPath(get_logger(), relay_out_, output,
@@ -210,17 +203,41 @@ class NovatelDecoderNode : public rclcpp::Node {
     // If it is already in RTCMV3 (e.g. saved with SAVECONFIG), the command
     // bytes are simply discarded by the receiver's RTCM parser — harmless.
     const std::string correction_port =
-        get_parameter("rtcm_relay_correction_port").as_string();
+        get_parameter("rtcm_input.receiver_port").as_string();
     const std::string cmd = std::string(novatel::CMD_INTERFACEMODE) + " " +
                             correction_port + " RTCMV3 NONE OFF\r\n";
-    strwrite(&relay_out_, (uint8_t*)cmd.c_str(), static_cast<int>(cmd.size()));
+    if (!decoder_common::writeAll(relay_out_, reinterpret_cast<const uint8_t*>(cmd.data()), cmd.size()))
+      throw std::runtime_error("Correction port command write failed");
     std::this_thread::sleep_for(200ms);
     RCLCPP_INFO(get_logger(),
-      "RTCM relay: '%s' -> dedicated port '%s' (set to RTCMV3 via INTERFACEMODE %s)",
-      listen.c_str(), output.c_str(), correction_port.c_str());
+      "RTCM relay: '%s' -> dedicated port '%s' (INTERFACEMODE %s sent; acceptance unverified)",
+      decoder_common::redactStreamUri(listen).c_str(), decoder_common::redactStreamUri(output).c_str(), correction_port.c_str());
   }
 
   // Polling
+
+  wire::StreamSession stream_session_;
+  wire::ReceiverTimeline receiver_timeline_;
+  void resetReceiverSession(bool disconnected) {
+    // Release validated pending data before retiring the old session. Partial
+    // wire frames and compressed references are never carried across sessions.
+    flushPending();
+    wire::resetRaw(raw_,STRFMT_OEM4);
+    if (disconnected) wire_framer_.reset();
+    receiver_health_.resetSession();
+    receiver_timeline_.reset();
+    nmea_parser_.reset(); nmea_solution_=msg::GnssSolution(); binary_solution_=msg::GnssSolution();
+    pending_=decltype(pending_)(); last_dop_={};
+    prev_pvt_tow_ms_=UINT32_MAX; pvt_period_ms_=0;
+    last_flushed_week_=0; last_flushed_tow_ms_=UINT32_MAX;
+    eph_store_.clear(); publishSnapshot();
+    source_=SolutionSource::UNDETERMINED; grace_started_=false; saw_binary_during_grace_=false;
+    oem4_time_quality_.reset(); oem4_time_valid_=false; binary_time_valid_=false;
+    has_corrimu_prev_=false; has_rawimu_prev_=false;
+    corrimu_prev_seconds_=0; rawimu_prev_seconds_=0;
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Receiver session reset: %s; waiting for fresh time/navigation references",
+                disconnected ? "connection lost" : "measurement rewind or clock reset");
+  }
 
   void pollStream() {
     // RTCM relay: drain corrections from the TCP server and write them to the
@@ -231,30 +248,29 @@ class NovatelDecoderNode : public rclcpp::Node {
 
     uint8_t buffer[novatel::READ_BUFFER_SIZE];
     const int bytes_read = strread(&stream_, buffer, sizeof(buffer));
+    if (stream_session_.poll(stream_)) resetReceiverSession(true);
+    const auto wire_now = std::chrono::steady_clock::now();
+    receiver_health_.input(bytes_read);
+    receiver_health_.framing(wire_framer_);
+    receiver_health_.pvtPending(pending_.has_pvt || pending_.cov_received);
+    if (has_rawimu_prev_ || has_corrimu_prev_)
+      receiver_health_.imuPending((has_rawimu_prev_ && rawimu_period_==0) || (has_corrimu_prev_ && corrimu_period_==0));
+    receiver_health_.report(get_logger());
+    if (bytes_read > 0) wire_last_input_ = wire_now;
+    else if (wire_now - wire_last_input_ > std::chrono::seconds(1)) {
+      wire_framer_.expire([this](const wire::Frame& f) { dispatchFrame(f); });
+      wire_last_input_ = wire_now;
+    }
+    if (wire_framer_.rejected() != wire_last_rejected_) {
+      wire_last_rejected_ = wire_framer_.rejected();
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "Rejected binary frame/header count: %llu",
+          static_cast<unsigned long long>(wire_last_rejected_));
+    }
+
 
     for (int i = 0; i < bytes_read; ++i) {
-      const uint8_t byte = buffer[i];
-
-      // Feed NovAtel binary decoder
-      int result = input_oem4(&raw_, byte);
-      handleDecodeResult(result);
-
-      // Parallel OEM4 mini-framer (IMU / PVT logs)
-      parseOem4Byte(byte);
-
-      // Feed NMEA text parser (NovAtel binary and NMEA are interleaved)
-      if (byte == '$') {
-        nmea_buffer_.clear();
-        nmea_buffer_.push_back(byte);
-      } else if (!nmea_buffer_.empty()) {
-        nmea_buffer_.push_back(byte);
-        if (byte == '\n') {
-          handleNmeaSentence(nmea_buffer_);
-          nmea_buffer_.clear();
-        } else if (nmea_buffer_.size() > novatel::NMEA_MAX_LINE_LEN) {
-          nmea_buffer_.clear();
-        }
-      }
+      parseOem4Byte(buffer[i]);
     }
 
     maybePublishHeartbeat();
@@ -262,52 +278,43 @@ class NovatelDecoderNode : public rclcpp::Node {
     maybeWatchdogFlushPendingPvt();
   }
 
-  // OEM4 Mini-Framer (parallel to RTKLIB, for IMU and PVT logs)
+  // OEM4 mixed stream decoder (shared boundary with RTKLIB, for IMU and PVT logs)
   //
   // OEM4 binary frame: SYNC(0xAA,0x44,0x12) HDRLEN(1) MSGID(2,LE) MSGTYPE(1)
   //                    PORT(1) MSGLEN(2,LE) ... rest of header ... BODY CRC32
 
+  void dispatchFrame(const wire::Frame& f) {
+      auto diagnostic_scope = receiver_health_.backendScope();
+      receiver_health_.frame((unsigned(f.cls)<<16)|f.id, f.revision);
+      receiver_health_.inspect(wire::Protocol::Novatel,f);
+      oem4_time_valid_ = oem4_time_quality_.observe(f);
+      if (!oem4_time_valid_) {
+        receiver_health_.timeUnresolved();
+        receiver_health_.timeWithheld();
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+            "NovAtel invalid receiver time (status=%u, week=%u); output withheld",
+            f.time_status, f.week);
+        return; // Do not let invalid time reset session, PVT, or IMU state.
+      }
+      if (receiver_timeline_.frame(wire::Protocol::Novatel,f)) {
+        resetReceiverSession(false);
+        receiver_timeline_.frame(wire::Protocol::Novatel,f);
+        oem4_time_valid_ = oem4_time_quality_.observe(f);
+      }
+      for (uint8_t byte : novatel::backendFrame(f.bytes)) {
+        const int status = input_oem4(&raw_, byte);
+        handleDecodeResult(status);
+      }
+      oem4_msg_id_ = f.id;
+      oem4_gps_week_ = f.week;
+      oem4_gps_ms_ = f.tow_ms;
+      oem4_body_ = f.payload;
+      handleOem4Frame();
+  }
+
   void parseOem4Byte(uint8_t byte) {
-    switch (oem4_state_) {
-      case 0:  if (byte == novatel::OEM4_SYNC1) oem4_state_ = 1; break;
-      case 1:  oem4_state_ = (byte == novatel::OEM4_SYNC2) ? 2 : (byte == novatel::OEM4_SYNC1 ? 1 : 0); break;
-      case 2:  oem4_state_ = (byte == novatel::OEM4_SYNC3) ? 3 : (byte == novatel::OEM4_SYNC1 ? 1 : 0); break;
-      case 3:  oem4_hdr_len_  = byte; oem4_state_ = 4; break;  // header length
-      case 4:  oem4_msg_id_   = byte; oem4_state_ = 5; break;  // MSGID LSB
-      case 5:  oem4_msg_id_  |= static_cast<uint16_t>(byte << 8); oem4_state_ = 6; break;  // MSGID MSB
-      case 6:  oem4_state_ = 7; break;  // MSGTYPE skip
-      case 7:  oem4_state_ = 8; break;  // PORT skip
-      case 8:  oem4_msg_len_  = byte; oem4_state_ = 9; break;  // MSGLEN LSB
-      case 9:
-        oem4_msg_len_ |= static_cast<uint16_t>(byte << 8);
-        oem4_hdr_rem_  = static_cast<int>(oem4_hdr_len_) - 10;  // bytes already consumed: SYNC(3)+HDRLEN(1)+MSGID(2)+MSGTYPE(1)+PORT(1)+MSGLEN(2)=10
-        oem4_hdr_pos_  = 10;  // next byte's offset within the OEM4 header
-        oem4_gps_week_ = 0;
-        oem4_gps_ms_   = 0;
-        oem4_body_.clear();
-        oem4_body_pos_ = 0;
-        oem4_state_    = (oem4_hdr_rem_ > 0) ? 10 : 11;
-        break;
-      case 10:  // skip remaining header bytes, capturing GPS week (off 14-15) and ms (off 16-19)
-        if (oem4_hdr_pos_ == 14)      oem4_gps_week_  = byte;
-        else if (oem4_hdr_pos_ == 15) oem4_gps_week_ |= static_cast<uint32_t>(byte) << 8;
-        else if (oem4_hdr_pos_ == 16) oem4_gps_ms_    = byte;
-        else if (oem4_hdr_pos_ == 17) oem4_gps_ms_   |= static_cast<uint32_t>(byte) <<  8;
-        else if (oem4_hdr_pos_ == 18) oem4_gps_ms_   |= static_cast<uint32_t>(byte) << 16;
-        else if (oem4_hdr_pos_ == 19) oem4_gps_ms_   |= static_cast<uint32_t>(byte) << 24;
-        ++oem4_hdr_pos_;
-        if (--oem4_hdr_rem_ <= 0) oem4_state_ = (oem4_msg_len_ > 0) ? 11 : 13;
-        break;
-      case 11:  // collect body
-        oem4_body_.push_back(byte);
-        if (++oem4_body_pos_ >= oem4_msg_len_) { handleOem4Frame(); oem4_state_ = 12; }
-        break;
-      case 12: oem4_state_ = 13; break;  // CRC bytes skip (4 total)
-      case 13: oem4_state_ = 14; break;
-      case 14: oem4_state_ = 15; break;
-      case 15: oem4_state_ = 0; break;
-      default: oem4_state_ = 0;
-    }
+    wire_framer_.feed(byte, [this](const wire::Frame& f) { dispatchFrame(f); },
+        [this](const std::string& sentence) { handleNmeaSentence(sentence); });
   }
 
   void handleOem4Frame() {
@@ -328,7 +335,7 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   void startGraceIfNeeded() {
     if (!grace_started_) {
-      grace_start_ = now();
+      grace_start_ = std::chrono::steady_clock::now();
       grace_started_ = true;
     }
   }
@@ -336,7 +343,7 @@ class NovatelDecoderNode : public rclcpp::Node {
   void commitSourceLockIfDue() {
     if (source_ != SolutionSource::UNDETERMINED) return;
     if (!grace_started_) return;
-    const bool elapsed = (now() - grace_start_).seconds() >= kGracePeriodSec;
+    const bool elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - grace_start_).count() >= kGracePeriodSec;
     if (saw_binary_during_grace_) {
       source_ = SolutionSource::BINARY;
       RCLCPP_INFO(get_logger(), "Solution source locked: BINARY (PVT detected during grace)");
@@ -354,10 +361,11 @@ class NovatelDecoderNode : public rclcpp::Node {
   struct PendingPvt {
     uint32_t tow_ms{UINT32_MAX};
     bool has_pvt{false};
+    bool time_valid{false};
+    uint32_t week{0};
     uint8_t cov_received{0};
     uint8_t cov_ever_seen{0};
     msg::GnssSolution buf{};
-    rclcpp::Time last_update{0, 0, RCL_ROS_TIME};
   };
 
   gnss_utils::DopCache last_dop_;
@@ -368,10 +376,6 @@ class NovatelDecoderNode : public rclcpp::Node {
   uint32_t last_flushed_week_{0};
   uint32_t last_flushed_tow_ms_{UINT32_MAX};
 
-  bool pendingComplete() const {
-    return pending_.has_pvt &&
-           pending_.cov_received == pending_.cov_ever_seen;
-  }
 
   // Orphan guard: same TOW as last published → only update learning.
   bool isLateOrphan(uint8_t cov_bit) {
@@ -379,16 +383,20 @@ class NovatelDecoderNode : public rclcpp::Node {
         oem4_gps_ms_   == last_flushed_tow_ms_ &&
         oem4_gps_week_ == last_flushed_week_) {
       pending_.cov_ever_seen |= cov_bit;
-      return true;
+      GNSS_RX_EVENT(GNSS_RX_DUPLICATE_INPUT,1); return true;
     }
     return false;
   }
 
   void aggregateEpochBoundary() {
-    if (oem4_gps_ms_ != pending_.tow_ms && (pending_.has_pvt || pending_.cov_received)) {
+    if ((oem4_gps_ms_ != pending_.tow_ms || oem4_gps_week_ != pending_.week) &&
+        (pending_.has_pvt || pending_.cov_received)) {
       flushPending();
     }
     pending_.tow_ms = oem4_gps_ms_;
+    pending_.week = oem4_gps_week_;
+    pending_.time_valid = (pending_.has_pvt || pending_.cov_received) ?
+        pending_.time_valid && oem4_time_valid_ : oem4_time_valid_;
     // BEST*/PSRDOP bodies carry no GPS time — (week, ms) comes from the OEM4
     // header seen by the mini-framer.
     pending_.buf.time_week = oem4_gps_week_;
@@ -399,25 +407,23 @@ class NovatelDecoderNode : public rclcpp::Node {
     startGraceIfNeeded();
     if (isLateOrphan(0)) return;
     aggregateEpochBoundary();
-    if (!novatel::pvt::parseBESTPOS(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
+    if (!novatel::pvt::parseBESTPOS(oem4_body_.data(), oem4_body_.size(), pending_.buf)) { GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return; }
     pending_.has_pvt = true;
-    pending_.last_update = now();
+    epoch_flush_.touch();
     saw_binary_during_grace_ = true;
     commitSourceLockIfDue();
-    if (pendingComplete()) flushPending();
+    // Flush at the epoch boundary or shared quiet-period deadline.
   }
 
   void handleBestVel() {
     startGraceIfNeeded();
     if (isLateOrphan(COV_BIT_VEL)) return;
     aggregateEpochBoundary();
-    if (!novatel::pvt::parseBESTVEL(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
+    if (!novatel::pvt::parseBESTVEL(oem4_body_.data(), oem4_body_.size(), pending_.buf)) { GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return; }
     pending_.cov_received  |= COV_BIT_VEL;
     pending_.cov_ever_seen |= COV_BIT_VEL;
-    pending_.last_update = now();
-    saw_binary_during_grace_ = true;
-    commitSourceLockIfDue();
-    if (pendingComplete()) flushPending();
+    epoch_flush_.touch();
+    // Flush at the epoch boundary or shared quiet-period deadline.
   }
 
   // PSRDOP: cached in last_dop_; applied at flush by applyDopWithStaleness()
@@ -425,7 +431,7 @@ class NovatelDecoderNode : public rclcpp::Node {
   void handlePsrDop() {
     startGraceIfNeeded();
     msg::GnssSolution scratch{};
-    if (!novatel::pvt::parsePSRDOP(oem4_body_.data(), oem4_body_.size(), scratch)) return;
+    if (!novatel::pvt::parsePSRDOP(oem4_body_.data(), oem4_body_.size(), scratch)) { GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return; }
     last_dop_.valid  = true;
     last_dop_.week   = oem4_gps_week_;
     last_dop_.tow_ms = oem4_gps_ms_;
@@ -441,28 +447,39 @@ class NovatelDecoderNode : public rclcpp::Node {
     startGraceIfNeeded();
     if (isLateOrphan(COV_BIT_XYZ)) return;
     aggregateEpochBoundary();
-    if (!novatel::pvt::parseBESTXYZ(oem4_body_.data(), oem4_body_.size(), pending_.buf)) return;
+    if (!novatel::pvt::parseBESTXYZ(oem4_body_.data(), oem4_body_.size(), pending_.buf)) { GNSS_RX_EVENT(GNSS_RX_FRONTEND_REJECT,1); return; }
     pending_.cov_received  |= COV_BIT_XYZ;
     pending_.cov_ever_seen |= COV_BIT_XYZ;
-    pending_.last_update = now();
-    if (pendingComplete()) flushPending();
+    epoch_flush_.touch();
+    // Flush at the epoch boundary or shared quiet-period deadline.
   }
 
   void flushPending() {
     const uint8_t ever_seen = pending_.cov_ever_seen;
     if (!pending_.has_pvt) {
+      if (pending_.cov_received) receiver_health_.pvtIncompleteDiscarded();
       pending_ = {};
       pending_.cov_ever_seen = ever_seen;
       return;
     }
     binary_solution_ = pending_.buf;
+    binary_time_valid_ = pending_.time_valid;
+    if (!(pending_.cov_received & COV_BIT_VEL)) {
+      binary_solution_.vel_enu.x = binary_solution_.vel_enu.y = binary_solution_.vel_enu.z =
+          std::numeric_limits<double>::quiet_NaN();
+    }
+    if (!(pending_.cov_received & COV_BIT_XYZ)) {
+      binary_solution_.vel_cov_ecef.fill(std::numeric_limits<double>::quiet_NaN());
+      binary_solution_.vel_enu_cov.fill(std::numeric_limits<double>::quiet_NaN());
+    }
     decoder_common::finalizeBinarySolutionGeometry(binary_solution_);
     // Covariance source policy (epoch-local: based only on THIS epoch's blocks):
     //   - BESTXYZ not received this epoch: BESTPOS ENU diagonals are authoritative;
     //     rotate ENU→ECEF to fill pos_cov_ecef.
     //   - BESTXYZ received this epoch: BESTXYZ owns pos covariance; rotate ECEF→ENU.
     const bool has_xyz_this_epoch = (pending_.cov_received & COV_BIT_XYZ) != 0;
-    rotatePosCovariance(binary_solution_, has_xyz_this_epoch);
+    rotatePosCovariance(binary_solution_, has_xyz_this_epoch &&
+        std::isfinite(binary_solution_.pos_cov_ecef[0]));
     if (has_xyz_this_epoch) rotateVelCovariance(binary_solution_);
 
     // PVT cadence auto-detection (used by DOP staleness gate).
@@ -480,7 +497,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     if (source_ == SolutionSource::BINARY) publishSolution(binary_solution_);
 
     // Record this epoch as the last published (week, tow) for orphan-guard.
-    last_flushed_week_   = binary_solution_.time_week;
+    last_flushed_week_   = pending_.week;
     last_flushed_tow_ms_ = pending_.tow_ms;
 
     pending_ = {};
@@ -489,7 +506,7 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   void maybeWatchdogFlushPendingPvt() {
     if (!pending_.has_pvt && !pending_.cov_received) return;
-    if ((now() - pending_.last_update).seconds() > kPvtWatchdogTimeoutSec) {
+    if (epoch_flush_.due()) {
       flushPending();
     }
   }
@@ -522,54 +539,66 @@ class NovatelDecoderNode : public rclcpp::Node {
   }
 
 
-  // RAWIMUSX body (60 B): see novatel_driver_node.cpp::handleRawImuSx for layout.
+  // RAWIMUSX body (40 B): see novatel_driver_node.cpp::handleRawImuSx for layout.
+  double rawimu_period_{0.0};
+  double corrimu_period_{0.0};
   void handleRawImuSx() {
-    if (oem4_body_.size() < 60) return;
+    if (oem4_body_.size() != 40) { GNSS_RX_EVENT(GNSS_RX_LENGTH,1); return; }
 
-    const uint8_t imu_type = oem4_body_[2];
+    const uint8_t imu_type = oem4_body_[1];
+    if (oem4_body_[0] & 0x03) { GNSS_RX_EVENT(GNSS_RX_QUALITY,1); GNSS_RX_EVENT(GNSS_RX_IMU_REJECT,1); return; }  // error or encrypted data
     uint16_t imu_week = 0;
     double seconds = 0.0;
     int32_t z_acc = 0, ny_acc = 0, x_acc = 0, z_gyr = 0, ny_gyr = 0, x_gyr = 0;
-    std::memcpy(&imu_week, oem4_body_.data() +  4, 2);
-    std::memcpy(&seconds,  oem4_body_.data() +  8, 8);
-    std::memcpy(&z_acc,   oem4_body_.data() + 20, 4);
-    std::memcpy(&ny_acc,  oem4_body_.data() + 24, 4);
-    std::memcpy(&x_acc,   oem4_body_.data() + 28, 4);
-    std::memcpy(&z_gyr,   oem4_body_.data() + 32, 4);
-    std::memcpy(&ny_gyr,  oem4_body_.data() + 36, 4);
-    std::memcpy(&x_gyr,   oem4_body_.data() + 40, 4);
+    std::memcpy(&imu_week, oem4_body_.data() + 2, 2);
+    std::memcpy(&seconds,  oem4_body_.data() + 4, 8);
+    std::memcpy(&z_acc,   oem4_body_.data() + 16, 4);
+    std::memcpy(&ny_acc,  oem4_body_.data() + 20, 4);
+    std::memcpy(&x_acc,   oem4_body_.data() + 24, 4);
+    std::memcpy(&z_gyr,   oem4_body_.data() + 28, 4);
+    std::memcpy(&ny_gyr,  oem4_body_.data() + 32, 4);
+    std::memcpy(&x_gyr,   oem4_body_.data() + 36, 4);
 
     novatel::ImuScale scale = novatel::getImuScale(imu_type);
     if (imu_scale_override_accel_ != 0.0 && imu_scale_override_gyro_ != 0.0) {
       scale = {imu_scale_override_accel_, imu_scale_override_gyro_};
     }
-    if (scale.accel == 0.0 || scale.gyro == 0.0) {
+    if (!std::isfinite(scale.accel) || !std::isfinite(scale.gyro) || scale.accel <= 0.0 || scale.gyro <= 0.0) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
         "Unknown NovAtel IMU type %u — RAWIMUSX skipped. Set imu_scale_override.{accel,gyro} "
-        "in yaml or add this type to novatel_imu_scales.hpp.", imu_type);
-      return;
+        "in yaml or add this type to novatel_protocol.hpp.", imu_type);
+      GNSS_RX_EVENT(GNSS_RX_VALUE,1); GNSS_RX_EVENT(GNSS_RX_IMU_REJECT,1); return;
     }
 
+    if ((oem4_body_[0] & 0x03) || imu_week == 0 ||
+        !std::isfinite(seconds) || seconds < 0 || seconds >= 604800) { GNSS_RX_EVENT(GNSS_RX_TIME,1); return; }
+    seconds += static_cast<double>(imu_week) * 604800.0;
     if (!has_rawimu_prev_) {
       rawimu_prev_seconds_ = seconds;
       has_rawimu_prev_     = true;
+      GNSS_RX_EVENT(GNSS_RX_IMU_WAIT,1);
       return;
     }
     const double dt = seconds - rawimu_prev_seconds_;
     rawimu_prev_seconds_ = seconds;
-    if (dt <= 0.0 || dt > 1.0) return;
+    if (dt <= 0.0 || dt > 1.0) { GNSS_RX_EVENT(GNSS_RX_TIME,1); rawimu_period_ = 0.0; return; }
+    if (rawimu_period_ > 0.0 && dt > rawimu_period_ * 1.5) { rawimu_period_ = dt; GNSS_RX_EVENT(GNSS_RX_IMU_WAIT,1); return; }
+    rawimu_period_ = rawimu_period_ == 0.0 ? dt : std::min(rawimu_period_, dt);
 
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = (use_gps_timestamp_ && imu_week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(gpst2time(imu_week, seconds)) : now();
+    const auto measurement_stamp = time_base_.stamp(
+        use_gps_timestamp_, oem4_time_valid_ && imu_week > 0,
+        imu_week > 0 ? gpst2time(imu_week, seconds - static_cast<double>(imu_week) * 604800.0) : gtime_t{}, now(), get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+    imu.header.stamp = *measurement_stamp;
     imu.header.frame_id = frame_id_;
     imu.orientation_covariance[0] = -1.0;
 
     imu.angular_velocity.x =  x_gyr  * scale.gyro / dt;
-    imu.angular_velocity.y = -ny_gyr * scale.gyro / dt;
+    imu.angular_velocity.y = -static_cast<double>(ny_gyr) * scale.gyro / dt;
     imu.angular_velocity.z =  z_gyr  * scale.gyro / dt;
     imu.linear_acceleration.x =  x_acc  * scale.accel / dt;
-    imu.linear_acceleration.y = -ny_acc * scale.accel / dt;
+    imu.linear_acceleration.y = -static_cast<double>(ny_acc) * scale.accel / dt;
     imu.linear_acceleration.z =  z_acc  * scale.accel / dt;
 
     // Values above are always provided by RAWIMU; only their covariance is
@@ -586,7 +615,7 @@ class NovatelDecoderNode : public rclcpp::Node {
   // Rates and accelerations are SI increments accumulated over the IMU sampling
   // period; divide by dt (from successive Seconds fields) to recover rad/s and m/s².
   void handleCorrImuData() {
-    if (oem4_body_.size() < 60) return;
+    if (oem4_body_.size() < 60) { GNSS_RX_EVENT(GNSS_RX_LENGTH,1); return; }
 
     uint32_t corrimu_week = 0;
     double seconds = 0.0, pitch_rate = 0.0, roll_rate = 0.0, yaw_rate = 0.0;
@@ -600,26 +629,39 @@ class NovatelDecoderNode : public rclcpp::Node {
     std::memcpy(&lon_acc,    oem4_body_.data() + 44, 8);
     std::memcpy(&vert_acc,   oem4_body_.data() + 52, 8);
 
+    if (corrimu_week == 0 || corrimu_week > 65535 || !std::isfinite(seconds) ||
+        seconds < 0 || seconds >= 604800 || !std::isfinite(pitch_rate) ||
+        !std::isfinite(roll_rate) || !std::isfinite(yaw_rate) ||
+        !std::isfinite(lat_acc) || !std::isfinite(lon_acc) || !std::isfinite(vert_acc)) { GNSS_RX_EVENT(GNSS_RX_VALUE,1); GNSS_RX_EVENT(GNSS_RX_IMU_REJECT,1); return; }
+    const double tow = seconds;
+    seconds += static_cast<double>(corrimu_week) * 604800.0;
     if (!has_corrimu_prev_) {
       corrimu_prev_seconds_ = seconds;
       has_corrimu_prev_     = true;
+      GNSS_RX_EVENT(GNSS_RX_IMU_WAIT,1);
       return;
     }
     const double dt = seconds - corrimu_prev_seconds_;
     corrimu_prev_seconds_ = seconds;
-    if (dt <= 0.0 || dt > 1.0) return;
+    if (dt <= 0.0 || dt > 1.0) { GNSS_RX_EVENT(GNSS_RX_TIME,1); corrimu_period_ = 0.0; return; }
+    if (corrimu_period_ > 0.0 && dt > corrimu_period_ * 1.5) { corrimu_period_ = dt; GNSS_RX_EVENT(GNSS_RX_IMU_WAIT,1); return; }
+    corrimu_period_ = corrimu_period_ == 0.0 ? dt : std::min(corrimu_period_, dt);
 
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp    = (use_gps_timestamp_ && corrimu_week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(gpst2time(static_cast<int>(corrimu_week), seconds)) : now();
+    const auto measurement_stamp = time_base_.stamp(
+        use_gps_timestamp_, oem4_time_valid_ && corrimu_week > 0 && std::isfinite(tow) && tow >= 0 && tow < 604800,
+        corrimu_week > 0
+            ? gpst2time(static_cast<int>(corrimu_week), tow) : gtime_t{}, now(), get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+    imu.header.stamp = *measurement_stamp;
     imu.header.frame_id = frame_id_;
 
-    // SPAN body frame: roll=X, pitch=Y, yaw=Z; longitudinal=X, lateral=Y, vertical=Z
-    imu.angular_velocity.x    = roll_rate / dt;
-    imu.angular_velocity.y    = pitch_rate / dt;
+    // NovAtel native right-handed frame: pitch/lateral X, roll/longitudinal Y, Z up.
+    imu.angular_velocity.x    = pitch_rate / dt;
+    imu.angular_velocity.y    = roll_rate / dt;
     imu.angular_velocity.z    = yaw_rate / dt;
-    imu.linear_acceleration.x = lon_acc / dt;
-    imu.linear_acceleration.y = lat_acc / dt;
+    imu.linear_acceleration.x = lat_acc / dt;
+    imu.linear_acceleration.y = lon_acc / dt;
     imu.linear_acceleration.z = vert_acc / dt;
 
     // orientation: not provided by CORRIMUDATA — leave identity, mark unknown
@@ -644,9 +686,16 @@ class NovatelDecoderNode : public rclcpp::Node {
   }
 
   void handleDecodeResult(int result) {
+    receiver_health_.backendResult(result);
+    if (result < 0) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "Rejected receiver payload (invalid layout, time, version or content)");
+      return;
+    }
     switch (result) {
       case 1:  publishObservations(); break;
       case 2:  publishEphemerides();  break;
+      case 9:  publishIonosphere();   break;
       default: break;
     }
   }
@@ -659,16 +708,12 @@ class NovatelDecoderNode : public rclcpp::Node {
     gtime_t t_gpst{};
     int week_for_stamp = 0;
     if (source_ == SolutionSource::BINARY) {
-      if (sol.time_week > 0) {
+      if (binary_time_valid_ && sol.time_week > 0) {
         week_for_stamp = static_cast<int>(sol.time_week);
         t_gpst = gpst2time(week_for_stamp, sol.time_tow);
       } else {
-        const double tow = time2gpst(raw_.time, &week_for_stamp);
-        if (week_for_stamp > 0) {
-          sol.time_week = static_cast<uint32_t>(week_for_stamp);
-          sol.time_tow  = tow;
-        }
-        t_gpst = raw_.time;
+        sol.time_week = 0;
+        sol.time_tow = 0;
       }
       sol.solution_source = msg::GnssSolution::SOLUTION_SOURCE_BINARY;
     } else {
@@ -679,59 +724,18 @@ class NovatelDecoderNode : public rclcpp::Node {
       }
     }
 
-    sol.header.stamp    = (use_gps_timestamp_ && week_for_stamp > 0)
-                          ? gnss_utils::gpstToUtcRosTime(t_gpst) : now();
+    const auto measurement_stamp = time_base_.stamp(
+        use_gps_timestamp_, week_for_stamp > 0 && std::isfinite(sol.time_tow) && sol.time_tow >= 0 && sol.time_tow < 604800,
+        t_gpst, now(), get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+    sol.header.stamp = *measurement_stamp;
     sol.header.frame_id = frame_id_;
 
-    const bool has_fix =
-      sol.status == msg::GnssSolution::STATUS_FIX    ||
-      sol.status == msg::GnssSolution::STATUS_FLOAT  ||
-      sol.status == msg::GnssSolution::STATUS_SINGLE ||
-      sol.status == msg::GnssSolution::STATUS_DGPS;
-
-    if (has_fix) {
-      if (!has_local_origin_) {
-        local_origin_ecef_[0] = sol.pos_ecef.x;
-        local_origin_ecef_[1] = sol.pos_ecef.y;
-        local_origin_ecef_[2] = sol.pos_ecef.z;
-        ecef2pos(local_origin_ecef_, local_origin_pos_);
-        has_local_origin_ = true;
-        RCLCPP_INFO(get_logger(), "Set local ENU origin: lat=%.6f lon=%.6f alt=%.2f",
-          local_origin_pos_[0] * (180.0 / M_PI),
-          local_origin_pos_[1] * (180.0 / M_PI),
-          local_origin_pos_[2]);
-      }
-
-      sol.pos_enu_org_ecef.x = local_origin_ecef_[0];
-      sol.pos_enu_org_ecef.y = local_origin_ecef_[1];
-      sol.pos_enu_org_ecef.z = local_origin_ecef_[2];
-
-      double d_ecef[3] = {
-        sol.pos_ecef.x - local_origin_ecef_[0],
-        sol.pos_ecef.y - local_origin_ecef_[1],
-        sol.pos_ecef.z - local_origin_ecef_[2]
-      };
-      double enu[3] = {0};
-      ecef2enu(local_origin_pos_, d_ecef, enu);
-      sol.pos_enu.x = enu[0];
-      sol.pos_enu.y = enu[1];
-      sol.pos_enu.z = enu[2];
-
-      // vel_enu uses CURRENT-position frame (matches msg comment & receiver convention).
-      double vel_ecef[3] = {sol.vel_ecef.x, sol.vel_ecef.y, sol.vel_ecef.z};
-      double vel_enu[3] = {0};
-      const double cur_llh[3] = {sol.latitude * D2R, sol.longitude * D2R, sol.altitude};
-      ecef2enu(cur_llh, vel_ecef, vel_enu);
-      sol.vel_enu.x = vel_enu[0];
-      sol.vel_enu.y = vel_enu[1];
-      sol.vel_enu.z = vel_enu[2];
-    } else {
-      sol.pos_enu.x = std::numeric_limits<double>::quiet_NaN();
-      sol.pos_enu.y = std::numeric_limits<double>::quiet_NaN();
-      sol.pos_enu.z = std::numeric_limits<double>::quiet_NaN();
-      sol.vel_enu.x = std::numeric_limits<double>::quiet_NaN();
-      sol.vel_enu.y = std::numeric_limits<double>::quiet_NaN();
-      sol.vel_enu.z = std::numeric_limits<double>::quiet_NaN();
+    if (decoder_common::finalizeReceiverSolution(
+            sol, has_local_origin_, local_origin_ecef_, local_origin_pos_)) {
+      RCLCPP_INFO(get_logger(), "Set local ENU origin: lat=%.6f lon=%.6f alt=%.2f",
+                  local_origin_pos_[0] * R2D, local_origin_pos_[1] * R2D,
+                  local_origin_pos_[2]);
     }
 
     sol_pub_->publish(sol);
@@ -741,6 +745,7 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   void publishObservations() {
     if (raw_.obs.n <= 0) return;
+    receiver_health_.observationCapacity(raw_.obs.n, MAXOBS);
 
     // obs.data[0].time, not raw_.time (already advanced to the next epoch).
     int week = 0;
@@ -748,22 +753,26 @@ class NovatelDecoderNode : public rclcpp::Node {
     const double tow = time2gpst(obs_time, &week);
 
     msg::GnssObservations msg;
-    msg.header.stamp    = (use_gps_timestamp_ && week > 0)
-                          ? gnss_utils::gpstToUtcRosTime(obs_time) : now();
+    const auto measurement_stamp = time_base_.stamp(
+        use_gps_timestamp_, oem4_time_valid_ && week > 0,
+        obs_time, now(), get_logger(), *get_clock());
+    if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
+    msg.header.stamp = *measurement_stamp;
     msg.header.frame_id = frame_id_;
     msg.week = static_cast<uint32_t>(week);
-    msg.tow  = tow;
+    msg.tow = tow;
 
     decoder_common::SatelliteCount sat_count{};
     for (int i = 0; i < raw_.obs.n; ++i) {
       const obsd_t& obs = raw_.obs.data[i];
       decoder_common::countSatellite(obs.sat, sat_count);
-      decoder_common::appendObservations(obs, msg.observations);
+      decoder_common::appendObservations(obs, msg.observations, &raw_.nav);
     }
 
     obs_pub_->publish(msg);
+    receiver_health_.published(msg.week, msg.tow, msg.observations.size());
 
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
       "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
@@ -780,7 +789,13 @@ class NovatelDecoderNode : public rclcpp::Node {
     for (int i = 0; i < raw_.nav.ng; ++i) {
       changed = eph_store_.ingestGeph(raw_.nav.geph[i]) || changed;
     }
+    changed = eph_store_.ingestIon(raw_.nav) || changed;
     if (changed) publishSnapshot();
+  }
+
+  // Broadcast ionosphere parameters (backend status 9): part of the snapshot.
+  void publishIonosphere() {
+    if (eph_store_.ingestIon(raw_.nav)) publishSnapshot();
   }
 
   void maybePublishHeartbeat() {
@@ -789,6 +804,7 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   void publishSnapshot() {
     auto m = eph_store_.buildSnapshot(now());
+    receiver_health_.snapshotRejected(eph_store_.lastSnapshotRejected());
     eph_pub_->publish(m);
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
       "Published ephemeris snapshot: GNSS=%zu GLO=%zu",
@@ -797,7 +813,6 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   // Member Variables
 
-  std::string format_{"oem4"};
   std::string frame_id_;
   bool        use_gps_timestamp_{false};
 
@@ -810,43 +825,46 @@ class NovatelDecoderNode : public rclcpp::Node {
   double imu_scale_override_gyro_{0.0};
   rclcpp::TimerBase::SharedPtr timer_;
 
+  wire::Framer wire_framer_{wire::Protocol::Novatel};
+  std::chrono::steady_clock::time_point wire_last_input_{std::chrono::steady_clock::now()};
+  uint64_t wire_last_rejected_{0};
   stream_t stream_{};
   raw_t    raw_{};
 
+
+  // One time base per session, latched at the first published message and
+  // never changed. Shared by EVERY topic this node publishes, which is what
+  // structurally guarantees the IMU and the GNSS topics cannot end up on
+  // different bases. See decoder_common::TimeBaseLatch.
+  decoder_common::TimeBaseLatch time_base_;
+  wire::NovatelTimeQuality oem4_time_quality_;
+  bool oem4_time_valid_{false};
+  bool binary_time_valid_{false};
+
   // RTCM relay (PC -> receiver): STRSVR-style TCP server -> dedicated RTCMV3
-  // port (relay_out_) when rtcm_relay_output is set, else the main stream.
+  // port (relay_out_) when rtcm_input.receiver_stream is set, else the main stream.
   decoder_common::RtcmRelayServer relay_;
   stream_t relay_out_{};
   bool     relay_out_open_{false};
 
   // NMEA parsing state
   gnss_utils::NmeaParser nmea_parser_;
-  std::string            nmea_buffer_;
   msg::GnssSolution      nmea_solution_;
   msg::GnssSolution      binary_solution_;
   SolutionSource         source_{SolutionSource::UNDETERMINED};
-  rclcpp::Time           grace_start_{0, 0, RCL_ROS_TIME};
+  std::chrono::steady_clock::time_point grace_start_{};
   bool                   grace_started_{false};
   bool                   saw_binary_during_grace_{false};
 
   // ENU local origin
-  double origin_latitude_{0.0};
-  double origin_longitude_{0.0};
-  double origin_altitude_{0.0};
   bool   has_local_origin_{false};
   double local_origin_ecef_[3]{0.0};
   double local_origin_pos_[3]{0.0};
 
-  // OEM4 mini-framer state
-  int                  oem4_state_{0};
+  // OEM4 decoded frame payload
   uint16_t             oem4_msg_id_{0};
-  uint8_t              oem4_hdr_len_{28};
-  uint16_t             oem4_msg_len_{0};
-  int                  oem4_hdr_rem_{0};
-  int                  oem4_hdr_pos_{0};
   uint32_t             oem4_gps_week_{0};
   uint32_t             oem4_gps_ms_{0};
-  int                  oem4_body_pos_{0};
   std::vector<uint8_t> oem4_body_;
   PendingPvt           pending_;
 
@@ -864,7 +882,13 @@ class NovatelDecoderNode : public rclcpp::Node {
 
 int main(int argc, char* argv[]) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<gnss_ros_standardization::NovatelDecoderNode>());
+  try {
+    rclcpp::spin(std::make_shared<gnss_ros_standardization::NovatelDecoderNode>());
+  } catch (const std::exception& error) {
+    RCLCPP_FATAL(rclcpp::get_logger("novatel_decoder_node"), "Startup/runtime failure: %s", error.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   rclcpp::shutdown();
   return 0;
 }

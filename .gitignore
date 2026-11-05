@@ -14,6 +14,7 @@ Makefile
 *.cmake
 !*Config.cmake
 !*ConfigVersion.cmake
+!cmake/*.cmake
 
 # Compiled objects
 *.o
@@ -47,6 +48,8 @@ ekf_state_log.csv
 
 # Generated evaluation rosbags (e.g. PPC-Dataset -> ROSBAG; large, non-committed)
 data/
+# Independently versioned, accepted PPC bags and dataset provenance.
+/PPC-Dataset-ROS2/
 
 # rosbag_to_rinex writes to the current directory
 output.obs
@@ -69,3 +72,19 @@ EVAL_LEDGER.md
 # copies the whole directory, so a stray .orig header would be installed.
 *.orig
 *.rej
+
+# Local site configuration for the pipeline launch files (credentials, device
+# paths). config/site.yaml ships as the template; *.local.yaml is yours.
+config/site*.local.yaml
+
+# Optional, test-only Rust reference build products. Keep Cargo.lock tracked.
+
+# Private review plans and historical acceptance ledgers (kept in the workspace).
+/RELIABILITY.md
+/GENERALIZATION_PLAN.md
+/COMMIT_PLAN.md
+/REVIEW_PLAN.md
+/AUDIT_EVIDENCE.md
+/docs/REVIEW_FIXES_20261025.md
+/docs/FINAL_ACCEPTANCE_20261027.md
+/docs/history/

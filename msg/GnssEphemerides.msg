@@ -1,7 +1,10 @@
-std_msgs/Header header              # stamp = ROS Time. From driver/decoder: time of reception
-                                    # (PC time or GPST-derived). From rinex_to_rosbag: the
-                                    # corresponding obs epoch stamp (GPST-derived). RINEX nav
-                                    # does not preserve broadcast arrival time; --eph-mode
-                                    # selects per-epoch republish vs on-change publishing.
-GnssEphemeris[] gnss_ephemeris      # GPS / Galileo / QZSS / BeiDou / NavIC / SBAS
+std_msgs/Header header              # stamp = ROS Time: publication time of this snapshot
+GnssEphemeris[] gnss_ephemeris      # GPS / Galileo / QZSS / BeiDou / NavIC
 GlonassEphemeris[] glonass_ephemeris  # GLONASS
+
+# Broadcast ionosphere model parameters (RTKLIB nav_t order). All zero = not received.
+float64[8] ion_gps                  # GPS Klobuchar {a0,a1,a2,a3,b0,b1,b2,b3}
+float64[4] ion_gal                  # Galileo NeQuick {ai0,ai1,ai2,0}
+float64[8] ion_qzs                  # QZSS Klobuchar {a0,a1,a2,a3,b0,b1,b2,b3}
+float64[8] ion_bds                  # BeiDou Klobuchar {a0,a1,a2,a3,b0,b1,b2,b3}
+float64[8] ion_irn                  # NavIC Klobuchar {a0,a1,a2,a3,b0,b1,b2,b3}
