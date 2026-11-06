@@ -55,10 +55,23 @@ set(_msgs
   msg/GnssEphemerides.msg
   msg/GnssSolution.msg
 )
+# Message type support is loaded with dlopen at run time, so it must be shared
+# even with BUILD_SHARED_LIBS=OFF (Jazzy's rosidl forces this; Humble's follows
+# BUILD_SHARED_LIBS). Only the generated interface libraries are affected.
+if(DEFINED BUILD_SHARED_LIBS)
+  set(_gnss_shared_libs_defined TRUE)
+  set(_gnss_shared_libs ${BUILD_SHARED_LIBS})
+endif()
+set(BUILD_SHARED_LIBS ON)
 rosidl_generate_interfaces(${PROJECT_NAME}
   ${_msgs}
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
+if(_gnss_shared_libs_defined)
+  set(BUILD_SHARED_LIBS ${_gnss_shared_libs})
+else()
+  unset(BUILD_SHARED_LIBS)
+endif()
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 # RTKLIB core
