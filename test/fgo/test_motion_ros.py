@@ -62,6 +62,7 @@ def main():
                     try:
                         wait(node, lambda: rover.get_subscription_count() and base.get_subscription_count()
                              and end.get_subscription_count() and node.count_publishers(prefix+'/solution'), 'discovery')
+                        wait(node, lambda: 'gnss_fgo' in node.get_node_names(), 'node discovery')
                         subscriptions = node.get_subscriber_names_and_types_by_node('gnss_fgo', '/')
                         assert not any(t == 'sensor_msgs/msg/Imu' for _, types in subscriptions for t in types)
                         def obs(tow):

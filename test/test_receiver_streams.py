@@ -113,7 +113,10 @@ def _run(node,executor,label,exe,data,extra,*,file_input,disconnect,chunk_delay)
                 end=time.monotonic()+10.0
                 while True:
                     ready=all(
-                        subscriptions[key].get_publisher_count()>0 and
+                        # Subscription.get_publisher_count is not in Humble's rclpy.
+                        (subscriptions[key].get_publisher_count()
+                         if hasattr(subscriptions[key],'get_publisher_count')
+                         else node.count_publishers(topic_prefix+key))>0 and
                         any(info.node_name==receiver_name for info in
                             node.get_publishers_info_by_topic(topic_prefix+key))
                         for key in required)

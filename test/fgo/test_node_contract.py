@@ -119,6 +119,9 @@ class Case:
         pubs = [self.rover, self.base, self.nav, self.end] + ([self.imu] if imu_node else [])
         spin_until(node, lambda: all(p.get_subscription_count() for p in pubs)
                    and node.count_publishers(self.prefix + '/solution'), 'discovery')
+        # Writer-side matching can precede reader-side matching; data sent in
+        # between is dropped by the reader. Give the node time to match back.
+        spin_for(node, 1.0)
 
     def alive(self):
         assert self.proc.poll() is None, 'node exited with {}'.format(self.proc.returncode)
