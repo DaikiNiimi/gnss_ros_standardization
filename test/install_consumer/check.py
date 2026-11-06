@@ -12,6 +12,7 @@ import uuid
 
 import rclpy
 from rclpy.serialization import serialize_message
+from rosidl_runtime_py.convert import message_to_ordereddict
 from gnss_ros_standardization.msg import (
     GlonassEphemeris, GnssEphemerides, GnssEphemeris, GnssObservation,
     GnssObservations, GnssSolution,
@@ -66,9 +67,21 @@ def main():
     node = rclpy.create_node("installed_python_consumer", namespace=namespace)
     publishers, subscriptions = [], []
 
+    def values(message):
+        # Every nested field, with NaN comparable. Serialized bytes are not
+        # compared: CDR alignment padding is not initialized data.
+        def norm(v):
+            if isinstance(v, float) and math.isnan(v):
+                return "nan"
+            if isinstance(v, dict):
+                return {k: norm(x) for k, x in v.items()}
+            if isinstance(v, (list, tuple)):
+                return [norm(x) for x in v]
+            return v
+        return norm(message_to_ordereddict(message))
+
     def echo(name, message):
-        # Serialized comparison also checks every nested field and preserves NaN.
-        assert serialize_message(message) == serialize_message(expected[name]), name
+        assert values(message) == values(expected[name]), name
         received.add(name)
 
     for name, message in expected.items():
