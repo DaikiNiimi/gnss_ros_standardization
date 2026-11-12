@@ -55,6 +55,9 @@ data/
 output.obs
 output.nav
 
+# JOSS paper sources (kept outside the package history).
+joss-paper/
+
 # The PPC evaluation harness lives in its own repository: it depends on a
 # dataset this package cannot redistribute, and it is versioned with the paper
 # rather than with the code. The unit tests and the bag verification tools in

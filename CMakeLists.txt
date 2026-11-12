@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(gnss_ros_standardization VERSION 1.0.0 LANGUAGES C CXX)
+project(gnss_ros_standardization VERSION 1.1.0 LANGUAGES C CXX)
 # NOTE: Keep VERSION in sync with package.xml. Used by tools' --version flag.
 
 # Basics

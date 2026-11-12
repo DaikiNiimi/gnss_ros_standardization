@@ -3,7 +3,7 @@
 ## Run
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/${ROS_DISTRO:-$(ls /opt/ros | tail -n 1)}/setup.bash
 colcon build --cmake-args -DBUILD_TESTING=ON
 source install/setup.bash
 colcon test --packages-select gnss_ros_standardization

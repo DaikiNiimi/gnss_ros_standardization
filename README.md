@@ -49,10 +49,15 @@ Messages: [msg/README.md](msg/README.md).
 
 ## Installation
 
-Ubuntu 24.04, ROS 2 Jazzy:
+Ubuntu 24.04 with ROS 2 Jazzy, or Ubuntu 22.04 with ROS 2 Humble. The commands
+below are the same for both.
+
+Requires ROS 2, `git`, `python3-rosdep` and `python3-colcon-common-extensions`.
+On a fresh machine, initialize rosdep once: `sudo rosdep init && rosdep update`.
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+# Uses the ROS 2 already sourced, otherwise the one installed under /opt/ros
+source /opt/ros/${ROS_DISTRO:-$(ls /opt/ros | tail -n 1)}/setup.bash
 git clone --recursive https://github.com/DaikiNiimi/gnss_ros_standardization.git
 cd gnss_ros_standardization
 rosdep install --from-paths . --ignore-src -r -y
@@ -61,6 +66,9 @@ source install/setup.bash
 ```
 
 If the clone omitted the RTKLIB submodule: `git submodule update --init --recursive`.
+
+`rosdep install` installs the dependencies listed in [package.xml](package.xml),
+including Eigen and rosbag2 with the MCAP storage plugin.
 
 ### FGO nodes (optional, need GTSAM)
 
@@ -146,5 +154,6 @@ ros2 bag play /path/to/PPC-Dataset-ROS2/bags/tokyo_run1
 
 ## License
 
-MIT, see [LICENSE](LICENSE) (includes the RTKLIB notice). GTSAM, when used, has its
-own license. Maintainer: Daiki Niimi (`dai12.gnss@gmail.com`).
+MIT, see [LICENSE](LICENSE) (includes the RTKLIB notice, and a BSD-3-Clause notice
+for the parts of `src/positioning/fgo` derived from inuex35/tightly-coupled-gnss-imu-fgo).
+GTSAM, when used, has its own license. Maintainer: Daiki Niimi (`daiki.niimi@ruri.waseda.jp`).
