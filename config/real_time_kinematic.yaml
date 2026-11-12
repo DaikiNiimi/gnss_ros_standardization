@@ -25,7 +25,7 @@ real_time_kinematic:
 
     # Station Positions
     ant2:
-      # Base station position type (ecef or llh)
+      # Base station position type: ecef | llh | rtcm (from the RTCM base stream)
       postype: "llh"
       # Base position values (X/Y/Z in meters for ECEF, Lat/Lon/Hgt in deg/deg/m for LLH)
       pos: [0.0, 0.0, 0.0] # Required: replace with surveyed base coordinates

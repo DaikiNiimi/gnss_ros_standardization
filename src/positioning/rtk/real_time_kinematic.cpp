@@ -1,3 +1,4 @@
+#include <limits>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -11,6 +12,7 @@
 #include "gnss_ros_standardization/epoch_matcher.hpp"
 #include <optional>
 #include "gnss_ros_standardization/gnss_utils.hpp"
+#include "gnss_ros_standardization/msg/gnss_base_station.hpp"
 #include "gnss_ros_standardization/msg/gnss_solution.hpp"
 #include "gnss_ros_standardization/obs_converter.hpp"
 #include "gnss_ros_standardization/rtklib_compat.hpp"
@@ -25,9 +27,54 @@ namespace grs = gnss_ros_standardization::msg;
 namespace {
 constexpr std::size_t kNmeaBufBytes = 256;
 constexpr int kPositionLogThrottleMs = 1000;
+
+double gpstSeconds(uint32_t week, double tow) { return week * 604800.0 + tow; }
 }  // namespace
 
+/// Base station records (GnssBaseStation) of an RTCM base stream, for
+/// `ant2.postype: rtcm`. A base epoch at GPST t belongs to the record with the
+/// latest valid_from <= t; a record is identified by its station ID and
+/// valid_from, and a republished record replaces the earlier copy.
+class BaseStationTable {
+ public:
+  static constexpr std::size_t kCapacity = 16;
+
+  void insert(const grs::GnssBaseStation& record) {
+    const double t = gpstSeconds(record.valid_from_week, record.valid_from_tow);
+    auto it = std::find_if(records_.begin(), records_.end(), [&](const auto& r) {
+      return r.station_id == record.station_id &&
+             gpstSeconds(r.valid_from_week, r.valid_from_tow) == t;
+    });
+    if (it != records_.end()) { *it = record; return; }
+    records_.insert(std::upper_bound(records_.begin(), records_.end(), t,
+        [](double value, const auto& r) { return value < gpstSeconds(r.valid_from_week, r.valid_from_tow); }),
+        record);
+    if (records_.size() > kCapacity) records_.erase(records_.begin());
+  }
+
+  /// The record a base epoch at GPST `t` (seconds) belongs to, or nullptr.
+  const grs::GnssBaseStation* lookup(double t) const {
+    const grs::GnssBaseStation* found = nullptr;
+    for (const auto& r : records_)
+      if (gpstSeconds(r.valid_from_week, r.valid_from_tow) <= t) found = &r;
+    return found;
+  }
+
+  void clear() { records_.clear(); }
+
+  /// Same station and reference point: the RTK filter state stays valid.
+  static bool sameBase(const grs::GnssBaseStation& a, const grs::GnssBaseStation& b) {
+    return a.station_id == b.station_id && a.position_valid == b.position_valid &&
+           a.arp_ecef == b.arp_ecef;
+  }
+
+ private:
+  std::vector<grs::GnssBaseStation> records_;  // ascending valid_from
+};
+
 class RtkPositionNode : public rclcpp::Node {
+  friend struct RtkNodeTestAccess;  // test/test_rtk_node.cpp
+
  public:
   RtkPositionNode() : Node("real_time_kinematic") {
     initializeParameters();
@@ -49,6 +96,15 @@ class RtkPositionNode : public rclcpp::Node {
 
     initializeRtk();
     cacheFixedOriginParam();
+
+    if (base_from_rtcm_) {
+      station_sub_ = create_subscription<grs::GnssBaseStation>(
+          get_parameter("topics.base_station").as_string(),
+          rclcpp::QoS(BaseStationTable::kCapacity).reliable().transient_local(),
+          std::bind(&RtkPositionNode::onStation, this, std::placeholders::_1));
+      RCLCPP_INFO(get_logger(), "Base position from RTCM station records on '%s'",
+                  get_parameter("topics.base_station").as_string().c_str());
+    }
 
     gnss_utils::RoverBaseEpochMatcher::Options match_opt;
     match_opt.max_tdiff_s = rtk_.opt.maxtdiff;
@@ -86,6 +142,7 @@ class RtkPositionNode : public rclcpp::Node {
     declare_safe("topics.base_observation",  std::string("/base/gnss/observation"));
     declare_safe("topics.ephemeris",         std::string("/gnss/ephemeris"));
     declare_safe("topics.solution",          std::string("/gnss/solution"));
+    declare_safe("topics.base_station",      std::string("/base/gnss/station"));
 
     declare_safe("tcp_port", 8002);
 
@@ -277,12 +334,15 @@ class RtkPositionNode : public rclcpp::Node {
     opt.prn[5] = get_parameter("rtk_stats.prnpos").as_double();
 
     const std::string postype = get_parameter("ant2.postype").as_string();
-    if (postype != "llh" && postype != "ecef")
-      throw std::invalid_argument("ant2.postype must be llh or ecef");
+    if (postype != "llh" && postype != "ecef" && postype != "rtcm")
+      throw std::invalid_argument("ant2.postype must be llh, ecef or rtcm");
+    base_from_rtcm_ = postype == "rtcm";
     const auto pos_vec = get_parameter("ant2.pos").as_double_array();
-    if (pos_vec.size()!=3 || !std::all_of(pos_vec.begin(),pos_vec.end(),[](double x){return std::isfinite(x);}) || norm(pos_vec.data(),3)==0)
+    if (!base_from_rtcm_ && (pos_vec.size()!=3 || !std::all_of(pos_vec.begin(),pos_vec.end(),[](double x){return std::isfinite(x);}) || norm(pos_vec.data(),3)==0))
       throw std::invalid_argument("Set ant2.pos to the surveyed base position before starting RTK");
-    if (postype == "ecef") {
+    if (base_from_rtcm_) {
+      opt.refpos = 0;  // rtk_.rb follows the station records (see applyStation)
+    } else if (postype == "ecef") {
       opt.refpos = 0;
       if (pos_vec.size() == 3) std::copy(pos_vec.begin(), pos_vec.end(), opt.rb);
     } else if (postype == "llh") {
@@ -294,7 +354,7 @@ class RtkPositionNode : public rclcpp::Node {
     }
 
     rtkinit(&rtk_, &opt);
-    if (opt.refpos == 0) {
+    if (opt.refpos == 0 && !base_from_rtcm_) {
       for (int i = 0; i < 3; ++i) rtk_.rb[i] = opt.rb[i];
       RCLCPP_INFO(get_logger(), "RTK init: forced base position to %.3f %.3f %.3f",
                   rtk_.rb[0], rtk_.rb[1], rtk_.rb[2]);
@@ -368,18 +428,81 @@ class RtkPositionNode : public rclcpp::Node {
       matcher_.reset();
       newest_rover_s_.reset();
       newest_base_s_.reset();
-      prcopt_t opt = rtk_.opt;
-      double rb[3] = {rtk_.rb[0], rtk_.rb[1], rtk_.rb[2]};
-      rtkfree(&rtk_);
-      rtkinit(&rtk_, &opt);
-      if (opt.refpos == 0) std::copy(rb, rb + 3, rtk_.rb);
-      channel_track_ = gnss_utils::GlonassChannelTracker{};
+      const double rb[3] = {rtk_.rb[0], rtk_.rb[1], rtk_.rb[2]};
+      restartFilter(rb);
+      if (base_from_rtcm_) {
+        // Records of the old timeline would claim the new one's epochs.
+        stations_.clear(); active_station_.reset(); last_solved_base_s_.reset();
+      }
       ++timeline_resets_;
       RCLCPP_WARN(get_logger(), "%s observation clock moved back more than %.1f s: "
                   "new timeline (RTK filter restarted, %llu so far)", stream,
                   kTimelineResetS, static_cast<unsigned long long>(timeline_resets_));
     }
     if (!newest || t > *newest) newest = t;
+  }
+
+  // Restart the RTK filter at base position `rb`, keeping options and navigation.
+  void restartFilter(const double rb[3]) {
+    prcopt_t opt = rtk_.opt;
+    // rtkpos reloads rtk.rb from opt.rb every epoch when refpos is a position.
+    if (opt.refpos == 0) std::copy(rb, rb + 3, opt.rb);
+    rtkfree(&rtk_);
+    rtkinit(&rtk_, &opt);
+    if (opt.refpos == 0) std::copy(rb, rb + 3, rtk_.rb);
+    channel_track_ = gnss_utils::GlonassChannelTracker{};
+  }
+
+  void onStation(const grs::GnssBaseStation::SharedPtr msg) {
+    std::lock_guard<std::mutex> lk(obs_mtx_);
+    stations_.insert(*msg);
+    // Topics are not ordered against each other: an epoch of this record may
+    // already have been solved against the previous base. Restart the filter
+    // so that base's ambiguities do not carry over.
+    const double from = gpstSeconds(msg->valid_from_week, msg->valid_from_tow);
+    if (last_solved_base_s_ && from <= *last_solved_base_s_ && active_station_ &&
+        !BaseStationTable::sameBase(*active_station_, *msg)) {
+      ++station_records_late_;
+      RCLCPP_WARN(get_logger(), "Station %u record (from tow %.3f) arrived after base epochs it "
+                  "covers were solved against station %u: RTK filter restarted (%llu so far)",
+                  msg->station_id, msg->valid_from_tow, active_station_->station_id,
+                  static_cast<unsigned long long>(station_records_late_));
+      active_station_.reset();
+      last_solved_base_s_.reset();
+    }
+  }
+
+  /// Point the filter at the base station of `base`. False when its station
+  /// position is not known (yet), in which case the epoch cannot be solved.
+  bool applyStation(const grs::GnssObservations& base) {
+    const double t = gpstSeconds(base.week, base.tow);
+    const auto* record = stations_.lookup(t);
+    if (!record || !record->position_valid) {
+      ++base_epochs_without_station_;
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "Base epoch tow %.3f: %s; no solution (%llu epochs so far)", base.tow,
+          record ? "station position pending (RTCM 1005/1006)" : "no RTCM station record",
+          static_cast<unsigned long long>(base_epochs_without_station_));
+      return false;
+    }
+    if (!active_station_ || !BaseStationTable::sameBase(*active_station_, *record)) {
+      const double rb[3] = {record->arp_ecef.x, record->arp_ecef.y, record->arp_ecef.z};
+      if (active_station_)
+        RCLCPP_WARN(get_logger(), "Base station changed %u -> %u at tow %.3f: RTK filter restarted",
+                    active_station_->station_id, record->station_id, base.tow);
+      restartFilter(rb);
+      // The ENU origin stays at the first base, so a station change does not
+      // move the local frame.
+      if (!fixed_origin_valid_) {
+        std::copy(rb, rb + 3, fixed_origin_ecef_);
+        fixed_origin_valid_ = true;
+      }
+      RCLCPP_INFO(get_logger(), "Base station %u: ARP ECEF %.4f %.4f %.4f", record->station_id,
+                  rb[0], rb[1], rb[2]);
+      active_station_ = *record;
+    }
+    last_solved_base_s_ = t;
+    return true;
   }
 
   void processMatches() {
@@ -397,6 +520,7 @@ class RtkPositionNode : public rclcpp::Node {
                   const grs::GnssObservations::ConstSharedPtr& base) {
     std::lock_guard<std::mutex> lk_nav(nav_mtx_);
     if (nav_.n == 0 && nav_.ng == 0) { publishNoSolution(*rover); return; }
+    if (base_from_rtcm_ && (!base || !applyStation(*base))) { publishNoSolution(*rover); return; }
 
     gnss_utils::ObservationRejectCounters rejected;
     std::vector<obsd_t> obs = gnss_utils::buildObsEpoch(*rover, base.get(), freq_mask_, &rejected, &signal_selection_);
@@ -510,11 +634,10 @@ class RtkPositionNode : public rclcpp::Node {
       std::copy_n(rtk_.rb, 3, origin_ecef);
     }
 
-    sol_msg->pos_enu_org_ecef.x = origin_ecef[0];
-    sol_msg->pos_enu_org_ecef.y = origin_ecef[1];
-    sol_msg->pos_enu_org_ecef.z = origin_ecef[2];
-
     if (norm(origin_ecef, 3) > 0.0) {
+      sol_msg->pos_enu_org_ecef.x = origin_ecef[0];
+      sol_msg->pos_enu_org_ecef.y = origin_ecef[1];
+      sol_msg->pos_enu_org_ecef.z = origin_ecef[2];
       double origin_llh[3];
       ecef2pos(origin_ecef, origin_llh);
       const double d_ecef[3] = {
@@ -529,10 +652,9 @@ class RtkPositionNode : public rclcpp::Node {
       sol_msg->pos_enu.z = pos_enu[2];
     } else {
       // No origin configured and base station position not yet received.
-      // Fall back to (0,0,0) — pos_enu stays at rest until origin resolves.
-      sol_msg->pos_enu.x = 0.0;
-      sol_msg->pos_enu.y = 0.0;
-      sol_msg->pos_enu.z = 0.0;
+      const double unknown = std::numeric_limits<double>::quiet_NaN();
+      sol_msg->pos_enu_org_ecef.x = sol_msg->pos_enu_org_ecef.y = sol_msg->pos_enu_org_ecef.z = unknown;
+      sol_msg->pos_enu.x = sol_msg->pos_enu.y = sol_msg->pos_enu.z = unknown;
     }
 
     double Q_ecef[9] = {
@@ -589,6 +711,14 @@ class RtkPositionNode : public rclcpp::Node {
   rclcpp::Subscription<grs::GnssObservations>::SharedPtr rover_obs_sub_;
   rclcpp::Subscription<grs::GnssObservations>::SharedPtr base_obs_sub_;
   rclcpp::Subscription<grs::GnssEphemerides>::SharedPtr nav_sub_;
+  rclcpp::Subscription<grs::GnssBaseStation>::SharedPtr station_sub_;
+
+  // ant2.postype rtcm: base position from the station records (under obs_mtx_).
+  bool base_from_rtcm_{false};
+  BaseStationTable stations_;
+  std::optional<grs::GnssBaseStation> active_station_;  // the base rtk_ is set to
+  std::optional<double> last_solved_base_s_;           // GPST of its newest solved epoch
+  std::uint64_t station_records_late_ = 0, base_epochs_without_station_ = 0;
   rclcpp::Publisher<grs::GnssSolution>::SharedPtr gnss_sol_pub_;
 
   gnss_utils::TcpNmeaServer tcp_server_;

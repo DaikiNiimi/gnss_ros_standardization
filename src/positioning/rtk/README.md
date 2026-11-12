@@ -9,7 +9,10 @@ ros2 run gnss_ros_standardization real_time_kinematic --ros-args \
 ```
 
 `ant2.pos` (the surveyed base position) must be set; the node does not start
-with the default `[0, 0, 0]`.
+with the default `[0, 0, 0]`. With an RTCM base, `ant2.postype:=rtcm` takes the
+base position from the stream instead (RTCM 1005/1006 records on
+`topics.base_station`). A base station change restarts the filter at the new
+base; an epoch whose station position has not arrived yet has no solution.
 
 ## Topics
 
@@ -18,17 +21,18 @@ with the default `[0, 0, 0]`.
 | sub | `topics.rover_observation` | `/gnss/observation` | `GnssObservations` |
 | sub | `topics.base_observation` | `/base/gnss/observation` | `GnssObservations` |
 | sub | `topics.ephemeris` | `/gnss/ephemeris` | `GnssEphemerides` |
+| sub | `topics.base_station` | `/base/gnss/station` | `GnssBaseStation` (`ant2.postype: rtcm` only) |
 | pub | `topics.solution` | `/gnss/solution` | `GnssSolution` |
 
 ## Parameters
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `ant2.postype`, `ant2.pos` | `llh`, `[0,0,0]` | base position (`llh`: deg, deg, m; `ecef`: m) |
+| `ant2.postype`, `ant2.pos` | `llh`, `[0,0,0]` | base position (`llh`: deg, deg, m; `ecef`: m; `rtcm`: from the base stream, `pos` unused) |
 | `pos1.*`, `pos2.*`, `rtk_stats.*` | see YAML | RTKLIB processing options, same names as the RTKLIB configuration file |
 | `frequencies.enable_l1`, `.enable_l2`, `.enable_l5` | `true`, `true`, `false` | bands used |
 | `excluded_satellites` | `[]` | satellites not used, e.g. `["G05", "C12"]` |
-| `local_origin.mode`, `.postype`, `.pos` | `auto`, `llh`, `[0,0,0]` | ENU origin: `auto` = base position, `fixed` = `pos` |
+| `local_origin.mode`, `.postype`, `.pos` | `auto`, `llh`, `[0,0,0]` | ENU origin: `auto` = base position (`rtcm`: the first base), `fixed` = `pos` |
 | `debug.solstatus_path` | `""` | write the RTKLIB solution status file |
 | `tcp_port` | `8002` | NMEA output over TCP; `0` disables |
 

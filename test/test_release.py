@@ -241,7 +241,7 @@ class ReleaseStartup(unittest.TestCase):
 
     def test_release_C1_base_required(self):
         self.reject('real_time_kinematic',[], 'ant2.pos')
-        self.reject('real_time_kinematic',['ant2.postype:=rtcm'],'ant2.postype')
+        self.reject('real_time_kinematic',['ant2.postype:=xyz'],'ant2.postype')
         for node in ['gnss_fgo','gnss_imu_fgo']:
             if not (BIN/node).exists():continue  # optional executable; core CI also checks RTK
             self.reject(node,[], 'surveyed terrestrial coordinate')
