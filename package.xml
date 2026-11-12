@@ -12,6 +12,8 @@
   <license>MIT</license>
   <!-- Vendored RTKLIB, including configure-time modifications. -->
   <license>BSD-2-Clause</license>
+  <!-- src/positioning/fgo: derivatives of inuex35/tightly-coupled-gnss-imu-fgo. -->
+  <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

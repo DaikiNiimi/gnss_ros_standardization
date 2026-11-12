@@ -38,13 +38,13 @@ SOURCES = {
 # Declared by a shared header for every receiver node (NMEA date handling).
 SHARED = ['include/gnss_ros_standardization/decoder_common.hpp']
 # declare_parameter and the node-local helpers that wrap it
-# (RTK declare_safe, EKF load_vec3, FGO vectorParameter).
+# (RTK declare_safe, EKF load_vec3, FGO vectorParameter, number, integer, flag,
+# useSystem, snrBand).
 DECLARE = re.compile(
-    r'\b(?:declare_parameter|declare_safe|load_vec3|vectorParameter)\s*(?:<[^;()]*>)?\s*\(\s*"([^"]+)"')
+    r'\b(?:declare_parameter|declare_safe|load_vec3|vectorParameter|number|integer|flag|useSystem|snrBand)\s*(?:<[^;()]*>)?\s*\(\s*"([^"]+)"')
 # Shared helpers that declare parameters for every node that calls them.
 HELPERS = {'declareLocalOrigin': 'src/utils/gnss_utils.cpp'}
 FGO_TOPIC = re.compile(r'\btopic\(\s*"([a-z_]+)"')
-FGO_SIGNAL = re.compile(r'^signals\.(rover|base)\.[GEJC]\.[PLDS]$')
 # Declared by every rclcpp node.
 ROS = {'use_sim_time'}
 
@@ -66,8 +66,7 @@ def declared(executable):
 
 def undeclared(executable, keys):
     known = declared(executable)
-    return sorted(k for k in keys if k not in known and not (
-        executable in ('gnss_fgo', 'gnss_imu_fgo') and FGO_SIGNAL.match(k)))
+    return sorted(k for k in keys if k not in known)
 
 
 def flatten(mapping, prefix=''):

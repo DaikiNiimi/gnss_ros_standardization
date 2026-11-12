@@ -4,9 +4,8 @@
 int main(int argc, char **argv) {
   gnss_fgo::NodeVariant variant;
   variant.node_name = "gnss_imu_fgo";
-  variant.profile = "ratio3_direct_v1";
-  variant.solution_topic = "/gnss/imu_fgo/solution";
-  variant.banner = "Ratio 3.0 direct FIX/hold; UTC/GPST header "
+  variant.solution_topic = "/gnss/solution";
+  variant.banner = "GNSS/IMU; UTC/GPST header "
                    "stamps read off the rover observations, no GLONASS RTK";
   variant.imu = true;
   return gnss_fgo::runNode(argc, argv, variant);

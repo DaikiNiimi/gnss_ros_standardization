@@ -1,7 +1,23 @@
 #include "preprocessor.hpp"
+#include <vector>
 
 namespace gnss_fgo {
 namespace {
+// RTKLIB's SNR mask test (testsnr), so that the RTK and FGO nodes compare SNR
+// with the same thresholds. In Preprocessor::edit a tracked band (seen with
+// code and phase) below the mask leaves the whole satellite out for that
+// receiver in that epoch; real_time_kinematic (RTKLIB zdres_sat) drops only
+// that band.
+bool snrMasked(const Config &cfg, int receiver_index, int band,
+               double elevation_rad, double snr) {
+  snrmask_t mask{};
+  mask.ena[0] = cfg.snrmask_enable[0];
+  mask.ena[1] = cfg.snrmask_enable[1];
+  for (int b = 0; b < 3; ++b)
+    for (int i = 0; i < 9; ++i)
+      mask.mask[b][i] = cfg.snrmask[b][i];
+  return testsnr(receiver_index, band, elevation_rad, snr, &mask) != 0;
+}
 double elevation(const Vec3 &receiver, const Vec3 &satellite) {
   constexpr double a = 6378137., f = 1. / 298.257223563, e2 = f * (2 - f);
   const double r2 = receiver.head<2>().squaredNorm();
@@ -19,11 +35,54 @@ double elevation(const Vec3 &receiver, const Vec3 &satellite) {
                 std::sin(lat));
   return std::asin(up.dot((satellite - receiver).normalized()));
 }
+gtime_t gtime(const PreciseTime &t) {
+  gtime_t out = gpst2time(0, 0);
+  out.time += t.seconds;
+  out.sec = t.fraction;
+  return out;
+}
+// RTKLIB satposs(), called with the ephemeris selection time RTK uses (the
+// rover epoch) for both receivers. Missing or unhealthy satellites are left
+// out.
+std::map<int, SatelliteMotion> satelliteStates(const RawEpoch &epoch,
+                                               const PreciseTime &rover_time,
+                                               const nav_t &nav) {
+  std::vector<obsd_t> obs;
+  for (const auto &s : epoch.sats) {
+    obsd_t o{};
+    o.time = gtime(epoch.time);
+    o.sat = s.sat;
+    for (int f = 0; f < 3; ++f)
+      o.P[f] = s.pr[f];
+    obs.push_back(o);
+  }
+  std::map<int, SatelliteMotion> motions;
+  const int n = int(obs.size());
+  if (!n)
+    return motions;
+  std::vector<double> rs(6 * n), dts(2 * n), var(n);
+  std::vector<int> svh(n);
+  satposs(gtime(rover_time), obs.data(), n, &nav, EPHOPT_BRDC, rs.data(),
+          dts.data(), var.data(), svh.data());
+  for (int i = 0; i < n; ++i) {
+    const Vec3 position(rs[6 * i], rs[6 * i + 1], rs[6 * i + 2]);
+    if (position.isZero() || satexclude(obs[i].sat, var[i], svh[i], nullptr))
+      continue;
+    SatelliteMotion motion;
+    motion.position = position;
+    motion.velocity = Vec3(rs[6 * i + 3], rs[6 * i + 4], rs[6 * i + 5]);
+    motion.clock_drift = dts[2 * i + 1];
+    if (position.allFinite() && motion.velocity.allFinite())
+      motions[obs[i].sat] = motion;
+  }
+  return motions;
+}
 } // namespace
 std::map<int, Preprocessor::Edited>
 Preprocessor::edit(const RawEpoch &obs, const Vec3 &position,
                    Receiver &receiver,
-                   const std::map<int, SatelliteMotion> &motions) {
+                   const std::map<int, SatelliteMotion> &motions,
+                   int receiver_index) {
   std::map<int, Edited> result;
   for (const auto &s : obs.sats) {
     auto &out = result[s.sat];
@@ -31,40 +90,40 @@ Preprocessor::edit(const RawEpoch &obs, const Vec3 &position,
     if (found == motions.end())
       continue;
     out.motion = found->second;
-    if (!out.motion.available || out.motion.health > 0)
-      continue;
     out.elevation = elevation(position, out.motion.position);
     if (out.elevation < cfg_.elmin_deg * M_PI / 180.)
       continue;
-    for (int f = 0; f < 3; ++f)
-      if (s.phase[f] != 0 && s.pr[f] != 0)
-        receiver.seen[{s.sat, f}] = true;
-    for (int f = 0; f < s.bands; ++f) {
+    // A satellite is used on every band it has been seen with (code and phase)
+    // or not at all: a seen band that is missing or below the SNR mask in this
+    // epoch rejects the whole satellite for this receiver, so that a reflected
+    // signal does not reach the solution through the satellite's other band.
+    // A band never seen is not required; it is edited (code or phase is 0).
+    bool seen_any = false, rejected = false;
+    for (int f = 0; f < 3; ++f) {
       out.slip[f] = s.lli[f] & 1;
-      out.edited[f] = s.pr[f] == 0 || s.phase[f] == 0 ||
-                      s.snr[f] < (s.gps_py[f] ? 15. : cfg_.cnr_min_dbhz);
+      out.edited[f] =
+          s.pr[f] == 0 || s.phase[f] == 0 ||
+          snrMasked(cfg_, receiver_index, f, out.elevation, s.snr[f]);
+      const SF band{s.sat, f};
+      if (s.pr[f] != 0 && s.phase[f] != 0)
+        receiver.seen.insert(band);
+      if (receiver.seen.count(band)) {
+        seen_any = true;
+        rejected = rejected || out.edited[f];
+      }
     }
-    if (s.bands > 1 && s.phase[0] != 0 && s.phase[1] != 0) {
+    out.admitted = seen_any && !rejected;
+    if (!out.admitted)
+      out.edited.fill(true);
+    if (s.phase[0] != 0 && s.phase[1] != 0) {
       const double gf = s.phase[0] * s.wavelength[0] -
                         s.phase[1] * s.wavelength[1],
                    old = receiver.gf[s.sat];
       if (gf != 0)
         receiver.gf[s.sat] = gf;
-      if (gf != 0 && old != 0 && std::abs(gf - old) > .15)
+      if (gf != 0 && old != 0 && std::abs(gf - old) > cfg_.thres_slip)
         out.slip[0] = out.slip[1] = true;
     }
-    bool any = false, bad = false;
-    for (int f = 0; f < s.bands; ++f) {
-      const bool judged = !cfg_.sat_band_plan || receiver.seen[{s.sat, f}];
-      if (judged) {
-        any = true;
-        bad = bad || out.edited[f];
-      } else
-        out.edited[f] = true;
-    }
-    out.admitted = any && !bad;
-    if (!out.admitted)
-      out.edited.fill(true);
   }
   return result;
 }
@@ -94,39 +153,17 @@ ObservationEpoch Preprocessor::prepare(const RawEpoch &rover,
                                        const Vec3 &position) {
   if (!position.allFinite())
     throw std::invalid_argument("invalid preprocessing position");
-  // Pairs arrive in rover order with non-decreasing bases, so no later epoch
-  // propagates before this pair's earlier time (60 s margin).
-  navigation.prune(
-      (base && base->time - rover.time < 0 ? base->time : rover.time)
-          .add(-60.));
   ObservationEpoch out;
   out.gpst = rover.time.absolute();
   out.base_gpst = base ? base->time.absolute() : out.gpst;
   std::map<int, SatelliteMotion> ru, rb;
   std::map<int, Edited> eu, eb;
-  auto propagate = [&](const RawEpoch &obs,
-                       std::map<int, SatelliteMotion> &motions) {
-    for (const auto &s : obs.sats) {
-      if (s.system < 0 || s.system > 3)
-        continue;
-      double range = 0;
-      for (int f = 0; f < 3; ++f)
-        if (s.pr[f] != 0) {
-          range = s.pr[f];
-          break;
-        }
-      auto motion =
-          navigation.position(s.sat, s.system, obs.time, range, rover.time);
-      if (motion.available)
-        motions[s.sat] = motion;
-    }
-  };
   if (base && !rover.sats.empty() && !base->sats.empty()) {
-    propagate(rover, ru);
+    ru = satelliteStates(rover, rover.time, nav_);
     if (ru.size() >= 4) {
-      propagate(*base, rb);
-      eb = edit(*base, base_, base_receiver_, rb);
-      eu = edit(rover, position, rover_, ru);
+      rb = satelliteStates(*base, rover.time, nav_);
+      eb = edit(*base, base_, base_receiver_, rb, 1);
+      eu = edit(rover, position, rover_, ru, 0);
     }
   }
   continuity(rover, rover_, eu);
@@ -150,18 +187,19 @@ ObservationEpoch Preprocessor::prepare(const RawEpoch &rover,
       v.elevation = uqc.elevation;
       v.rover_sat = uqc.motion.position;
       v.sat_velocity = uqc.motion.velocity;
+      v.sat_clock_drift = uqc.motion.clock_drift;
       v.base_sat = bqc.motion.position;
       v.pr = s.pr;
       v.pr_base = b.pr;
       v.phase = s.phase;
       v.phase_base = b.phase;
+      v.doppler = s.doppler;
       for (int f = 0; f < 3; ++f) {
         if (uqc.edited[f])
-          v.pr[f] = v.phase[f] = 0;
+          v.pr[f] = v.phase[f] = v.doppler[f] = 0;
         if (bqc.edited[f])
           v.pr_base[f] = v.phase_base[f] = 0;
       }
-      v.doppler = s.doppler;
       v.doppler_wavelength = s.doppler_wavelength;
       v.doppler_snr = s.doppler_snr;
       v.snr = s.snr;

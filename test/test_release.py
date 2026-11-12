@@ -46,7 +46,7 @@ class ReleasePublication(unittest.TestCase):
         cmake = (ROOT / 'CMakeLists.txt').read_text()
         self.assertRegex(cmake, r'install\(FILES LICENSE\s+DESTINATION share/\$\{PROJECT_NAME\}\)')
         licenses = [x.text for x in ET.parse(ROOT / 'package.xml').getroot().findall('license')]
-        self.assertEqual(set(licenses), {'MIT', 'BSD-2-Clause'})
+        self.assertEqual(set(licenses), {'MIT', 'BSD-2-Clause', 'BSD-3-Clause'})
 
     def test_E2_metadata_factory_supports_both_constructor_signatures(self):
         tree = ast.parse((ROOT / 'test/test_converter_roundtrip.py').read_text())
@@ -170,12 +170,11 @@ class ReleaseSourceContracts(unittest.TestCase):
     def test_release_F3_F4_F6_F8_F14_F17_docs(self):
         fgo=(ROOT/'src/positioning/fgo/README.md').read_text()
         self.assertNotIn('0 disables the bound',fgo)
-        self.assertNotIn('official GNSS',fgo)
         ekf=(ROOT/'src/positioning/ekf/README.md').read_text()
         self.assertIn('output_reference_frame=imu',ekf);self.assertNotIn('IMU body (FRD)',ekf)
         for name in ['gnss_fgo','gnss_imu_fgo']:
             source=(ROOT/f'src/positioning/fgo/{name}.cpp').read_text()
-            self.assertNotIn('Cap scope:',source);self.assertNotIn('official GNSS factors',source)
+            self.assertNotIn('Cap scope:',source)
         self.assertNotIn('non-zero off-diagonal in',(ROOT/'include/gnss_ros_standardization/ubx_protocol.hpp').read_text())
 
     def test_release_L5_X4_converter_help_and_tables(self):

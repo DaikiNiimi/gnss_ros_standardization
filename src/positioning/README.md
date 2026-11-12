@@ -9,8 +9,8 @@ the receiver nodes.
 | `single_point_positioning` | SPP (RTKLIB `pntpos`) | rover observations, ephemeris | `/gnss/solution` | [spp](spp/README.md) |
 | `real_time_kinematic` | RTK (RTKLIB `rtkpos`) | rover and base observations, ephemeris | `/gnss/solution` | [rtk](rtk/README.md) |
 | `gnss_imu_kalman_filter` | error-state EKF, loosely coupled | GNSS solution, IMU, wheel speed | `/gnss/fusion/ekf_solution` | [ekf](ekf/README.md) |
-| `gnss_fgo` | factor graph, tightly coupled GNSS | rover and base observations, ephemeris | `/gnss/fgo/solution` | [fgo](fgo/README.md) |
-| `gnss_imu_fgo` | factor graph, tightly coupled GNSS/IMU | rover and base observations, ephemeris, IMU | `/gnss/imu_fgo/solution` | [fgo](fgo/README.md) |
+| `gnss_fgo` | factor graph, tightly coupled GNSS | rover and base observations, ephemeris | `/gnss/solution` | [fgo](fgo/README.md) |
+| `gnss_imu_fgo` | factor graph, tightly coupled GNSS/IMU | rover and base observations, ephemeris, IMU | `/gnss/solution` | [fgo](fgo/README.md) |
 
 Configuration files are in [config/](../../config/); [config/ppc/](../../config/ppc/)
 holds the settings for the PPC dataset routes.

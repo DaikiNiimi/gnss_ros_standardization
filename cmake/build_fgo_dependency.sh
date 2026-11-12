@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the official GTSAM (borglab/gtsam develop) revision the FGO examples are
+# Build the official GTSAM (borglab/gtsam develop) revision the FGO nodes are
 # tested with. It provides the explicit Logmap IMU error mode they use.
 set -euo pipefail
 task_root=${1:?Usage: build_fgo_dependency.sh BUILD_ROOT [JOBS]}

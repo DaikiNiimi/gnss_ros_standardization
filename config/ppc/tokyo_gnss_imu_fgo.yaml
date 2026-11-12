@@ -1,7 +1,6 @@
-# PPC dataset, Tokyo routes (base position, lever arm, signal plans).
+# PPC dataset, Tokyo routes: common observation conditions with the RTK evaluation (L1/L2, SNR 35 dBHz, 15 deg, fix and hold).
 gnss_imu_fgo:
   ros__parameters:
-    algorithm_profile: ratio3_direct_v1
     topics:
       rover_observation: /gnss/observation
       base_observation: /base/gnss/observation
@@ -10,129 +9,37 @@ gnss_imu_fgo:
       solution: /gnss/solution
     base_position:
       postype: ecef
-      pos:
-      - -3961905.0275
-      - 3348993.7526
-      - 3698211.7831
-    lever_arm:
-    - 0.31
-    - 0.0
-    - 0.55
-    imu_orientation:
-    - 0.0
-    - 0.0
-    - 0.0
+      pos: [-3961905.0275, 3348993.7526, 3698211.7831]
+    # IMU to antenna in body axes (FLU after imu_orientation), metres: the dataset value (FRD) with y and z negated.
+    lever_arm: [0.31, 0.0, 0.55]
+    imu_orientation: [0.0, 0.0, 0.0]
     max_age_s: 30.0
     queue_depth: 4096
-    signals.base.C.L:
-    - 1X
-    - 2I
-    - 5X
-    signals.base.C.P:
-    - 1X
-    - 2I
-    - 5X
-    signals.base.C.S:
-    - 1X
-    - 2I
-    - 5X
-    signals.base.E.L:
-    - 1X
-    - 5X
-    - 7X
-    signals.base.E.P:
-    - 1X
-    - 5X
-    - 7X
-    signals.base.E.S:
-    - 1X
-    - 5X
-    - 7X
-    signals.base.G.L:
-    - 1C
-    - 2W
-    - 5X
-    signals.base.G.P:
-    - 1C
-    - 2W
-    - 5X
-    signals.base.G.S:
-    - 1C
-    - 2W
-    - 5X
-    signals.base.J.L:
-    - 1C
-    - 2X
-    - 5X
-    signals.base.J.P:
-    - 1C
-    - 2X
-    - 5X
-    signals.base.J.S:
-    - 1C
-    - 2X
-    - 5X
-    signals.rover.C.D:
-    - 1P
-    - 2I
-    - 5P
-    signals.rover.C.L:
-    - 1P
-    - 2I
-    - 5P
-    signals.rover.C.P:
-    - 1P
-    - 2I
-    - 5P
-    signals.rover.C.S:
-    - 1P
-    - 2I
-    - 5P
-    signals.rover.E.D:
-    - 1C
-    - 5Q
-    - 7Q
-    signals.rover.E.L:
-    - 1C
-    - 5Q
-    - 7Q
-    signals.rover.E.P:
-    - 1C
-    - 5Q
-    - 7Q
-    signals.rover.E.S:
-    - 1C
-    - 5Q
-    - 7Q
-    signals.rover.G.D:
-    - 1C
-    - 2L
-    - 5Q
-    signals.rover.G.L:
-    - 1C
-    - 2W
-    - 5Q
-    signals.rover.G.P:
-    - 1C
-    - 2W
-    - 5Q
-    signals.rover.G.S:
-    - 1C
-    - 2W
-    - 5Q
-    signals.rover.J.D:
-    - 1C
-    - 2L
-    - 5Q
-    signals.rover.J.L:
-    - 1C
-    - 2L
-    - 5Q
-    signals.rover.J.P:
-    - 1C
-    - 2L
-    - 5Q
-    signals.rover.J.S:
-    - 1C
-    - 2L
-    - 5Q
+    # Observations: same names as real_time_kinematic (see the README for the SNR mask).
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false
+    pos1:
+      elmask: 15.0
+      navsys:
+        gps: true
+        gal: true
+        bds: true
+        qzs: true
+      snrmask:
+        rover: true
+        base: true
+        l1: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        l2: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        l5: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+    pos2:
+      armode: 3     # 0: off, 3: fix and hold
+      arthres: 3.0
+      minfixsats: 4
+      slipthres: 0.15
+    # Vehicle constraints: valid for this ground-vehicle dataset.
+    nhc:
+      enable: true
+    zupt:
+      enable: true

@@ -180,7 +180,7 @@ def malformed_input(node, exe, imu_node, temp):
     try:
         bad = GnssEphemerides()
         e = GnssEphemeris()
-        e.system, e.prn, e.week, e.toe = 'G', 1, 0, 0.0   # week 0: invalid
+        e.system, e.prn, e.week, e.toe = 'G', 1, 0, 0.0   # week 0: accepted by the decoder, never selected for an epoch
         bad.gnss_ephemeris.append(e)
         e2 = GnssEphemeris()
         e2.system, e2.prn, e2.week, e2.toe = 'G', 40, WEEK, 0.0   # PRN out of range
@@ -219,7 +219,7 @@ def malformed_input(node, exe, imu_node, temp):
         log = (Path(temp) / ('malformed_' + ('imu' if imu_node else 'gnss') + '.log')).read_text()
         for needle in ['new timeline', 'rover 8 (invalid time 1, duplicate 1, late 1',
                        'unsupported satellite 2, duplicate signal 1',
-                       'invalid records 2']:
+                       'invalid records 1']:
             assert needle in log, (needle, log)
         if imu_node:
             assert 'invalid 3, not advancing 1' in log, log
@@ -376,7 +376,8 @@ def sigint_and_startup(node, exe, imu_node, temp):
     env = dict(os.environ)
     for bad in [['-p', 'queue_depth:=0'], ['-p', 'max_age_s:=-1.0'],
                 ['-p', 'base_position.pos:=[0.0,0.0,0.0]'],
-                ['-p', 'algorithm_profile:=other'], ['-p', 'graph.lag_s:=1.0']]:
+                ['-p', 'algorithm_profile:=other'], ['-p', 'graph.lag_s:=0.0'],
+                ['-p', 'pos2.armode:=1']]:
         command = [exe, '--ros-args', '-p', 'base_position.pos:=' + BASE] + bad
         p = subprocess.run(command, env=env, capture_output=True, text=True, timeout=20)
         assert p.returncode == 1 and 'FATAL' in p.stdout + p.stderr, (bad, p.returncode, p.stderr)

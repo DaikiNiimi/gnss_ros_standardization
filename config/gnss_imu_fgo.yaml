@@ -1,11 +1,11 @@
 # Tightly coupled GNSS/IMU FGO (see src/positioning/fgo/README.md).
-# Set the surveyed base position and the IMU-to-antenna lever arm (FLU, metres).
+# Set the surveyed base position and the IMU-to-antenna lever arm (body axes FLU
+# after imu_orientation, metres).
 # initial_position defaults to the base. The header time scale (UTC or GPST) is
 # taken from the rover observations; IMU stamps must use the same clock.
-# Parameters not listed in the README are rejected at startup.
+# A parameter the node does not declare (see the README) stops it at startup.
 gnss_imu_fgo:
   ros__parameters:
-    algorithm_profile: ratio3_direct_v1
     topics:
       rover_observation: /gnss/observation
       base_observation: /base/gnss/observation
@@ -31,5 +31,33 @@ gnss_imu_fgo:
     - 0.0
     - 0.0
     - 0.0
+    # Observations: same names as real_time_kinematic (see the README for the SNR mask).
+    frequencies:
+      enable_l1: true
+      enable_l2: true
+      enable_l5: false
+    pos1:
+      elmask: 15.0
+      navsys:
+        gps: true
+        gal: true
+        bds: true
+        qzs: true
+      snrmask:
+        rover: true
+        base: true
+        l1: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        l2: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+        l5: [35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0, 35.0]
+    pos2:
+      armode: 3     # 0: off, 3: fix and hold
+      arthres: 3.0
+      minfixsats: 4
+      slipthres: 0.15
+    # Vehicle constraints; enable only on a ground vehicle (see the README).
+    nhc:
+      enable: false
+    zupt:
+      enable: false
     max_age_s: 30.0
     queue_depth: 4096

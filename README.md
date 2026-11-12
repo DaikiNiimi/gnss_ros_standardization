@@ -64,7 +64,10 @@ If the clone omitted the RTKLIB submodule: `git submodule update --init --recurs
 
 ### FGO nodes (optional, need GTSAM)
 
+Building GTSAM needs Boost and `curl`:
+
 ```bash
+sudo apt-get install -y libboost-all-dev curl
 bash cmake/build_fgo_dependency.sh "$HOME/fgo-dependency" 2
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_FGO_NODES=ON \
@@ -73,6 +76,11 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release \
 
 The script builds GTSAM (borglab/gtsam `develop`, commit
 `6f31b6df3b56b60ec82d3218b47a2163bb41dd34`) with the settings the FGO nodes need.
+Its second argument is the number of parallel compile jobs. The FGO executables
+find GTSAM through their embedded library path, so `LD_LIBRARY_PATH` is not needed.
+Another GTSAM build must provide `DoubleDifferencePseudorangeFactorArm`,
+`DoubleDifferenceCarrierPhaseFactorArm` and `ImuFactorErrorMode::Logmap`; CMake
+checks for them.
 
 ### Build options
 

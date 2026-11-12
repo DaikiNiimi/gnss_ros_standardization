@@ -31,8 +31,11 @@ def main():
         env = dict(os.environ, ROS_LOG_DIR=temp, ROS_LOCALHOST_ONLY='1')
         common = [args.executable, '--ros-args', '-p', 'base_position.pos:=[6378137.0,0.0,0.0]']
         for parameter, message in [
-            ('algorithm_profile:=unknown', 'unsupported algorithm profile'),
-            ('graph.lag_s:=1.0', 'unsupported parameter'),
+            ('algorithm_profile:=unknown', 'unsupported parameter'),
+            ("signals.rover.G.L:=['1C']", 'unsupported parameter'),
+            ('graph.lag_s:=0.0', 'fls_lag'),
+            ('pos2.armode:=1', 'armode'),
+            ('nhc.enable:=true', 'unsupported parameter'),  # GNSS-only node
             ('time.output_stamp:=gpst', 'unsupported parameter'),  # removed: the stamp is the rover's
             ('queue_depth:=0', 'queue_depth'),
             ('max_age_s:=-1.0', 'base age'),

@@ -1,20 +1,19 @@
 #pragma once
-// ROS message <-> FGO input conversion (no rclcpp): stamps, observations, ephemerides.
+// ROS message <-> FGO input conversion (no rclcpp): stamps and observations.
 #include "preprocessor.hpp"
 #include "gnss_ros_standardization/rtklib_compat.hpp"
 #include "gnss_ros_standardization/gnss_utils.hpp"
+#include "gnss_ros_standardization/obs_converter.hpp"
 #include <builtin_interfaces/msg/time.hpp>
-#include <gnss_ros_standardization/msg/gnss_ephemerides.hpp>
 #include <gnss_ros_standardization/msg/gnss_observations.hpp>
 #include <gnss_ros_standardization/msg/gnss_solution.hpp>
-#include <sensor_msgs/msg/imu.hpp>
 #include <algorithm>
 #include <array>
 #include <cstdint>
 
 namespace gnss_fgo {
-// Public receiver drivers publish UTC-converted GPS stamps; the frozen PPC
-// bags use GPST-derived Unix stamps. Keep the convention explicit at intake.
+// Header stamps may be UTC (receiver drivers) or GPST (some converted bags);
+// the caller passes which.
 inline PreciseTime decodeImuTime(const builtin_interfaces::msg::Time &stamp,
                                  bool utc) {
   if (stamp.nanosec >= 1000000000)
@@ -47,11 +46,13 @@ inline builtin_interfaces::msg::Time encodeHeaderTime(const PreciseTime &gpst,
 
 namespace gnss_fgo {
 namespace rosmsg = gnss_ros_standardization::msg;
-struct SignalPlan {
-  // P, L, D and S may name different codes in the same frequency band.
-  std::array<std::vector<std::string>, 4> codes;
+// Which observations the node may use. The codes themselves are chosen per
+// epoch pair by gnss_utils::selectSignals, shared with the RTK node.
+struct SignalPolicy {
+  gnss_utils::FrequencyMask frequencies;
+  std::set<std::string> systems{"G", "E", "J", "C"};
+  std::set<int> excluded; // RTKLIB satellite numbers
 };
-using ReceiverPlan = std::map<std::string, SignalPlan>;
 // Rows skipped while decoding an observation message (counted, not fatal).
 struct DecodeStats {
   std::uint64_t unsupported_satellites = 0; // PRN outside the estimator's range
@@ -63,45 +64,30 @@ inline bool supportedSatellite(const std::string &system, int prn) {
          (system == "J" && prn >= 193 && prn <= 202) ||
          (system == "C" && prn >= 1 && prn <= 63);
 }
+// Estimator constellation index and RTKLIB satellite number.
 inline std::pair<int, int> satelliteId(const std::string &system, int prn) {
-  if (system == "G" && prn >= 1 && prn <= 32)
-    return {0, prn};
-  if (system == "E" && prn >= 1 && prn <= 36)
-    return {1, 32 + prn};
-  if (system == "J" && prn >= 193 && prn <= 202)
-    return {2, 69 + prn - 193};
-  if (system == "C" && prn >= 1 && prn <= 63)
-    return {3, 85 + prn};
-  throw std::invalid_argument("unsupported satellite system/PRN: " + system +
-                              std::to_string(prn));
+  const int sat =
+      !supportedSatellite(system, prn) ? 0
+      : system == "G"                  ? satno(SYS_GPS, prn)
+      : system == "E"                  ? satno(SYS_GAL, prn)
+      : system == "J"                  ? satno(SYS_QZS, prn)
+                                       : satno(SYS_CMP, prn);
+  if (sat <= 0)
+    throw std::invalid_argument("unsupported satellite system/PRN: " + system +
+                                std::to_string(prn));
+  return {system == "G" ? 0 : system == "E" ? 1 : system == "J" ? 2 : 3, sat};
 }
+// Carrier wavelength of an RTKLIB observation code such as "1C".
 inline double wavelength(const std::string &system, const std::string &code) {
-  if (code.empty())
-    throw std::invalid_argument("empty signal");
-  double hz = 0;
-  switch (code[0]) {
-  case '1':
-    hz = 1575.42e6;
-    break;
-  case '2':
-    hz = system == "C" ? 1561.098e6 : 1227.60e6;
-    break;
-  case '5':
-    hz = 1176.45e6;
-    break;
-  case '6':
-    hz = system == "C" ? 1268.52e6 : 1278.75e6;
-    break;
-  case '7':
-    hz = 1207.14e6;
-    break;
-  case '8':
-    hz = 1191.795e6;
-    break;
-  default:
-    throw std::invalid_argument("unsupported signal frequency");
-  }
-  return 299792458. / hz;
+  const int sys = system == "G"   ? SYS_GPS
+                  : system == "E" ? SYS_GAL
+                  : system == "J" ? SYS_QZS
+                  : system == "C" ? SYS_CMP
+                                  : SYS_NONE;
+  const double frequency = code2freq(sys, obs2code(code.c_str()), 0);
+  if (!(frequency > 0))
+    throw std::invalid_argument("unsupported signal: " + system + code);
+  return CLIGHT / frequency;
 }
 inline PreciseTime weekTime(std::uint32_t week, double tow) {
   if (!week || !std::isfinite(tow) || tow < 0 || tow >= 604800.)
@@ -109,130 +95,61 @@ inline PreciseTime weekTime(std::uint32_t week, double tow) {
   const auto whole = static_cast<std::int64_t>(std::floor(tow));
   return {static_cast<std::int64_t>(week) * 604800 + whole, tow - whole};
 }
+// receiver: 1 = rover, 2 = base (RTKLIB's obsd_t.rcv).
 inline RawEpoch decodeObservation(const rosmsg::GnssObservations &m,
-                                  const ReceiverPlan &plans,
+                                  int receiver, const SignalPolicy &policy,
+                                  const gnss_utils::SignalChoice &choice,
                                   DecodeStats *stats = nullptr) {
   RawEpoch out;
   out.time = weekTime(m.week, m.tow);
-  struct Group {
-    std::string system;
-    int prn;
-    std::map<std::string, const rosmsg::GnssObservation *> rows;
-  };
-  std::vector<Group> groups;
-  std::map<int, std::size_t> indices;
+  std::map<int, RawSatellite> satellites;
+  std::map<int, std::array<bool, 3>> filled;
+  const gtime_t time = gpst2time(m.week, m.tow);
   for (const auto &r : m.observations) {
-    if (!plans.count(r.system))
+    if (!policy.systems.count(r.system))
       continue;
     if (!supportedSatellite(r.system, r.prn)) {
       if (stats)
         ++stats->unsupported_satellites;
       continue;
     }
-    auto [system, sat] = satelliteId(r.system, r.prn);
-    if (!indices.count(sat)) {
-      indices[sat] = groups.size();
-      groups.push_back({r.system, r.prn, {}});
-    }
-    // The first row of a satellite/signal is used; a repeat is counted.
-    if (!groups[indices[sat]].rows.emplace(r.code_str, &r).second && stats)
-      ++stats->duplicate_signals;
-  }
-  for (const auto &g : groups) {
-    const auto &plan = plans.at(g.system);
-    RawSatellite s;
-    std::tie(s.system, s.sat) = satelliteId(g.system, g.prn);
-    s.prn = g.prn;
-    s.bands = std::min(plan.codes[0].size(), plan.codes[1].size());
-    if (s.bands > 3)
-      throw std::invalid_argument("at most three signal bands are supported");
-    for (int typ = 0; typ < 4; ++typ)
-      for (std::size_t j = 0; j < plan.codes[typ].size(); ++j) {
-        if (j >= 3)
-          throw std::invalid_argument(
-              "at most three signal bands are supported");
-        const auto &code = plan.codes[typ][j];
-        auto found = g.rows.find(code);
-        if (typ == 1) {
-          s.signals[j] = "L" + code;
-          s.wavelength[j] = wavelength(g.system, code);
-        }
-        if (typ == 3)
-          s.gps_py[j] = g.system == "G" && (code == "1W" || code == "2W");
-        if (found == g.rows.end())
-          continue;
-        const auto &row = *found->second;
-        const double v = typ == 0   ? row.p
-                         : typ == 1 ? row.l
-                         : typ == 2 ? row.d
-                                    : row.snr;
-        (typ == 0   ? s.pr
-         : typ == 1 ? s.phase
-         : typ == 2 ? s.doppler
-                    : s.snr)[j] = std::isfinite(v) ? v : 0.;
-        if (typ == 1)
-          s.lli[j] = row.lli & 3;
+    const obsd_t o =
+        gnss_utils::convertObs(r, time, receiver, policy.frequencies);
+    if (!o.sat || policy.excluded.count(o.sat))
+      continue;
+    for (int f = 0; f < 3; ++f) {
+      if (!o.code[f])
+        continue;
+      const auto selected = choice.codes.find({o.sat, f});
+      if (selected == choice.codes.end() ||
+          selected->second[receiver - 1] != o.code[f])
+        continue;
+      auto [system, sat] = satelliteId(r.system, r.prn);
+      auto &s = satellites[sat];
+      s.system = system;
+      s.sat = sat;
+      s.prn = r.prn;
+      if (filled[sat][f]) {
+        if (stats)
+          ++stats->duplicate_signals;
+        continue;
       }
-    // Doppler columns have their own order, independent of phase columns.
-    for (std::size_t d = 0; d < plan.codes[2].size(); ++d) {
-      const auto &code = plan.codes[2][d];
-      s.doppler_wavelength[d] = wavelength(g.system, code);
-      for (std::size_t j = 0; j < plan.codes[3].size(); ++j)
-        if (plan.codes[3][j][0] == code[0]) {
-          s.doppler_snr[d] = s.snr[j];
-          break;
-        }
+      filled[sat][f] = true;
+      const std::string code = code2obs(o.code[f]);
+      s.signals[f] = "L" + code;
+      s.wavelength[f] = s.doppler_wavelength[f] = wavelength(r.system, code);
+      s.pr[f] = o.P[f];
+      s.phase[f] = o.L[f];
+      s.doppler[f] = o.D[f];
+      s.snr[f] = s.doppler_snr[f] = o.SNR[f];
+      s.lli[f] = o.LLI[f] & 3;
+      if (choice.switched.count({o.sat, f}))
+        s.lli[f] |= 1;
     }
-    out.sats.push_back(std::move(s));
   }
+  for (auto &[sat, s] : satellites)
+    out.sats.push_back(std::move(s));
   return out;
-}
-inline BroadcastEphemeris decodeEphemeris(const rosmsg::GnssEphemeris &m,
-                                          std::int64_t id) {
-  BroadcastEphemeris e;
-  e.id = id;
-  // RINEX-derived ephemeris messages can carry the J01 identifier number;
-  // observations use the absolute QZSS PRN 193.
-  e.prn = m.system == "J" && m.prn >= 1 && m.prn <= 10 ? m.prn + 192 : m.prn;
-  std::tie(e.system, e.sat) = satelliteId(m.system, e.prn);
-  e.toe = weekTime(m.week, m.toe);
-  auto near = [&](double tow) {
-    if (!std::isfinite(tow))
-      throw std::invalid_argument("invalid navigation time");
-    double d = std::fmod(tow - m.toe + 302400., 604800.);
-    if (d < 0)
-      d += 604800.;
-    return e.toe.add(d - 302400.);
-  };
-  e.toc = near(m.toc);
-  e.transmitted = near(m.ttr);
-  // As RTKLIB satexclude(): bit 0 of the QZSS health word is the LEX signal
-  // health and does not affect L1/L2/L5 ranging (healthy QZSS NAV records
-  // commonly carry svh = 1).
-  e.health = m.system == "J" ? (m.svh & 0xFE) : m.svh;
-  e.mode = m.system == "E" && (m.code & 2) ? 1 : 0;
-  e.A = m.a;
-  e.e = m.e;
-  e.M0 = m.m0;
-  e.omg = m.omg;
-  e.i0 = m.i0;
-  e.OMG0 = m.omg0;
-  e.OMGd = m.omgd;
-  e.deln = m.deln;
-  e.delnd = m.ndot;
-  e.Adot = m.adot;
-  e.idot = m.idot;
-  e.crc = m.crc;
-  e.crs = m.crs;
-  e.cuc = m.cuc;
-  e.cus = m.cus;
-  e.cic = m.cic;
-  e.cis = m.cis;
-  e.af0 = m.f0;
-  e.af1 = m.f1;
-  e.af2 = m.f2;
-  e.toes = m.toes;
-  return e;
 }
 inline Vec3 geodetic(const Vec3 &p) {
   constexpr double a = 6378137., e2 = 6.6943799901413165e-3;

@@ -396,28 +396,30 @@ if(BUILD_EKF_NODE)
   install(TARGETS gnss_imu_kalman_filter DESTINATION lib/${PROJECT_NAME})
 endif()
 
-# FGO uses repository-defined GNSS factors and the GTSAM nonlinear factor API.
+# FGO uses GTSAM's double-difference GNSS factors and its nonlinear factor API.
 option(BUILD_FGO_NODES "Build gnss_fgo and gnss_imu_fgo (requires the documented GTSAM)" OFF)
 if(BUILD_FGO_NODES)
   find_package(GTSAM REQUIRED)
   include(CheckCXXSourceCompiles)
   set(CMAKE_REQUIRED_LIBRARIES gtsam)
   check_cxx_source_compiles("
-    #include <gtsam/nonlinear/NoiseModelFactorN.h>
+    #include <gtsam/navigation/CarrierPhaseFactor.h>
+    #include <gtsam/navigation/PseudorangeFactor.h>
     #include <gtsam/nonlinear/NonlinearFactor.h>
     int main() {
       gtsam::OptionalMatrixVecType jacobians = nullptr;
-      using Factor = gtsam::NoiseModelFactorN<double>;
-      return jacobians != nullptr || sizeof(Factor*) == 0;
+      return jacobians != nullptr ||
+             sizeof(gtsam::DoubleDifferencePseudorangeFactorArm) == 0 ||
+             sizeof(gtsam::DoubleDifferenceCarrierPhaseFactorArm) == 0;
     }" GNSS_GTSAM_FACTOR_API_SUPPORTED)
   unset(CMAKE_REQUIRED_LIBRARIES)
   if(NOT GNSS_GTSAM_FACTOR_API_SUPPORTED)
-    message(FATAL_ERROR "GTSAM must provide NoiseModelFactorN and OptionalMatrixVecType; see the pinned FGO build instructions.")
+    message(FATAL_ERROR "GTSAM must provide OptionalMatrixVecType and the double-difference GNSS factors DoubleDifferencePseudorangeFactorArm (gtsam/navigation/PseudorangeFactor.h) and DoubleDifferenceCarrierPhaseFactorArm (gtsam/navigation/CarrierPhaseFactor.h); see cmake/build_fgo_dependency.sh.")
   endif()
 
   add_executable(gnss_fgo src/positioning/fgo/gnss_fgo.cpp)
   target_include_directories(gnss_fgo PUBLIC ${_gen_include})
-  ament_target_dependencies(gnss_fgo rclcpp std_msgs builtin_interfaces sensor_msgs)
+  ament_target_dependencies(gnss_fgo rclcpp std_msgs sensor_msgs nav_msgs builtin_interfaces)
   target_link_libraries(gnss_fgo fgo_engine gnss_utils ${cpp_typesupport_target} Threads::Threads)
   add_dependencies(gnss_fgo ${_rosidl_deps})
   install(TARGETS gnss_fgo DESTINATION lib/${PROJECT_NAME})
@@ -431,12 +433,12 @@ if(BUILD_FGO_NODES)
     }" GNSS_GTSAM_LOGMAP_IMU_SUPPORTED)
   unset(CMAKE_REQUIRED_LIBRARIES)
   if(NOT GNSS_GTSAM_LOGMAP_IMU_SUPPORTED)
-    message(FATAL_ERROR "The FGO nodes need a GTSAM with ImuFactorErrorMode::Logmap (borglab/gtsam develop after 2026-09; see cmake/build_fgo_dependency.sh).")
+    message(FATAL_ERROR "The FGO nodes need a GTSAM that provides ImuFactorErrorMode::Logmap (build it with cmake/build_fgo_dependency.sh).")
   endif()
   add_library(fgo_engine STATIC
     src/positioning/fgo/engine.cpp
     src/positioning/fgo/preprocessor.cpp)
-  target_link_libraries(fgo_engine PUBLIC gtsam)
+  target_link_libraries(fgo_engine PUBLIC gtsam rtkcore_lib)
   target_include_directories(fgo_engine PUBLIC src/positioning/fgo)
   add_executable(gnss_imu_fgo src/positioning/fgo/gnss_imu_fgo.cpp)
   target_include_directories(gnss_imu_fgo PRIVATE ${_gen_include})
@@ -835,10 +837,6 @@ if(BUILD_TESTING)
       TIMEOUT 300
       APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_py"
       APPEND_LIBRARY_DIRS "${CMAKE_CURRENT_BINARY_DIR}")
-    ament_add_test(test_fgo_base_oracle
-      GENERATE_RESULT_FOR_RETURN_CODE_ZERO
-      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test/fgo/test_base_oracle.py"
-      TIMEOUT 30)
     foreach(_fgo_test primitives transactions motion)
       add_executable(test_fgo_${_fgo_test} test/fgo/test_${_fgo_test}.cpp)
       target_link_libraries(test_fgo_${_fgo_test} fgo_engine)

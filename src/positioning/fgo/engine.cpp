@@ -1,7 +1,8 @@
 #include "engine.hpp"
-#include "ambiguity.hpp"
+#include <Eigen/Eigenvalues>
 #include <Eigen/QR>
 #include <Eigen/SVD>
+#include <gtsam/linear/HessianFactor.h>
 #include <gtsam/navigation/GPSFactor.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/nonlinear/Marginals.h>
@@ -14,13 +15,37 @@
 
 namespace gnss_fgo {
 namespace {
-auto isotropic(int n, double sigma) {
+auto noise(int n, double sigma) {
   return gtsam::noiseModel::Isotropic::Sigma(n, sigma);
 }
-auto diag6(double r1, double r2, double r3, double t1, double t2, double t3) {
+auto splitNoise(double a, double b) {
   gtsam::Vector6 s;
-  s << r1, r2, r3, t1, t2, t3;
+  s << a, a, a, b, b, b;
   return gtsam::noiseModel::Diagonal::Sigmas(s);
+}
+auto poseNoise(double a, double b, double c, double x, double y, double z) {
+  gtsam::Vector6 s;
+  s << a, b, c, x, y, z;
+  return gtsam::noiseModel::Diagonal::Sigmas(s);
+}
+double median(std::vector<double> x) {
+  if (x.empty())
+    return 0.;
+  std::sort(x.begin(), x.end());
+  auto n = x.size();
+  return n % 2 ? x[n / 2] : (x[n / 2 - 1] + x[n / 2]) * .5;
+}
+Mat3 attitude(double roll, double pitch, double heading) {
+  Mat3 ned_to_enu;
+  ned_to_enu << 0, 1, 0, 1, 0, 0, 0, 0, -1;
+  Mat3 flu_to_frd = Vec3(1, -1, -1).asDiagonal();
+  return ned_to_enu * gtsam::Rot3::RzRyRx(roll, pitch, heading).matrix() *
+         flu_to_frd;
+}
+// Value of `sat` in a per-satellite residual map; 0 when it has none.
+double residualOf(const std::map<int, double> &residuals, int sat) {
+  const auto it = residuals.find(sat);
+  return it == residuals.end() ? 0. : it->second;
 }
 bool geo(const SatelliteObservation &s) {
   return s.system == 3 && (s.prn <= 5 || s.prn >= 59);
@@ -52,8 +77,63 @@ Mat3 enuRotation(const Vec3 &p) {
   return R;
 }
 } // namespace
+gtsam::NonlinearFactor::shared_ptr
+marginalWithout(const gtsam::LinearContainerFactor &f,
+                const std::set<Key> &drop) {
+  const gtsam::HessianFactor h(*f.factor());
+  std::vector<Eigen::Index> kept, dropped;
+  gtsam::KeyVector keys;
+  std::vector<std::size_t> dims;
+  Eigen::Index offset = 0;
+  for (auto it = h.begin(); it != h.end(); ++it) {
+    const Eigen::Index d = h.getDim(it);
+    auto &cols = drop.count(*it) ? dropped : kept;
+    for (Eigen::Index i = 0; i < d; ++i)
+      cols.push_back(offset + i);
+    if (!drop.count(*it)) {
+      keys.push_back(*it);
+      dims.push_back(d);
+    }
+    offset += d;
+  }
+  if (dropped.empty() || kept.empty())
+    return nullptr;
+  const gtsam::Matrix G = h.information();
+  const gtsam::Vector g = h.linearTerm();
+  const gtsam::Matrix Gkk = G(kept, kept), Gka = G(kept, dropped),
+                     Gaa = G(dropped, dropped);
+  // Pseudo-inverse of the dropped block: eigenvalues at or below 1e-12 times
+  // the largest are directions `f` does not determine and are skipped.
+  const Eigen::SelfAdjointEigenSolver<gtsam::Matrix> eig(Gaa);
+  const gtsam::Vector &l = eig.eigenvalues();
+  gtsam::Vector inverse = gtsam::Vector::Zero(l.size());
+  for (Eigen::Index i = 0; i < l.size(); ++i)
+    if (l[i] > 1e-12 * l.cwiseAbs().maxCoeff())
+      inverse[i] = 1. / l[i];
+  const gtsam::Matrix pinv = eig.eigenvectors() * inverse.asDiagonal() *
+                             eig.eigenvectors().transpose();
+  // Augmented information [G' g'; g'^T c'] of the Schur complement.
+  const Eigen::Index n = kept.size();
+  gtsam::Matrix augmented(n + 1, n + 1);
+  augmented.topLeftCorner(n, n) = Gkk - Gka * pinv * Gka.transpose();
+  augmented.topRightCorner(n, 1) =
+      g(kept) - Gka * pinv * gtsam::Vector(g(dropped));
+  augmented(n, n) =
+      h.constantTerm() -
+      gtsam::Vector(g(dropped)).dot(pinv * gtsam::Vector(g(dropped)));
+  augmented.bottomLeftCorner(1, n) = augmented.topRightCorner(n, 1).transpose();
+  dims.push_back(1);
+  const gtsam::HessianFactor marginal(
+      keys, gtsam::SymmetricBlockMatrix(dims, augmented));
+  gtsam::Values point;
+  if (f.linearizationPoint())
+    for (auto key : keys)
+      point.insert(key, f.linearizationPoint()->at(key));
+  return std::make_shared<gtsam::LinearContainerFactor>(marginal, point);
+}
 std::unique_ptr<Engine::Smoother> Engine::makeSmoother(double lag,
-                                                       const Config &c) {
+                                                       const Config &c,
+                                                       bool qr) {
   c.validate();
   gtsam::ISAM2Params p;
   p.relinearizeSkip = c.isam2_relinearize_skip;
@@ -62,44 +142,55 @@ std::unique_ptr<Engine::Smoother> Engine::makeSmoother(double lag,
   // vector grows by every factor ever added (unbounded over a long run).
   // New factors are addressed through ISAM2Result::newFactorsIndices.
   p.findUnusedFactorSlots = true;
-  if (c.gnss_motion) p.factorization = gtsam::ISAM2Params::QR;
+  if (qr)
+    p.factorization = gtsam::ISAM2Params::QR;
   return std::make_unique<Smoother>(lag, p);
 }
 Engine::Engine(const Config &c, const Vec3 &initial, const Vec3 &base,
                const Vec3 &lever)
     : cfg_(c), base_(base), lever_(lever), nav_position_(initial),
-      R_(enuRotation(base)), frame_(gtsam::Rot3(R_), base),
-      p1_(makeSmoother(c.phase1_fls_lag, c)) {
+      R_(enuRotation(base)), frame_(gtsam::Rot3(R_), base) {
   if (!initial.allFinite() || !base.allFinite() || !lever.allFinite())
     throw std::invalid_argument("nonfinite initial coordinates");
-  if (cfg_.gnss_motion) {
-    if (lever.norm() != 0) throw std::invalid_argument("GNSS-only state is the antenna; no body lever arm");
-    phase_ = 2;
-    graph_epoch_ = -1;
-    actual_lag_ = cfg_.fls_lag;
-    p2_ = makeSmoother(actual_lag_, cfg_);
-  }
+  if (cfg_.gnss_motion && lever.norm() != 0)
+    throw std::invalid_argument(
+        "GNSS-only state is the antenna; no body lever arm");
+  // Both nodes start with the motion graph; gnss_imu_fgo switches to the IMU
+  // graph later (updateSwitchWindow). gnss_fgo reports phase 2 throughout.
+  phase_ = cfg_.gnss_motion ? 2 : 1;
+  graph_epoch_ = -1;
+  actual_lag_ = cfg_.fls_lag;
+  p2_ = makeSmoother(actual_lag_, cfg_, true);
 }
 void Engine::addImu(const ImuSample &s) {
-  if (cfg_.gnss_motion) throw std::invalid_argument("IMU input is not part of the GNSS-only model");
+  if (cfg_.gnss_motion)
+    throw std::invalid_argument(
+        "IMU input is not part of the GNSS-only model");
   if (!std::isfinite(s.gpst) || (!imu_.empty() && s.gpst <= imu_.back().gpst))
     throw std::invalid_argument("unordered IMU input");
   auto sample = s;
   if (!imu_.empty())
     sample.predecessor = imu_.back().gpst;
   imu_.push_back(sample);
-  // Bounded backlog: without GNSS epochs nothing consumes IMU samples. Drop the
-  // oldest unconsumed one (counted); the gap it leaves fails the next interval
-  // check, which resets the motion state instead of integrating across it.
-  if (imu_.size() - imu_index_ > kImuBacklog) {
-    imu_.erase(imu_.begin() + imu_index_);
-    ++imu_backlog_dropped_;
+  // Bounded backlog: without GNSS epochs nothing consumes IMU samples. Once
+  // more than kImuBacklog + kImuBacklogBlock wait, drop the oldest unconsumed
+  // ones down to kImuBacklog (counted), so the erase runs once per block. The
+  // sample after the dropped ones keeps the last dropped sample as its
+  // predecessor; the gap fails the next interval check, which resets the
+  // motion state instead of integrating across it.
+  const std::size_t waiting = imu_.size() - imu_index_;
+  if (waiting > kImuBacklog + kImuBacklogBlock) {
+    const std::size_t drop = waiting - kImuBacklog;
+    const auto first = imu_.begin() + imu_index_;
+    imu_.erase(first, first + drop);
+    imu_backlog_dropped_ += drop;
   }
 }
 void Engine::pruneImu() {
   // Consumed samples are needed only for the initialization statistics (the
-  // first kInitSamples, while still in phase 1) and the last consumed sample
-  // (output angular rate). Erase the rest in batches.
+  // first kInitSamples, while still in the motion stage) and the last consumed
+  // sample (output angular rate). The switch window keeps its own copies.
+  // Erase the rest in batches.
   constexpr std::size_t kInitSamples = 3000, kBatch = 4096;
   if (imu_index_ == 0)
     return;
@@ -145,16 +236,21 @@ void Engine::slips(const ObservationEpoch &obs) {
 int Engine::reference(const ObservationEpoch &obs,
                       const std::vector<int> &idx) {
   const int sys = obs.sats[idx.front()].system;
+  // current_.references: buildDd's choice earlier in this epoch (EpochState is
+  // reset when an epoch starts or fallback() re-solves it). Later calls in the
+  // epoch (transition()'s buildDd per window epoch, ddprPosition after buildDd)
+  // keep it while usable; a new epoch chooses anew by residual and elevation.
   auto prev = current_.references.find(sys);
   for (int i : idx)
     if (prev != current_.references.end() && obs.sats[i].sat == prev->second &&
         !geo(obs.sats[i]) &&
-        per_sat_res_[prev->second] <= cfg_.per_sat_res_thresh)
+        residualOf(per_sat_res_, prev->second) <= cfg_.per_sat_res_thresh)
       return i;
   std::vector<int> pool;
   for (int i : idx)
     if (!geo(obs.sats[i]) &&
-        per_sat_res_[obs.sats[i].sat] <= cfg_.per_sat_res_thresh)
+        residualOf(per_sat_res_, obs.sats[i].sat) <=
+            cfg_.per_sat_res_thresh)
       pool.push_back(i);
   if (pool.empty())
     for (int i : idx)
@@ -166,18 +262,22 @@ int Engine::reference(const ObservationEpoch &obs,
     return obs.sats[i].elevation < obs.sats[j].elevation;
   });
 }
-int Engine::buildDd(Graph &graph, Values &values, const ObservationEpoch &obs,
-                    Key pose, const Vec3 &lever, int dd_epoch,
-                    const std::map<SF, std::pair<Key, double>> &previous,
+int Engine::buildDd(Graph &graph, DdRows &rows, Values &values,
+                    const ObservationEpoch &obs, Key pose, const Vec3 &lever,
                     bool skip_cp) {
   current_.visible.clear();
   int nv = 0;
+  // For the gauge prior below: the keys created in this call.
+  std::set<Key> created;
   for (const auto &[sys, idx] : groups(obs)) {
     if (idx.size() < 2)
       continue;
     const int ri = reference(obs, idx);
     const auto &r = obs.sats[ri];
     current_.references[sys] = r.sat;
+    // Per band: carrier DDs added, one of their keys existed before this
+    // call, one of their keys was seeded from a held value.
+    std::array<bool, 3> carrier{}, continuing{}, seeded{};
     for (int ji : idx) {
       if (ji == ri)
         continue;
@@ -187,13 +287,17 @@ int Engine::buildDd(Graph &graph, Values &values, const ObservationEpoch &obs,
       for (int f = 0; f < 3; ++f) {
         if (!r.pr[f] || !r.pr_base[f] || !j.pr[f] || !j.pr_base[f])
           continue;
-        const double pr = (r.pr[f] - j.pr[f]) - (r.pr_base[f] - j.pr_base[f]);
-        graph.emplace_shared<DdFactor>(
-            pose, std::vector<Key>{}, std::vector<double>{}, r, j, f, base_,
-            lever, frame_, pr, 0.,
-            ddSigma(cfg_, true, r.elevation, j.elevation,
-                    obs.gpst - obs.base_gpst),
-            false);
+        // Raw pseudoranges [m]; error = predicted DD range - measured DD.
+        const double pr_rov_ref = r.pr[f], pr_base_ref = r.pr_base[f],
+                     pr_rov_target = j.pr[f], pr_base_target = j.pr_base[f];
+        rows.push_back({graph.size(), false, r.sat, j.sat, f});
+        graph.emplace_shared<gtsam::DoubleDifferencePseudorangeFactorArm>(
+            pose, pr_rov_ref, pr_base_ref, pr_rov_target, pr_base_target,
+            r.rover_sat, j.rover_sat, r.base_sat, j.base_sat, base_, lever,
+            frame_,
+            gtsam::noiseModel::Isotropic::Sigma(
+                1, ddSigma(cfg_, true, r.elevation, j.elevation,
+                           obs.gpst - obs.base_gpst)));
         ++nv;
         const double lam = r.wavelength[f];
         if (skip_cp || sys == 4 || lam <= 0 || !r.phase[f] ||
@@ -204,60 +308,73 @@ int Engine::buildDd(Graph &graph, Values &values, const ObservationEpoch &obs,
         for (const auto *sat : {&r, &j}) {
           SF sf{sat->sat, f};
           auto &st = sats_.get(sf);
-          if (st.held || st.key)
+          if (st.key)
             continue;
-          Key key = ambKey(sf, dd_epoch * 100 + st.generation);
+          // New arc: a new key with its only prior.
+          Key key = ambKey(sf, st.generation);
           double n = ((sat->phase[f] * lam - sat->phase_base[f] * lam) -
                       (sat->pr[f] - sat->pr_base[f])) /
                      lam;
-          double sigma = phase_ == 2 ? cfg_.sigma_amb0 : 3.;
-          auto old = previous.find(sf);
+          double sigma = cfg_.sigma_amb0;
           if (st.seed_pending && st.last_held) {
             n = *st.last_held;
             sigma = .1;
-            current_.seeded.insert(sf);
             current_.consumed.insert(sf);
-          } else if (old != previous.end()) {
-            n = old->second.second;
-            sigma = cfg_.sigma_cont;
-          } else
-            current_.seeded.insert(sf);
+            seeded[f] = true;
+          }
+          current_.seeded.insert(sf);
           if (!values.exists(key)) {
             values.insert(key, n);
-            graph.addPrior<double>(key, n, isotropic(1, sigma));
+            graph.addPrior<double>(key, n, noise(1, sigma));
           }
           st.key = key;
+          st.system = sys;
+          created.insert(key);
         }
-        std::vector<Key> keys;
-        std::vector<double> coeff;
-        double offset = 0;
-        for (const auto &item : std::vector<std::pair<SF, double>>{
-                 {{r.sat, f}, lam}, {{j.sat, f}, -lam}}) {
-          auto &st = sats_.get(item.first);
-          if (st.held)
-            offset += item.second * *st.held;
-          else {
-            keys.push_back(*st.key);
-            coeff.push_back(item.second);
-          }
-        }
-        const double cp = (r.phase[f] * lam - j.phase[f] * lam) -
-                          (r.phase_base[f] * lam - j.phase_base[f] * lam);
-        graph.emplace_shared<DdFactor>(
-            pose, keys, coeff, r, j, f, base_, lever, frame_, cp, offset,
-            ddSigma(cfg_, false, r.elevation, j.elevation,
-                    obs.gpst - obs.base_gpst),
-            true);
+        carrier[f] = true;
+        for (int sat : {r.sat, j.sat})
+          if (!created.count(*sats_.get({sat, f}).key))
+            continuing[f] = true;
+        const double cp_sigma = ddSigma(cfg_, false, r.elevation, j.elevation,
+                                        obs.gpst - obs.base_gpst);
+        rows.push_back({graph.size(), true, r.sat, j.sat, f});
+        // Raw carrier phases in metres (cycles * lam); ambiguities in cycles;
+        // error = predicted DD range + lam (N_ref - N_target) - DD. A held
+        // ambiguity keeps its key; the hold is a separate factor (hold()).
+        const double cp_rov_ref = r.phase[f] * lam,
+                     cp_base_ref = r.phase_base[f] * lam,
+                     cp_rov_target = j.phase[f] * lam,
+                     cp_base_target = j.phase_base[f] * lam;
+        graph.emplace_shared<gtsam::DoubleDifferenceCarrierPhaseFactorArm>(
+            pose, *sats_.get({r.sat, f}).key, *sats_.get({j.sat, f}).key,
+            cp_rov_ref, cp_base_ref, cp_rov_target, cp_base_target,
+            r.rover_sat, j.rover_sat, r.base_sat, j.base_sat, base_, lam,
+            lever, frame_, gtsam::noiseModel::Isotropic::Sigma(1, cp_sigma));
         ++nv;
       }
     }
+    // Gauge: carrier DDs and holds see only differences of a group's
+    // ambiguities, so its common mode is held only by the weak creation
+    // priors and turns numerically indeterminate as the difference
+    // information grows (ISAM2 Cholesky). One tight prior on the reference key
+    // at its initial value fixes it; the position and the differences do not
+    // depend on the common mode (apart from the weak pull of the creation
+    // priors). Only where the group starts: a continuing key carries the
+    // gauge (also through marginalization) and a seed prior already fixes it.
+    if (ambiguity_gauge_)
+      for (int f = 0; f < 3; ++f)
+        if (carrier[f] && !continuing[f] && !seeded[f]) {
+          const Key ref = *sats_.get({r.sat, f}).key;
+          graph.addPrior<double>(ref, values.at<double>(ref),
+                                 noise(1, kAmbiguityGaugeSigma));
+        }
   }
   return nv;
 }
 DdPosition Engine::ddprPosition(const ObservationEpoch &obs,
                                 const gtsam::Pose3 &initial,
                                 const Vec3 &lever) {
-  std::vector<std::shared_ptr<DdFactor>> factors;
+  std::vector<gtsam::NonlinearFactor::shared_ptr> factors;
   const Key key = gtsam::Symbol('z', 0);
   for (const auto &[sys, idx] : groups(obs)) {
     if (idx.size() < 2)
@@ -271,10 +388,12 @@ DdPosition Engine::ddprPosition(const ObservationEpoch &obs,
       for (int f = 0; f < 3; ++f) {
         if (!r.pr[f] || !r.pr_base[f] || !j.pr[f] || !j.pr_base[f])
           continue;
-        factors.push_back(std::make_shared<DdFactor>(
-            key, std::vector<Key>{}, std::vector<double>{}, r, j, f, base_,
-            lever, frame_, (r.pr[f] - j.pr[f]) - (r.pr_base[f] - j.pr_base[f]),
-            0., cfg_.sigma_pr * std::sqrt(2.), false));
+        factors.push_back(
+            std::make_shared<gtsam::DoubleDifferencePseudorangeFactorArm>(
+                key, r.pr[f], r.pr_base[f], j.pr[f], j.pr_base[f], r.rover_sat,
+                j.rover_sat, r.base_sat, j.base_sat, base_, lever, frame_,
+                gtsam::noiseModel::Isotropic::Sigma(
+                    1, cfg_.sigma_pr * std::sqrt(2.))));
       }
     }
   }
@@ -287,7 +406,8 @@ DdPosition Engine::ddprPosition(const ObservationEpoch &obs,
     Graph graph;
     Values values;
     values.insert(key, initial);
-    graph.addPrior<gtsam::Pose3>(key, initial, diag6(.05, .05, .1, 50, 50, 50));
+    graph.addPrior<gtsam::Pose3>(key, initial,
+                                 poseNoise(.05, .05, .1, 50, 50, 50));
     for (int i : active)
       graph.push_back(factors[i]);
     gtsam::LevenbergMarquardtParams params;
@@ -317,31 +437,27 @@ DdPosition Engine::ddprPosition(const ObservationEpoch &obs,
   }
   return out;
 }
-Engine::Values Engine::fde(Smoother &sm, const Graph &graph,
+Engine::Values Engine::fde(Smoother &sm, const Graph &graph, const DdRows &rows,
                            const gtsam::FactorIndices &slots, Values est,
-                           Key pose, int nv) {
+                           Key pose) {
   if (slots.size() != graph.size())
     throw std::logic_error("factor slots do not match the update graph");
+  for (const auto &row : rows)
+    if (row.index >= graph.size() || !graph[row.index])
+      throw std::logic_error("DD rows do not match the update graph");
   if (!cfg_.fde_enable)
     return est;
   gtsam::FactorIndices rejected;
-  int total = 0;
-  for (std::size_t i = 0; i < graph.size(); ++i) {
-    auto f = std::dynamic_pointer_cast<DdFactor>(graph[i]);
-    if (!f || (f->carrier && f->coefficients.empty()))
-      continue;
-    ++total;
-    double res = std::sqrt(2 * f->error(est)) *
-                 (f->carrier ? cfg_.sigma_cp : cfg_.sigma_pr) * std::sqrt(2.);
-    if (res > (f->carrier ? cfg_.fde_cp : cfg_.fde_pr))
-      rejected.push_back(slots[i]);
+  for (const auto &row : rows) {
+    double res = std::sqrt(2 * graph[row.index]->error(est)) *
+                 (row.carrier ? cfg_.sigma_cp : cfg_.sigma_pr) * std::sqrt(2.);
+    if (res > (row.carrier ? cfg_.fde_cp : cfg_.fde_pr))
+      rejected.push_back(slots[row.index]);
   }
-  if (nv < 0)
-    nv = total;
   if (rejected.empty())
     return est;
-  if (rejected.size() > cfg_.fde_max_frac * std::max(1, nv)) {
-    if (phase_ == 2 && cp_hold_ == 0)
+  if (rejected.size() > cfg_.fde_max_frac * std::max(1, int(rows.size()))) {
+    if (cp_hold_ == 0)
       cp_hold_ = cfg_.recov_cp_hold;
     return est;
   }
@@ -359,101 +475,66 @@ Engine::Values Engine::fde(Smoother &sm, const Graph &graph,
   }
   std::set<std::size_t> removed(rejected.begin(), rejected.end());
   current_.visible.clear();
-  for (std::size_t i = 0; i < graph.size(); ++i) {
-    auto f = std::dynamic_pointer_cast<DdFactor>(graph[i]);
-    if (!f || !f->carrier)
+  for (const auto &row : rows) {
+    if (!row.carrier)
       continue;
-    if (removed.count(slots[i])) {
-      if (f->coefficients.size() == 1)
-        for (int sat : {f->ref_sat, f->target_sat}) {
-          auto &st = sats_.get({sat, f->band});
-          if (st.held)
-            st.release();
-        }
+    if (removed.count(slots[row.index])) {
+      // A rejected carrier DD releases the holds it contradicts.
+      for (int sat : {row.ref_sat, row.target_sat}) {
+        auto &st = sats_.get({sat, row.band});
+        if (st.held)
+          st.release();
+      }
     } else {
-      current_.visible.insert({f->ref_sat, f->band});
-      current_.visible.insert({f->target_sat, f->band});
+      current_.visible.insert({row.ref_sat, row.band});
+      current_.visible.insert({row.target_sat, row.band});
     }
   }
   return est;
 }
 ArDecision Engine::resolve(Smoother &sm, const Values &estimate, Key pose,
-                           const ObservationEpoch &obs,
-                           const std::set<int> &exclude, bool partial,
-                           std::optional<gtsam::JointMarginal> *covariance_cache) {
+                           const ObservationEpoch &obs) {
   std::map<int, const SatelliteObservation *> present;
   for (const auto &s : obs.sats)
-    if (!exclude.count(s.sat))
-      present[s.sat] = &s;
+    present[s.sat] = &s;
   std::vector<SF> keys;
   std::map<SF, double> floats;
-  auto eligible = [&](SF sf) {
-    return present.count(sf.first) && current_.visible.count(sf);
-  };
-  for (auto sf : sats_.insertion_order) {
-    auto &st = sats_.get(sf);
-    if (st.held && eligible(sf)) {
-      keys.push_back(sf);
-      floats[sf] = *st.held;
-    }
-  }
+  // Every eligible ambiguity, held or not, enters with its estimate and its
+  // joint marginal covariance (a hold is a factor on the key, not a constant).
+  std::map<SF, Key> amb;
   for (auto [sf, key] : sats_.keys())
-    if (!floats.count(sf) && eligible(sf) && !current_.seeded.count(sf) &&
-        estimate.exists(key)) {
+    if (present.count(sf.first) && current_.visible.count(sf) &&
+        !current_.seeded.count(sf) && estimate.exists(key)) {
       keys.push_back(sf);
+      amb[sf] = key;
       floats[sf] = estimate.at<double>(key);
     }
   ArDecision out;
-  if (keys.size() < 2) {
-    ar_outcome_ = ArOutcome::Unposed;
+  if (keys.size() < 2)
     return out;
-  }
   gtsam::KeyVector query{pose};
-  std::vector<SF> in_graph;
-  for (auto sf : keys) {
-    auto &st = sats_.get(sf);
-    if (st.key && estimate.exists(*st.key)) {
-      query.push_back(*st.key);
-      in_graph.push_back(sf);
-    }
-  }
-  // All subset attempts in one runAr see the same posterior. Its first
-  // query contains every eligible key, so later attempts use sub-blocks of
-  // that joint marginal instead of repeating Bayes-tree covariance queries.
-  // The cache is local to runAr and cannot survive a graph update/reset.
-  std::optional<gtsam::JointMarginal> local_marginal;
-  auto &marginal = covariance_cache ? *covariance_cache : local_marginal;
-  if (!marginal)
-    marginal.emplace(sm.getISAM2().jointMarginalCovariance(query));
-  const auto &jm = *marginal;
+  for (auto sf : keys)
+    query.push_back(amb[sf]);
+  const gtsam::JointMarginal jm = sm.getISAM2().jointMarginalCovariance(query);
   int n = keys.size();
   Eigen::MatrixXd cov = Eigen::MatrixXd::Zero(n, n),
                   cross = Eigen::MatrixXd::Zero(3, n);
   Eigen::VectorXd x(n);
   std::map<SF, int> index;
   const Mat3 rot = estimate.at<gtsam::Pose3>(pose).rotation().matrix();
-  const Vec3 lever = phase_ == 2 ? lever_ : Vec3::Zero();
+  const Vec3 lever = stageLever();
   for (int i = 0; i < n; ++i) {
     auto sf = keys[i];
     index[sf] = i;
     x[i] = floats[sf];
-    auto &st = sats_.get(sf);
-    if (st.key && estimate.exists(*st.key)) {
-      for (int j = 0; j < n; ++j) {
-        auto &sj = sats_.get(keys[j]);
-        if (sj.key && estimate.exists(*sj.key))
-          cov(i, j) = jm.at(*st.key, *sj.key)(0, 0);
-      }
-      const gtsam::Vector6 block = jm.at(pose, *st.key).col(0);
-      cross.col(i) = rot * (block.tail<3>() - lever.cross(block.head<3>()));
-    }
-    if (st.held)
-      cov(i, i) = std::max(cfg_.varholdamb, 1e-6);
+    for (int j = 0; j < n; ++j)
+      cov(i, j) = jm.at(amb[sf], amb[keys[j]])(0, 0);
+    const gtsam::Vector6 block = jm.at(pose, amb[sf]).col(0);
+    cross.col(i) = rot * (block.tail<3>() - lever.cross(block.head<3>()));
   }
   std::map<std::pair<int, int>, std::vector<SF>> grouped;
   for (auto sf : keys)
-    if (present[sf.first]->elevation >= 20 * M_PI / 180.)
-      grouped[{present[sf.first]->system, sf.second}].push_back(sf);
+    grouped[{present[sf.first]->system, sf.second}].push_back(sf);
   std::vector<std::pair<SF, SF>> pairs;
   for (auto &[group, members] : grouped) {
     std::sort(members.begin(), members.end());
@@ -472,14 +553,11 @@ ArDecision Engine::resolve(Smoother &sm, const Values &estimate, Key pose,
   }
   Eigen::VectorXd y = D * x;
   Eigen::MatrixXd Q = D * cov * D.transpose();
-  auto res = gnss_fgo::ar::resolve(y, Q, false, partial, 2);
+  auto res = gnss_fgo::ar::resolve(y, Q, 2, cfg_.ar_thresar);
   out.s0 = res.s0;
   out.s1 = res.s1;
   if (res.error)
     throw std::runtime_error("invalid integer-search covariance or reduction");
-  if (ar_observer_)
-    ar_observer_(input_epoch_, partial, y, Q, res.accepted ? res.kept : 0,
-                 res.s0, res.s1, res.dropped);
   if (res.s0 <= 1e-12 * std::max(res.s1, 1.))
     out.s0 = 0;
   if (!res.accepted)
@@ -490,16 +568,13 @@ ArDecision Engine::resolve(Smoother &sm, const Values &estimate, Key pose,
     used.insert(r.first);
     used.insert(j.first);
     out.fixed.emplace(r, floats[r]);
-    out.fixed[j] = out.fixed[r] - res.conditioned[i];
-    if (!res.dropped || res.exact_rows[i]) {
-      out.allowed.insert(r);
-      out.allowed.insert(j);
-    }
+    out.fixed[j] = out.fixed[r] - res.integers[i];
+    out.allowed.insert(r);
+    out.allowed.insert(j);
+    out.fixed_pairs.push_back(pairs[i]);
   }
-  if (int(used.size()) < cfg_.ar_minfixsats) {
-    ar_outcome_ = ArOutcome::MinSatellites;
+  if (int(used.size()) < cfg_.ar_minfixsats)
     return ArDecision{};
-  }
   Eigen::VectorXd fixed = x;
   for (int i = 0; i < n; ++i)
     if (out.fixed.count(keys[i]))
@@ -512,8 +587,8 @@ ArDecision Engine::resolve(Smoother &sm, const Values &estimate, Key pose,
   out.fixed_position = nav_position_ - R_ * correction;
   if (!out.fixed_position.allFinite())
     throw std::runtime_error("nonfinite conditional position");
-  // Antenna position covariance conditioned on the fixed combinations
-  // A * (D x) = integers: P - C A' (A Q A')^-1 A C', with C = cross D'.
+  // Antenna position covariance conditioned on the fixed D x = integers:
+  // P - C Q^-1 C', with C = cross D'.
   // Output only; it does not enter the estimate.
   {
     const gtsam::Matrix6 P6 = jm.at(pose, pose);
@@ -521,105 +596,28 @@ ArDecision Engine::resolve(Smoother &sm, const Values &estimate, Key pose,
     J.leftCols<3>() = -rot * gtsam::skewSymmetric(lever);
     J.rightCols<3>() = rot;
     const Mat3 P = J * P6 * J.transpose();
-    const Eigen::MatrixXd C = cross * D.transpose() * res.A.transpose();
-    const Eigen::MatrixXd S = res.A * Q * res.A.transpose();
-    Eigen::LLT<Eigen::MatrixXd> s_chol(S);
-    if (s_chol.info() == Eigen::Success) {
-      Mat3 conditioned = P - C * s_chol.solve(C.transpose());
-      conditioned = (.5 * (conditioned + conditioned.transpose())).eval();
-      if (conditioned.allFinite() && (conditioned.diagonal().array() >= 0).all())
-        out.fixed_covariance = conditioned;
-    }
+    const Eigen::MatrixXd C = cross * D.transpose();
+    Mat3 conditioned = P - C * chol.solve(C.transpose());
+    conditioned = (.5 * (conditioned + conditioned.transpose())).eval();
+    if (conditioned.allFinite() && (conditioned.diagonal().array() >= 0).all())
+      out.fixed_covariance = conditioned;
   }
   out.nb = res.kept;
-  out.dropped = res.dropped;
   return out;
 }
 ArDecision Engine::runAr(Smoother &sm, const Values &estimate, Key pose,
                          const ObservationEpoch &obs) {
-  std::optional<gtsam::JointMarginal> covariance;
-  auto solve = [&](const std::set<int> &exclude = std::set<int>{},
-                   bool partial = false) {
-    return resolve(sm, estimate, pose, obs, exclude, partial,
-                   cfg_.gnss_motion ? &covariance : nullptr);
-  };
   ArDecision result;
-  ar_outcome_ = ArOutcome::Entered;
-  if (!cfg_.ar_mode) {
-    ar_outcome_ = ArOutcome::NotCalled;
+  ar_outcome_ = ArOutcome::NotCalled;
+  if (!cfg_.ar_mode)
     return result;
-  }
   try {
-    result = solve();
+    // One search over every eligible ambiguity: no subset retries.
+    result = resolve(sm, estimate, pose, obs);
   } catch (const std::exception &) {
-    ar_outcome_ = ArOutcome::Exception;
     return {};
   }
-  try {
-    if (!result.nb && cfg_.subset_ar_enable &&
-        int(sats_.keys().size()) >= cfg_.subset_ar_min_nb + 1) {
-      int dirty = 0;
-      for (auto [s, res] : ar_per_sat_res_)
-        if (res > cfg_.subset_ar_dirty_sat_res_m)
-          ++dirty;
-      if (cfg_.subset_ar_max_dirty_sats <= 0 ||
-          dirty <= cfg_.subset_ar_max_dirty_sats) {
-        std::map<int, double> elevations;
-        for (auto &s : obs.sats)
-          elevations[s.sat] = std::max(elevations[s.sat], s.elevation);
-        std::set<int> seen;
-        std::vector<std::tuple<double, double, int>> ranked;
-        for (auto [sf, key] : sats_.keys())
-          if (seen.insert(sf.first).second)
-            ranked.emplace_back(ar_per_sat_res_[sf.first],
-                                -elevations[sf.first], sf.first);
-        std::sort(ranked.rbegin(), ranked.rend());
-        if (int(ranked.size()) > cfg_.subset_ar_max_candidates)
-          ranked.resize(cfg_.subset_ar_max_candidates);
-        std::optional<std::tuple<double, int, int>> best;
-        std::set<int> best_drop;
-        std::function<void(int, int, std::set<int> &)> visit =
-            [&](int begin, int remaining, std::set<int> &drop) {
-              if (!remaining) {
-                auto a = solve(drop);
-                if (a.nb < cfg_.subset_ar_min_nb)
-                  return;
-                double ratio = a.s0 > 0 ? a.s1 / a.s0 : 0.;
-                auto score = std::make_tuple(std::nearbyint(ratio * 1e6) / 1e6,
-                                             a.nb, -int(drop.size()));
-                if (!best || score > *best) {
-                  best = score;
-                  best_drop = drop;
-                }
-                return;
-              }
-              for (int i = begin; i < int(ranked.size()); ++i) {
-                drop.insert(std::get<2>(ranked[i]));
-                visit(i + 1, remaining - 1, drop);
-                drop.erase(std::get<2>(ranked[i]));
-              }
-            };
-        for (int k = 1; k <= cfg_.subset_ar_max_drop; ++k) {
-          std::set<int> drop;
-          visit(0, k, drop);
-        }
-        if (best)
-          result = solve(best_drop);
-      }
-    }
-  } catch (const std::exception &) {
-    result = {};
-  }
-  if (!result.nb) {
-    try {
-      result = solve({}, true);
-    } catch (const std::exception &) {
-      ar_outcome_ = ArOutcome::Exception;
-      result = {};
-    }
-  }
   if (result.nb) {
-    ar_outcome_ = ArOutcome::Success;
     for (auto sf : result.allowed)
       current_.accepted[sf] = sats_.get(sf).arc;
   } else if (ar_outcome_ != ArOutcome::MinPairs)
@@ -629,147 +627,80 @@ ArDecision Engine::runAr(Smoother &sm, const Values &estimate, Key pose,
 void Engine::hold(Smoother &sm, const ArDecision &ar) {
   if (!ar.nb)
     return;
+  // Soft constraint N_r - N_j = fixed[r] - fixed[j] on each accepted pair
+  // (BetweenFactor error: (N_j - N_r) - measured). The keys last for their
+  // arc, so a pair of keys carries at most one hold factor: a pair already
+  // held at the same integer gets nothing new, a changed integer replaces the
+  // factor (removed and added in one update).
+  std::set<Key> active;
+  for (auto [sf, key] : sats_.keys())
+    active.insert(key);
+  // A key whose arc ended is no longer refreshed; its hold factor stays until
+  // the key leaves through the lag, and its record is dropped now.
+  for (auto it = holds_.begin(); it != holds_.end();)
+    if (!active.count(it->first.first) || !active.count(it->first.second))
+      it = holds_.erase(it);
+    else
+      ++it;
   Graph graph;
-  gtsam::FixedLagSmoother::KeyTimestampMap timestamps;
-  for (auto sf : ar.allowed) {
-    auto &st = sats_.get(sf);
-    if (!st.key)
+  gtsam::FactorIndices remove;
+  std::vector<std::pair<std::pair<Key, Key>, double>> added;
+  for (const auto &[r, j] : ar.fixed_pairs) {
+    const auto &kr = sats_.get(r).key, &kj = sats_.get(j).key;
+    if (!kr || !kj)
       continue;
-    if (phase_ == 1) {
-      graph.addPrior<double>(*st.key, ar.fixed.at(sf),
-                             isotropic(1, std::sqrt(cfg_.varholdamb)));
-      timestamps[*st.key] = phase1_time_;
+    const std::pair<Key, Key> pair{*kr, *kj};
+    const double difference = ar.fixed.at(j) - ar.fixed.at(r);
+    if (auto it = holds_.find(pair); it != holds_.end()) {
+      if (std::abs(it->second.difference - difference) < .5)
+        continue;
+      const auto &factors = sm.getFactors();
+      const auto *previous =
+          it->second.slot < factors.size()
+              ? dynamic_cast<const gtsam::BetweenFactor<double> *>(
+                    factors[it->second.slot].get())
+              : nullptr;
+      if (!previous ||
+          previous->keys() != gtsam::KeyVector{pair.first, pair.second})
+        throw std::logic_error("hold record does not match its factor");
+      remove.push_back(it->second.slot);
     }
+    graph.emplace_shared<gtsam::BetweenFactor<double>>(
+        *kr, *kj, difference, noise(1, std::sqrt(cfg_.varholdamb)));
+    added.push_back({pair, difference});
+    // No timestamps: the smoother keeps those the epoch update gave these
+    // keys, so the hold neither extends nor shortens them.
   }
-  if (!graph.empty())
+  if (!graph.empty()) {
+    gtsam::FactorIndices slots;
     try {
       updateProbe("hold", false);
-      sm.update(graph, Values{}, timestamps);
+      sm.update(graph, Values{}, gtsam::FixedLagSmoother::KeyTimestampMap{},
+                remove);
       updateProbe("hold", true);
+      slots = sm.getISAM2Result().newFactorsIndices;
+      if (slots.size() != graph.size())
+        throw std::logic_error("hold factor slots do not match the update");
     } catch (...) {
       healthy_ = false;
       throw;
     }
+    for (std::size_t i = 0; i < added.size(); ++i)
+      holds_[added[i].first] = {added[i].second, slots[i]};
+  }
   for (auto sf : ar.allowed) {
     auto &st = sats_.get(sf);
-    if (phase_ == 2 && st.key) {
+    // Bookkeeping only: `held` is not a constant in any factor.
+    if (st.key)
       st.activate(ar.fixed.at(sf));
-      st.key.reset();
-    }
     st.fix_flag = 3;
   }
-}
-void Engine::restartPhase1() {
-  p1_ = makeSmoother(cfg_.phase1_fls_lag, cfg_);
-  p1_inserted_.clear();
-  healthy_ = true;
-  collection_.clear();
-  fix_history_.clear();
-  collecting_ = false;
-  zupt_anchor_.reset();
-  per_sat_res_.clear();
-  current_.accepted.clear();
-  current_.visible.clear();
-  for (auto &[sf, s] : sats_.track)
-    s.invalidate();
-}
-Solution Engine::phase1(const ObservationEpoch &obs) {
-  slips(obs);
-  const Key key = xp(input_epoch_);
-  const bool fresh =
-      input_epoch_ == 0 || !p1_inserted_.count(xp(input_epoch_ - 1));
-  gtsam::Pose3 initial(gtsam::Rot3(), R_.transpose() * (nav_position_ - base_));
-  if (fresh)
-    try {
-      auto dd = ddprPosition(obs, initial, Vec3::Zero());
-      if (dd.position && dd.active >= 4 && std::isfinite(dd.rms)) {
-        nav_position_ = *dd.position;
-        initial = gtsam::Pose3(gtsam::Rot3(),
-                               R_.transpose() * (nav_position_ - base_));
-      }
-    } catch (const std::exception &) {
-    }
-  phase1_time_ += dt_;
-  Values est;
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    Graph graph;
-    Values values;
-    values.insert(key, initial);
-    if (fresh || attempt)
-      graph.addPrior<gtsam::Pose3>(key, initial, diag6(.01, .01, .01, 3, 3, 3));
-    else
-      graph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
-          xp(input_epoch_ - 1), key, gtsam::Pose3(),
-          diag6(.001, .001, .001, .1, .1, .1));
-    buildDd(graph, values, obs, key, Vec3::Zero());
-    for (auto k : values.keys())
-      if (p1_inserted_.count(k))
-        values.erase(k);
-    gtsam::FixedLagSmoother::KeyTimestampMap ts;
-    ts[key] = phase1_time_;
-    if (!fresh && !attempt)
-      ts[xp(input_epoch_ - 1)] = phase1_time_;
-    for (auto k : values.keys())
-      ts[k] = phase1_time_;
-    for (auto [sf, k] : sats_.keys())
-      ts[k] = phase1_time_;
-    gtsam::FactorIndices slots;
-    try {
-      p1_->update(graph, values, ts);
-      slots = p1_->getISAM2Result().newFactorsIndices;
-      for (auto sf : current_.consumed)
-        sats_.get(sf).seed_pending = false;
-    } catch (const std::exception &) {
-      restartPhase1();
-      if (!attempt)
-        continue;
-      return {};
-    }
-    p1_inserted_.insert(key);
-    for (auto k : values.keys())
-      p1_inserted_.insert(k);
-    try {
-      for (int j = 0; j < 3; ++j)
-        p1_->update(Graph{}, Values{}, {});
-      est = p1_->calculateEstimate();
-    } catch (const std::exception &) {
-      restartPhase1();
-      return {};
-    }
-    for (auto it = p1_inserted_.begin(); it != p1_inserted_.end();)
-      if (!est.exists(*it))
-        it = p1_inserted_.erase(it);
-      else
-        ++it;
-    est = fde(*p1_, graph, slots, est, key);
-    break;
-  }
-  const auto pose = est.at<gtsam::Pose3>(key);
-  if (!pose.matrix().allFinite())
-    throw std::runtime_error("nonfinite phase1 pose");
-  nav_position_ = R_ * pose.translation() + base_;
-  ArDecision ar;
-  if (input_epoch_ >= 5)
-    ar = runAr(*p1_, est, key, obs);
-  if (ar.nb)
-    hold(*p1_, ar);
-  Solution out;
-  out.position = ar.nb ? ar.fixed_position : nav_position_;
-  if (ar.nb)
-    out.position_covariance = R_ * ar.fixed_covariance * R_.transpose();
-  out.valid = true;
-  out.kind = UpdateKind::Gnss;
-  out.fixed = ar.nb > 0;
-  out.nb = ar.nb;
-  out.ratio = ar.s0 > 0 ? ar.s1 / ar.s0 : 0;
-  collect(obs, out);
-  return out;
 }
 Solution Engine::finalize(Solution out) {
   out.gpst = current_gpst_;
   out.phase = phase_;
   out.valid = out.valid && healthy_ && out.position.allFinite();
-  if (out.valid && phase_ == 2 && !cfg_.gnss_motion) {
+  if (out.valid && !motionStage()) {
     const auto estimate = p2_->calculateEstimate();
     const auto pose = estimate.at<gtsam::Pose3>(poseKey(graph_epoch_));
     out.body_to_ecef = R_ * pose.rotation().matrix();
@@ -786,13 +717,9 @@ Solution Engine::finalize(Solution out) {
     out.nb = 0;
     out.position.setConstant(std::numeric_limits<double>::quiet_NaN());
   }
+  if (!cfg_.gnss_motion && phase_ == 1)
+    updateSwitchWindow(out);
   current_.finalize(sats_, out.fixed);
-  previous_mode_ = out.fixed ? 4 : 5;
-  if (!out.fixed && phase_ == 1) {
-    collection_.clear();
-    fix_history_.clear();
-    collecting_ = false;
-  }
   ++input_epoch_;
   pruneImu();
   return out;
@@ -801,40 +728,39 @@ void Engine::fillCovariance(Solution &out) const {
   // Output only: marginals of the current state. A FIX keeps the covariance
   // conditioned on its integers, set where the FIX was formed.
   try {
-    if (phase_ == 1) {
-      if (!out.position_covariance.allFinite() && p1_) {
-        const Key key = xp(input_epoch_);
-        const Mat3 rot =
-            p1_->calculateEstimate<gtsam::Pose3>(key).rotation().matrix();
-        const gtsam::Matrix6 P = p1_->marginalCovariance(key);
-        out.position_covariance =
-            R_ * (rot * P.bottomRightCorner<3, 3>() * rot.transpose()) *
-            R_.transpose();
-      }
-      return;
-    }
     if (!p2_ || graph_epoch_ < 0)
       return;
     const Key pk = poseKey(graph_epoch_), vk = velKey(graph_epoch_);
     if (!p2_->getLinearizationPoint().exists(pk) ||
         !p2_->getLinearizationPoint().exists(vk))
       return;
-    const Mat3 rot = p2_->calculateEstimate<gtsam::Pose3>(pk).rotation().matrix();
+    const Mat3 rot =
+        p2_->calculateEstimate<gtsam::Pose3>(pk).rotation().matrix();
     const Vec3 v = p2_->calculateEstimate<Vec3>(vk);
     const auto joint = p2_->getISAM2().jointMarginalCovariance({pk, vk});
+    const Vec3 lever = stageLever();
     if (!out.position_covariance.allFinite()) {
       Eigen::Matrix<double, 3, 6> J;
-      J.leftCols<3>() = -rot * gtsam::skewSymmetric(lever_);
+      J.leftCols<3>() = -rot * gtsam::skewSymmetric(lever);
       J.rightCols<3>() = rot;
       const gtsam::Matrix6 P = joint.at(pk, pk);
       out.position_covariance = R_ * (J * P * J.transpose()) * R_.transpose();
     }
-    // Antenna velocity: body velocity plus the lever-arm rotation term.
+    // Antenna velocity: body velocity plus the lever-arm rotation term. Its
+    // covariance propagates the joint (pose, velocity) marginal through
+    // antennaVelocityJacobian, the angular rate taken as known; without the
+    // rotation term it is the velocity marginal itself.
     Vec3 lever_rate = Vec3::Zero();
-    if (!cfg_.gnss_motion && out.angular_velocity.allFinite())
-      lever_rate = rot * out.angular_velocity.cross(lever_);
+    Mat3 V = joint.at(vk, vk);
+    if (!motionStage() && out.angular_velocity.allFinite()) {
+      lever_rate = rot * out.angular_velocity.cross(lever);
+      Eigen::Matrix<double, 9, 9> P;
+      P << joint.at(pk, pk), joint.at(pk, vk), joint.at(vk, pk), V;
+      const auto J = antennaVelocityJacobian(rot, out.angular_velocity, lever);
+      const Mat3 C = J * P * J.transpose();
+      V = .5 * (C + C.transpose());
+    }
     out.velocity = R_ * (v + lever_rate);
-    const Mat3 V = joint.at(vk, vk);
     out.velocity_covariance = R_ * V * R_.transpose();
   } catch (const std::exception &) {
     // Leave the unavailable quantities NaN.
@@ -847,9 +773,23 @@ Solution Engine::process(const ObservationEpoch &obs) {
     dt_ = obs.gpst - *last_gpst_;
   last_gpst_ = current_gpst_ = obs.gpst;
   current_ = EpochState{};
-  if (phase_ == 2)
-    for (auto &[sf, s] : sats_.track)
-      s.generation = 0;
+  motion_update_ = false;
+  integrity_epoch_ = sanity_recovery_ = false;
+  epoch_doppler_.reset();
+  switch_reject_ = -1;
+  // gnss_imu_fgo motion stage: the IMU samples up to this epoch are consumed
+  // here, whatever the epoch's outcome; the switch window keeps them.
+  struct ObservationScope {
+    const ObservationEpoch *&slot;
+    std::optional<DopplerRows> &doppler; // points into the observation
+    ~ObservationScope() {
+      slot = nullptr;
+      doppler.reset();
+    }
+  } scope{epoch_observation_ = &obs, epoch_doppler_};
+  epoch_imu_.clear();
+  if (!cfg_.gnss_motion && phase_ == 1)
+    epoch_imu_ = collectImu(obs.gpst);
   const bool gnss = obs.sats.size() >= 4;
   if (!gnss) {
     std::set<SF> expired = obs.input_slips;
@@ -858,33 +798,33 @@ Solution Engine::process(const ObservationEpoch &obs) {
         expired.insert(sf);
     for (auto sf : expired)
       sats_.get(sf).invalidate();
-    if (phase_ == 1) {
-      collectImu(obs.gpst);
-      return finalize({});
-    }
-    if (!healthy_ || (cfg_.gnss_motion && !graph_gpst_))
+    if (!healthy_ || (motionStage() && !graph_gpst_))
       return finalize({});
   }
   try {
-    if (phase_ == 2 && !healthy_)
+    if (!healthy_)
       throw std::runtime_error("previous graph update failed");
-    return finalize(phase_ == 1 ? phase1(obs) : phase2(obs, gnss));
+    Solution solution = phase2(obs, gnss);
+    if (!motionStage())
+      if (const int cause = integrity(gnss))
+        solution = fallback(obs, gnss, cause);
+    return finalize(solution);
   } catch (const std::exception &ex) {
     Solution out;
     out.failure = ex.what();
     if (!gnss && dynamic_cast<const ImuIntervalError *>(&ex))
       return finalize(out);
-    if (phase_ == 1)
-      restartPhase1();
-    else if (gnss) {
+    if (gnss) {
       try {
         gtsam::Pose3 initial(gtsam::Rot3(),
                              R_.transpose() * (nav_position_ - base_));
-        auto dd = ddprPosition(obs, initial, lever_);
+        auto dd = ddprPosition(obs, initial, stageLever());
         if (dd.position && std::isfinite(dd.rms) &&
             dd.rms <= cfg_.ddpr_max_res) {
           warmReset(*dd.position, initial.rotation());
-          if (!cfg_.gnss_motion) collectImu(obs.gpst);
+          // The motion stage consumed this epoch's IMU at its start.
+          if (!motionStage())
+            collectImu(obs.gpst);
           bad_count_ = 0;
           out.position = nav_position_;
           out.valid = true;
@@ -899,190 +839,434 @@ Solution Engine::process(const ObservationEpoch &obs) {
     return finalize(out);
   }
 }
-} // namespace gnss_fgo
-
-namespace gnss_fgo {
-namespace {
-auto noise(int n, double sigma) {
-  return gtsam::noiseModel::Isotropic::Sigma(n, sigma);
-}
-auto splitNoise(double a, double b) {
-  gtsam::Vector6 s;
-  s << a, a, a, b, b, b;
-  return gtsam::noiseModel::Diagonal::Sigmas(s);
-}
-auto poseNoise(double a, double b, double c, double x, double y, double z) {
-  gtsam::Vector6 s;
-  s << a, b, c, x, y, z;
-  return gtsam::noiseModel::Diagonal::Sigmas(s);
-}
-double median(std::vector<double> x) {
-  if (x.empty())
-    return 0.;
-  std::sort(x.begin(), x.end());
-  auto n = x.size();
-  return n % 2 ? x[n / 2] : (x[n / 2 - 1] + x[n / 2]) * .5;
-}
-Mat3 attitude(double roll, double pitch, double heading) {
-  Mat3 ned_to_enu;
-  ned_to_enu << 0, 1, 0, 1, 0, 0, 0, 0, -1;
-  Mat3 flu_to_frd = Vec3(1, -1, -1).asDiagonal();
-  return ned_to_enu * gtsam::Rot3::RzRyRx(roll, pitch, heading).matrix() *
-         flu_to_frd;
-}
-} // namespace
 std::vector<ImuSample> Engine::collectImu(double until) {
   std::vector<ImuSample> result;
   while (imu_index_ < imu_.size() && imu_[imu_index_].gpst <= until + 1e-6)
     result.push_back(imu_[imu_index_++]);
   return result;
 }
-void Engine::collect(const ObservationEpoch &obs, const Solution &sol) {
-  auto samples = collectImu(obs.gpst);
-  if (sol.fixed) {
-    fix_history_.push_back({obs.gpst, sol.position});
-    while (!fix_history_.empty() && obs.gpst - fix_history_.front().first > 1.5)
-      fix_history_.erase(fix_history_.begin());
+Engine::LevelImu Engine::levelImu() const {
+  if (saved_level_)
+    return *saved_level_;
+  LevelImu out;
+  out.b0 = stationaryBias(imu_, std::min<std::size_t>(3000, imu_index_),
+                          cfg_.gravity);
+  const std::size_t still = leadingStillSamples(imu_, imu_index_);
+  const std::size_t nstatic =
+      std::min<std::size_t>(500, still ? still : imu_index_);
+  if (!nstatic)
+    return out;
+  Vec3 a = Vec3::Zero();
+  for (std::size_t i = 0; i < nstatic; ++i)
+    a += imu_[i].acc;
+  a /= nstatic;
+  a -= out.b0.accelerometer();
+  double pitch = std::atan2(a.x(), std::hypot(a.y(), a.z())),
+         roll = std::atan2(a.y(), a.z());
+  if (std::isfinite(cfg_.init_pitch_deg))
+    pitch = cfg_.init_pitch_deg * M_PI / 180.;
+  out.rotation = attitude(roll, pitch, 0.);
+  out.roll = roll;
+  out.pitch = pitch;
+  out.level = true;
+  return out;
+}
+void Engine::updateSwitchWindow(const Solution &out) {
+  // Mean yaw rate of this epoch's IMU interval: the bias-corrected angular
+  // rate (b0) about the local vertical of the accelerometer roll/pitch that
+  // transition() would use now; body z when no IMU has been consumed yet.
+  const LevelImu imu = levelImu();
+  double yaw_rate = std::numeric_limits<double>::quiet_NaN();
+  if (!epoch_imu_.empty()) {
+    const Vec3 up = imu.rotation.transpose() * Vec3::UnitZ();
+    Vec3 w = Vec3::Zero();
+    for (const auto &sample : epoch_imu_)
+      w += sample.gyro;
+    w = w / double(epoch_imu_.size()) - imu.b0.gyroscope();
+    yaw_rate = up.dot(w) * 180. / M_PI;
   }
-  Vec3 velocity = Vec3::Zero();
-  if (fix_history_.size() >= 2) {
-    auto [t0, p0] = fix_history_.front();
-    auto [t1, p1] = fix_history_.back();
-    if (t1 - t0 >= .8)
-      velocity = R_.transpose() * (p1 - p0) / (t1 - t0);
+  // Horizontal speed of the posterior (output) antenna velocity.
+  Vec3 velocity = Vec3::Constant(std::numeric_limits<double>::quiet_NaN());
+  double speed = std::numeric_limits<double>::quiet_NaN();
+  if (out.valid && out.velocity.allFinite()) {
+    velocity = R_.transpose() * out.velocity;
+    speed = velocity.head<2>().norm();
   }
-  if (!collecting_ && velocity.head<2>().norm() > cfg_.vel_thresh && sol.fixed)
-    collecting_ = true;
-  if (collecting_ && sol.fixed) {
-    if (!collection_.empty())
-      for (auto [sf, gen] : collection_.back().arcs)
-        if (sats_.get(sf).arc != gen) {
-          collection_.clear();
-          break;
-        }
-    CollectedFix fix;
-    fix.time = obs.gpst;
-    fix.position = sol.position;
-    fix.velocity = velocity;
-    fix.imu = std::move(samples);
-    fix.observation = obs;
-    for (auto sf : current_.visible)
-      fix.arcs[sf] = sats_.get(sf).arc;
-    collection_.push_back(std::move(fix));
-    if (int(collection_.size()) > cfg_.n_collect)
-      collection_.erase(collection_.begin());
-    if (int(collection_.size()) >= cfg_.n_collect &&
-        (collection_.back().position - collection_.front().position).norm() >
-            2.)
-      transition();
-  } else if (collecting_ && !sol.fixed) {
-    collecting_ = false;
-    collection_.clear();
+  // Why the epoch does not qualify (switch_reject_), 0 when it does:
+  // 1 no regular GNSS update of the motion graph (phase2, at least
+  // min_dd_for_solve DD rows; not dead reckoning, not a reset or recovery
+  // epoch), 2 posterior speed below vel_thresh, 3-6 the Doppler-only gate,
+  // 7 velocity or position covariance not finite, 8 IMU interval, 9 yaw
+  // rate, 10 direction of travel undetermined (on the completing epoch).
+  int reject = 0;
+  double sigma = .02;
+  if (!motion_update_ || !epoch_observation_ || !out.valid ||
+      out.kind != UpdateKind::Gnss)
+    reject = 1;
+  else if (!velocity.allFinite() || !out.velocity_covariance.allFinite())
+    reject = 7;
+  else if (speed < cfg_.vel_thresh)
+    reject = 2;
+  else if (doppler_gate_) {
+    // Doppler-only gate: the receiver velocity from this epoch's
+    // between-satellite Doppler rows alone must move too, in the same
+    // direction and at about the same speed as the posterior velocity.
+    const auto doppler =
+        epoch_doppler_ ? dopplerVelocity(*epoch_doppler_) : std::nullopt;
+    if (!doppler)
+      reject = 3;
+    else {
+      const double doppler_speed = doppler->head<2>().norm();
+      double dheading = std::atan2(doppler->x(), doppler->y()) -
+                        std::atan2(velocity.x(), velocity.y());
+      dheading = std::abs(std::remainder(dheading, 2 * M_PI)) * 180. / M_PI;
+      if (doppler_speed < cfg_.vel_thresh)
+        reject = 4;
+      else if (dheading > kSwitchMaxHeadingDiffDeg)
+        reject = 5;
+      else if (std::abs(doppler_speed - speed) >
+               std::max(kSwitchSpeedTolMps, kSwitchSpeedTolFrac * speed))
+        reject = 6;
+    }
+  }
+  // Yaw rate below kSwitchMaxYawRateDps (code 9): while the vehicle turns
+  // the antenna velocity direction is not the body heading. An epoch without
+  // IMU samples fails it.
+  if (!reject && !(std::abs(yaw_rate) < kSwitchMaxYawRateDps))
+    reject = 9;
+  // GPSFactorArm sigma of the output position: 2 cm for a FIX, else the
+  // largest per-axis standard deviation of its covariance, at least 5 cm.
+  if (!reject && !out.fixed) {
+    const Mat3 P = R_.transpose() * out.position_covariance * R_;
+    if (P.allFinite() && (P.diagonal().array() >= 0).all())
+      sigma = std::max(.05, std::sqrt(P.diagonal().maxCoeff()));
+    else
+      reject = 7;
+  }
+  switch_reject_ = reject;
+  if (reject) {
+    window_.clear();
+    return;
+  }
+  // IMU must cover the interval from the previous window epoch (the checks of
+  // integrateImu); otherwise this epoch starts a new window.
+  if (!window_.empty())
+    try {
+      integrateImu(cfg_, gtsam::imuBias::ConstantBias(), epoch_imu_,
+                   window_.back().time, current_gpst_);
+    } catch (const std::exception &) {
+      window_.clear();
+      switch_reject_ = 8;
+    }
+  window_.push_back({current_gpst_, out.position, sigma, out.fixed, velocity,
+                     R_.transpose() * out.velocity_covariance * R_,
+                     sats_.keys(), std::move(epoch_imu_),
+                     *epoch_observation_});
+  // The shortest run of the newest epochs that spans kSwitchWindowTime
+  // (eps: GPS times near 1.4e9 s carry 2.4e-7 s rounding).
+  constexpr double eps = 1e-3;
+  while (window_.size() > 2 &&
+         window_.back().time - window_[1].time >= kSwitchWindowTime - eps)
+    window_.erase(window_.begin());
+  if (window_.size() < 2 ||
+      window_.back().time - window_.front().time < kSwitchWindowTime - eps)
+    return;
+  // Direction of travel. The window spans about 1 s without turning, so the
+  // body x axis keeps its direction: the speed change along it from the
+  // levelled, bias-compensated specific force has the sign of the GNSS speed
+  // change when driving forward and the opposite sign when reversing.
+  const auto &first = window_.front(), &last = window_.back();
+  const double dv_gnss =
+      last.velocity.head<2>().norm() - first.velocity.head<2>().norm();
+  double dv_imu = 0, previous = first.time;
+  // Forward horizontal axis of attitude(roll, pitch, 0): heading 0 = north,
+  // the y axis of its ENU frame.
+  for (std::size_t i = 1; i < window_.size(); ++i) {
+    for (const auto &sample : window_[i].imu) {
+      const Vec3 f = imu.rotation * (sample.acc - imu.b0.accelerometer()) -
+                     Vec3(0, 0, cfg_.gravity);
+      dv_imu += f.y() * (sample.gpst - previous);
+      previous = sample.gpst;
+    }
+    // Interval end after the last sample (zero-order hold, as integrateImu).
+    if (!window_[i].imu.empty()) {
+      const Vec3 f =
+          imu.rotation * (window_[i].imu.back().acc - imu.b0.accelerometer()) -
+          Vec3(0, 0, cfg_.gravity);
+      dv_imu += f.y() * (window_[i].time - previous);
+    }
+    previous = window_[i].time;
+  }
+  int direction = 0;
+  if (std::abs(dv_gnss) >= kSwitchMinSpeedChange &&
+      std::abs(dv_imu) >= kSwitchMinSpeedChange)
+    direction = (dv_gnss > 0) == (dv_imu > 0) ? 1 : -1;
+  else if (std::all_of(window_.begin(), window_.end(),
+                       [](const WindowEpoch &w) {
+                         return w.velocity.head<2>().norm() >=
+                                kSwitchForwardSpeed;
+                       }))
+    direction = 2;
+  if (!direction) {
+    // Undetermined: no switch; the window keeps sliding.
+    switch_reject_ = 10;
+    window_.erase(window_.begin());
+    return;
+  }
+  try {
+    transition(direction == -1);
+  } catch (const std::exception &) {
+    // The motion stage continues unchanged; the next window is collected
+    // from the next epoch on.
+    window_.clear();
   }
 }
-void Engine::transition() {
+int Engine::integrity(bool gnss) {
+  if (!gnss || !integrity_epoch_)
+    return 0;
+  constexpr double eps = 1e-3; // rounding of GPS times near 1.4e9 s
+  // Check 1: the IMU graph's body x axis must point along the Doppler-only
+  // velocity. That velocity is the antenna's; the IMU-origin velocity
+  // subtracts the lever-arm rotation term with the posterior attitude and the
+  // angular rate the Doppler factors of this epoch used.
+  bool clean = false;
+  try {
+    const auto doppler =
+        epoch_doppler_ ? dopplerVelocity(*epoch_doppler_) : std::nullopt;
+    if (doppler) {
+      const Mat3 body = p2_->calculateEstimate<gtsam::Pose3>(
+                               poseKey(graph_epoch_))
+                            .rotation()
+                            .matrix();
+      const Vec3 v = *doppler - body * epoch_omega_.cross(lever_);
+      if (v.head<2>().norm() >= kSwitchForwardSpeed) {
+        const Vec3 x = body.col(0);
+        const double diff =
+            std::abs(std::remainder(std::atan2(v.x(), v.y()) -
+                                        std::atan2(x.x(), x.y()),
+                                    2 * M_PI)) *
+            180. / M_PI;
+        if (diff > kIntegrityMaxHeadingDiffDeg)
+          heading_timer_.violate(current_gpst_, kIntegrityTime);
+        else {
+          heading_timer_.clear();
+          clean = true;
+        }
+      }
+    }
+  } catch (const std::exception &) {
+  }
+  // Check 2: a sanity recovery in every GNSS epoch.
+  if (sanity_recovery_)
+    recovery_timer_.violate(current_gpst_, kIntegrityTime);
+  else
+    recovery_timer_.clear();
+  // A timer whose last counting epoch is more than kIntegrityTime back has
+  // lapsed (it restarts at its next violation).
+  for (auto *timer : {&heading_timer_, &recovery_timer_})
+    if (timer->last && current_gpst_ - *timer->last > kIntegrityTime)
+      timer->clear();
+  if (clean && !sanity_recovery_)
+    good_bias_ = bias_;
+  if (heading_timer_.length() >= kIntegrityTime - eps)
+    return 1;
+  if (recovery_timer_.length() >= kIntegrityTime - eps)
+    return 2;
+  return 0;
+}
+Solution Engine::fallback(const ObservationEpoch &obs, bool gnss, int cause) {
+  ++n_fallback_;
+  fallback_cause_ = cause;
+  // The next switch levels with the same roll/pitch; its bias starts from
+  // the last estimate of this graph while both checks were clean, if any.
+  LevelImu level = levelImu();
+  if (good_bias_)
+    level.b0 = *good_bias_;
+  saved_level_ = level;
+  // A fresh motion stage, as gnss_fgo starts: new smoother, no ambiguity
+  // keys or holds (as a reset), no switch window. The IMU buffer stays.
+  p2_ = makeSmoother(cfg_.fls_lag, cfg_, true);
+  actual_lag_ = cfg_.fls_lag;
+  phase_ = 1;
+  graph_epoch_ = -1;
+  graph_time_ = 0;
+  graph_gpst_.reset();
+  holds_.clear();
+  for (auto &[sf, s] : sats_.track)
+    s.invalidate();
+  zupt_anchor_.reset();
+  per_sat_res_.clear();
+  cp_hold_ = cfg_.recov_cp_hold;
+  bad_count_ = 0;
+  pim_break_ = false;
+  healthy_ = true;
+  window_.clear();
+  heading_timer_.clear();
+  recovery_timer_.clear();
+  // This epoch is solved again by the new motion graph (its start path: the
+  // DD code position as the seed).
+  current_ = EpochState{};
+  motion_update_ = integrity_epoch_ = sanity_recovery_ = false;
+  epoch_doppler_.reset();
+  return phase2(obs, gnss);
+}
+void Engine::transition(bool reverse) {
   const auto saved_sats = sats_;
   const auto saved_epoch = current_;
-  const auto saved_position = nav_position_;
   try {
-    const auto b0 =
-        stationaryBias(imu_, std::min<std::size_t>(3000, imu_index_));
-    const std::size_t nstatic = std::min<std::size_t>(500, imu_index_);
-    if (!nstatic)
+    // Initial bias and roll/pitch (levelImu: from the session's first
+    // samples, or what an earlier switch used, with the bias of a fallback).
+    const LevelImu level = levelImu();
+    if (!level.level)
       throw std::runtime_error("initialization needs IMU");
-    Vec3 a = Vec3::Zero();
-    for (std::size_t i = 0; i < nstatic; ++i)
-      a += imu_[i].acc;
-    a /= nstatic;
-    a -= b0.accelerometer();
-    double pitch = std::atan2(a.x(), std::hypot(a.y(), a.z())),
-           roll = std::atan2(a.y(), a.z());
-    if (std::isfinite(cfg_.init_pitch_deg))
-      pitch = cfg_.init_pitch_deg * M_PI / 180.;
-    const int n = collection_.size();
+    const auto b0 = level.b0;
+    const double pitch = level.pitch, roll = level.roll;
+    const int n = window_.size();
+    if (n < 2)
+      throw std::logic_error("switch window too short");
     std::vector<Vec3> enu;
-    for (const auto &f : collection_)
-      enu.push_back(R_.transpose() * (f.position - base_));
-    const Vec3 total = enu.back() - enu.front();
-    double previous_heading = std::atan2(total.x(), total.y());
+    for (const auto &w : window_)
+      enu.push_back(R_.transpose() * (w.position - base_));
+    // Preintegration of every window interval (pims[i - 1]: epoch i - 1 to i).
+    std::vector<IntegratedImu> pims;
+    for (int i = 1; i < n; ++i)
+      pims.push_back(integrateImu(cfg_, b0, window_[i].imu,
+                                  window_[i - 1].time, window_[i].time));
+    // Heading = direction of the horizontal posterior antenna velocity (plus
+    // 180 deg when reversing); the window mean velocity where one is too
+    // slow.
+    Vec3 mean_velocity = Vec3::Zero();
+    for (const auto &w : window_)
+      mean_velocity += w.velocity / n;
+    double previous_heading = std::atan2(mean_velocity.x(), mean_velocity.y());
+    const double rstd = cfg_.body_rot_std * M_PI / 180.,
+                 min_yaw = 2. * M_PI / 180.;
     Graph graph;
     Values values;
     gtsam::FixedLagSmoother::KeyTimestampMap ts;
     for (int i = 0; i < n; ++i) {
-      const auto &fix = collection_[i];
-      const Vec3 disp = i == 0       ? Vec3(enu[1] - enu[0])
-                        : i == n - 1 ? Vec3(enu[n - 1] - enu[n - 2])
-                                     : Vec3(enu[i + 1] - enu[i - 1]);
-      double heading = disp.head<2>().norm() > .01
-                           ? std::atan2(disp.x(), disp.y())
-                           : previous_heading;
+      const auto &w = window_[i];
+      const double speed = w.velocity.head<2>().norm();
+      const double heading = speed > .01
+                                 ? std::atan2(w.velocity.x(), w.velocity.y())
+                                 : previous_heading;
       previous_heading = heading;
-      const Mat3 rot = attitude(roll, pitch, heading);
+      // Reversing: the body x axis points against the velocity.
+      const double body_heading = reverse ? heading + M_PI : heading;
+      const Mat3 rot = attitude(roll, pitch, body_heading);
+      // IMU-origin velocity: the antenna velocity minus the lever-arm
+      // rotation term, with the bias-corrected mean angular rate of the
+      // adjacent window interval.
+      const Vec3 omega = pims[i == 0 ? 0 : i - 1].mean_gyro - b0.gyroscope();
+      const Vec3 velocity = w.velocity - rot * omega.cross(lever_);
       gtsam::Pose3 pose(gtsam::Rot3(rot), enu[i] - rot * lever_);
       values.insert(poseKey(i), pose);
-      values.insert(velKey(i), fix.velocity);
+      values.insert(velKey(i), velocity);
       values.insert(biasKey(i), b0);
-      const double speed = fix.velocity.head<2>().norm(),
-                   rstd = cfg_.body_rot_std * M_PI / 180.;
-      if (i == 0) {
-        double yaw = speed > .1 ? std::hypot(rstd, .1 / speed) : .5;
-        graph.addPrior<gtsam::Pose3>(poseKey(i), pose,
-                                     poseNoise(.02, .02, yaw, .05, .05, .1));
-      } else {
-        double yaw = std::hypot(rstd, .2 / std::max(speed, .2));
-        graph.addPrior<gtsam::Pose3>(poseKey(i), pose,
-                                     poseNoise(.01, .01, yaw, .1, .1, .1));
+      double yaw = i == 0 ? (speed > .1 ? std::hypot(rstd, .1 / speed) : .5)
+                          : std::hypot(rstd, .2 / std::max(speed, .2));
+      // Not below the heading sigma of the velocity estimate (its cross-track
+      // standard deviation over the speed), nor below 2 degrees.
+      if (speed > .01) {
+        const Eigen::Vector2d across =
+            Eigen::Vector2d(-w.velocity.y(), w.velocity.x()) / speed;
+        const double variance =
+            across.dot(w.velocity_covariance.topLeftCorner<2, 2>() * across);
+        if (std::isfinite(variance) && variance > 0)
+          yaw = std::max(yaw, std::sqrt(variance) / speed);
       }
-      graph.addPrior<gtsam::Vector3>(velKey(i), fix.velocity, noise(3, .5));
+      yaw = std::max(yaw, min_yaw);
+      // Translation sigmas: .05/.1 m for a FIX epoch; for a float epoch not
+      // below its GPS sigma, so the prior does not claim a better position
+      // than the measurement.
+      const double floor = w.fixed ? 0. : w.position_sigma;
+      if (i == 0)
+        graph.addPrior<gtsam::Pose3>(
+            poseKey(i), pose,
+            poseNoise(.02, .02, yaw, std::max(.05, floor),
+                      std::max(.05, floor), std::max(.1, floor)));
+      else
+        graph.addPrior<gtsam::Pose3>(
+            poseKey(i), pose,
+            poseNoise(.01, .01, yaw, std::max(.1, floor),
+                      std::max(.1, floor), std::max(.1, floor)));
+      graph.addPrior<gtsam::Vector3>(velKey(i), velocity, noise(3, .5));
       graph.addPrior<gtsam::imuBias::ConstantBias>(biasKey(i), b0,
                                                    noise(6, .01));
-      if (i > 0) {
-        auto pim =
-            integrateImu(cfg_, b0, fix.imu, collection_[i - 1].time, fix.time);
+      if (i > 0)
         graph.emplace_shared<gtsam::CombinedImuFactor>(
             poseKey(i - 1), velKey(i - 1), poseKey(i), velKey(i),
-            biasKey(i - 1), biasKey(i), pim.pim);
-      }
+            biasKey(i - 1), biasKey(i), pims[i - 1].pim);
       graph.emplace_shared<gtsam::GPSFactorArm>(poseKey(i), enu[i], lever_,
-                                                noise(3, .02));
+                                                noise(3, w.position_sigma));
       ts[poseKey(i)] = ts[velKey(i)] = ts[biasKey(i)] =
-          fix.time - collection_.front().time;
+          w.time - window_.front().time;
     }
+    // Ambiguities: the new smoother gets new keys. A held satellite is
+    // released, so its new key is seeded from last_held (sigma .1 cycle);
+    // the others restart from code minus carrier (sigma_amb0).
     for (auto &[sf, s] : sats_.track)
-      s.key.reset();
-    for (int i = 0; i < n; ++i)
-      buildDd(graph, values, collection_[i].observation, poseKey(i), lever_);
-    const double last = collection_.back().time - collection_.front().time;
+      if (s.held)
+        s.release();
+      else
+        s.key.reset();
+    // An epoch's carrier phase enters only on the arcs (motion-graph keys)
+    // that last to the window end: no key spans a slip or a reset.
+    const AmbMap &end_keys = window_.back().keys;
+    DdRows rows; // no reader: this graph goes straight into the smoother
+    for (int i = 0; i < n; ++i) {
+      ObservationEpoch observation = window_[i].observation;
+      const AmbMap &keys = window_[i].keys;
+      for (auto &sat : observation.sats)
+        for (int f = 0; f < 3; ++f) {
+          const auto now = keys.find({sat.sat, f});
+          const auto end = end_keys.find({sat.sat, f});
+          if (now == keys.end() || end == end_keys.end() ||
+              now->second != end->second)
+            sat.phase[f] = 0;
+        }
+      buildDd(graph, rows, values, observation, poseKey(i), lever_);
+    }
+    const double last = window_.back().time - window_.front().time;
     for (auto key : values.keys())
       if (!ts.count(key))
         ts[key] = last;
     double lag = cfg_.fls_lag;
     if (lag + 1e-6 < last + dt_)
       lag = last + 2 * dt_;
-    auto smoother = makeSmoother(lag, cfg_);
+    auto smoother = makeSmoother(lag, cfg_, false);
+    updateProbe("transition", false);
     smoother->update(graph, values, ts);
+    updateProbe("transition", true);
     auto est = smoother->calculateEstimate();
     auto p = est.at<gtsam::Pose3>(poseKey(n - 1));
     auto v = est.at<gtsam::Vector3>(velKey(n - 1));
     auto b = est.at<gtsam::imuBias::ConstantBias>(biasKey(n - 1));
     if (!p.matrix().allFinite() || !v.allFinite() || !b.vector().allFinite())
       throw std::runtime_error("invalid initialization state");
-    nav_position_ = antenna(p);
+    for (auto sf : current_.consumed)
+      sats_.get(sf).seed_pending = false;
+    // Commit: nothing below throws.
+    nav_position_ = antenna(p, lever_);
     p2_ = std::move(smoother);
+    holds_.clear();
     graph_time_ = last;
     graph_epoch_ = n - 1;
-    graph_gpst_ = collection_.back().time;
+    graph_gpst_ = window_.back().time;
     bias_ = initial_bias_ = b0;
     actual_lag_ = lag;
     phase_ = 2;
     healthy_ = true;
-    collecting_ = false;
-    collection_.clear();
-    fix_history_.clear();
+    bad_count_ = 0;
+    zupt_anchor_.reset();
+    pim_break_ = false;
+    window_.clear();
+    saved_level_ = level;
+    heading_timer_.clear();
+    recovery_timer_.clear();
   } catch (...) {
     sats_ = saved_sats;
     current_ = saved_epoch;
-    nav_position_ = saved_position;
     throw;
   }
 }
@@ -1117,16 +1301,19 @@ void Engine::addImuChain(Graph &graph, Values &values, int k,
 gtsam::FactorIndices Engine::flsUpdate(const Graph &graph,
                                        const Values &values, int k,
                                        const std::vector<Key> &keep) {
-  if (!graph_gpst_ && !cfg_.gnss_motion)
+  if (!graph_gpst_ && !motionStage())
     throw std::runtime_error("committed graph time missing");
-  const double next = graph_gpst_ ? graph_time_ + current_gpst_ - *graph_gpst_ : 0.;
+  const double next =
+      graph_gpst_ ? graph_time_ + current_gpst_ - *graph_gpst_ : 0.;
   gtsam::FixedLagSmoother::KeyTimestampMap ts;
   gtsam::FactorIndices slots;
   ts[poseKey(k)] = ts[velKey(k)] = next;
-  if (!cfg_.gnss_motion) ts[biasKey(k)] = next;
+  if (!motionStage())
+    ts[biasKey(k)] = next;
   if (k > 0) {
     ts[poseKey(k - 1)] = ts[velKey(k - 1)] = next;
-    if (!cfg_.gnss_motion) ts[biasKey(k - 1)] = next;
+    if (!motionStage())
+      ts[biasKey(k - 1)] = next;
   }
   for (auto key : values.keys())
     ts[key] = next;
@@ -1182,43 +1369,29 @@ void Engine::addPseudo(Graph &graph, int k, const gtsam::Pose3 &previous,
     stationary = std::sqrt(av / samples.size()) <= cfg_.zupt_max_acc_std &&
                  std::sqrt(gv / samples.size()) <= cfg_.zupt_max_gyro_std &&
                  median(gn) <= cfg_.zupt_max_gyro_median;
-    if (cfg_.zupt_g_dev_thr > 0)
-      stationary =
-          stationary && std::abs((acc - initial_bias_.accelerometer()).norm() -
-                                 9.81) <= cfg_.zupt_g_dev_thr;
   }
+  stationary = stationary && velocity.norm() < kZuptMaxSpeed;
   if (!stationary) {
     zupt_anchor_.reset();
     return;
   }
-  if (cfg_.zupt_sigma_zero_velocity > 0)
-    graph.addPrior<gtsam::Vector3>(velKey(k), Vec3::Zero(),
-                                   noise(3, cfg_.zupt_sigma_zero_velocity));
-  if (cfg_.zupt_sigma_zero_rotation > 0 && k > 0)
+  graph.addPrior<gtsam::Vector3>(velKey(k), Vec3::Zero(),
+                                 noise(3, cfg_.zupt_sigma_zero_velocity));
+  if (k > 0)
     graph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
         poseKey(k - 1), poseKey(k), gtsam::Pose3(),
         splitNoise(cfg_.zupt_sigma_zero_rotation, 1e3));
-  if (cfg_.zupt_anchor_sigma_translation > 0 &&
-      cfg_.zupt_anchor_sigma_rotation > 0) {
-    if (!zupt_anchor_)
-      zupt_anchor_ = previous;
-    else
-      graph.addPrior<gtsam::Pose3>(
-          poseKey(k), *zupt_anchor_,
-          splitNoise(cfg_.zupt_anchor_sigma_rotation,
-                     cfg_.zupt_anchor_sigma_translation));
-  }
+  if (!zupt_anchor_)
+    zupt_anchor_ = previous;
+  else
+    graph.addPrior<gtsam::Pose3>(
+        poseKey(k), *zupt_anchor_,
+        splitNoise(cfg_.zupt_anchor_sigma_rotation,
+                   cfg_.zupt_anchor_sigma_translation));
 }
-void Engine::addDoppler(Graph &graph, int k, const ObservationEpoch &obs,
-                        const gtsam::NavState &pred, const Vec3 &gyro, int nv) {
-  if (cfg_.doppler_sd_sigma <= 0 ||
-      (cfg_.doppler_require_dd && nv < cfg_.min_dd_for_solve))
-    return;
-  struct Row {
-    const SatelliteObservation *sat;
-    double d, lam, snr;
-  };
-  std::vector<Row> rows;
+std::optional<Engine::DopplerRows>
+Engine::dopplerRows(const ObservationEpoch &obs, const gtsam::NavState &pred) {
+  std::vector<DopplerRow> rows;
   for (const auto &s : obs.sats) {
     if (s.system == 4)
       continue;
@@ -1230,7 +1403,7 @@ void Engine::addDoppler(Graph &graph, int k, const ObservationEpoch &obs,
       }
   }
   if (rows.size() < 2)
-    return;
+    return std::nullopt;
   const Vec3 receiver = antenna(pred.pose()), vpred = R_ * pred.velocity();
   double scale = 0;
   if (rows.size() >= 5) {
@@ -1241,7 +1414,8 @@ void Engine::addDoppler(Graph &graph, int k, const ObservationEpoch &obs,
       Vec3 e = (row.sat->rover_sat - receiver).normalized();
       A.block<1, 3>(i, 0) = -e.transpose();
       A(i, 3) = 1.;
-      b[i] = -row.lam * row.d - e.dot(row.sat->sat_velocity - vpred);
+      b[i] = -row.lam * row.d - e.dot(row.sat->sat_velocity - vpred) +
+             299792458. * row.sat->sat_clock_drift;
     }
     Eigen::VectorXd x =
         A.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b);
@@ -1251,8 +1425,8 @@ void Engine::addDoppler(Graph &graph, int k, const ObservationEpoch &obs,
     for (auto &val : r)
       val = std::abs(val - mid);
     scale = 1.4826 * median(r);
-    if (cfg_.doppler_fde_k > 0 && scale > 0) {
-      std::vector<Row> kept;
+    if (scale > 0) {
+      std::vector<DopplerRow> kept;
       for (std::size_t i = 0; i < rows.size(); ++i)
         if (std::abs(residual[i]) <= cfg_.doppler_fde_k * scale)
           kept.push_back(rows[i]);
@@ -1260,50 +1434,103 @@ void Engine::addDoppler(Graph &graph, int k, const ObservationEpoch &obs,
         rows = std::move(kept);
     }
   }
-  std::vector<double> sigmas;
+  DopplerRows out;
   for (auto &row : rows) {
-    double sigma = std::max(cfg_.doppler_sd_sigma,
-                            cfg_.doppler_adaptive_sigma ? scale : 0.);
+    double sigma = std::max(cfg_.doppler_sd_sigma, scale);
     sigma /= std::max(std::sin(row.sat->elevation), .1);
-    if (cfg_.doppler_snr_weight && row.snr > 0)
+    if (row.snr > 0)
       sigma *= std::clamp(std::pow(10., (cfg_.snr_ref_dbhz - row.snr) / 20.),
                           1., 10.);
-    sigmas.push_back(sigma);
+    out.sigmas.push_back(sigma);
   }
-  auto ref_index =
-      std::min_element(sigmas.begin(), sigmas.end()) - sigmas.begin();
+  out.ref = std::min_element(out.sigmas.begin(), out.sigmas.end()) -
+            out.sigmas.begin();
+  out.rows = std::move(rows);
+  out.receiver = receiver;
+  return out;
+}
+std::optional<Vec3> Engine::dopplerVelocity(const DopplerRows &d) const {
+  const std::size_t n = d.rows.size();
+  if (n < 5) // fewer than 4 between-satellite rows
+    return std::nullopt;
+  // Each row is the SdDopplerFactor of addDoppler with no lever arm:
+  // error = constant + h . (R v), linear in the ENU velocity v; whitened by
+  // the factor's sigma (no Huber: this is a gate, not an estimate).
+  Eigen::MatrixXd A(n - 1, 3);
+  Eigen::VectorXd b(n - 1);
+  const auto &ref = d.rows[d.ref];
+  for (std::size_t i = 0, r = 0; i < n; ++i) {
+    if (i == d.ref)
+      continue;
+    const auto &row = d.rows[i];
+    const SdDopplerFactor f(
+        poseKey(0), velKey(0), row.d, ref.d, row.lam, ref.lam,
+        row.sat->rover_sat, row.sat->sat_velocity, ref.sat->rover_sat,
+        ref.sat->sat_velocity, d.receiver, Vec3::Zero(), R_, Vec3::Zero(),
+        noise(1, 1.), row.sat->sat_clock_drift, ref.sat->sat_clock_drift);
+    const double w = 1. / std::hypot(d.sigmas[i], d.sigmas[d.ref]);
+    A.row(r) = w * f.h.transpose() * R_;
+    b[r] = -w * f.constant;
+    ++r;
+  }
+  const auto qr = A.colPivHouseholderQr();
+  if (qr.rank() < 3)
+    return std::nullopt;
+  const Vec3 v = qr.solve(b);
+  if (!v.allFinite())
+    return std::nullopt;
+  return v;
+}
+void Engine::addDoppler(Graph &graph, int k, const ObservationEpoch &obs,
+                        const gtsam::NavState &pred, const Vec3 &gyro, int nv) {
+  if (cfg_.doppler_sd_sigma <= 0 || nv < cfg_.min_dd_for_solve)
+    return;
+  auto doppler = dopplerRows(obs, pred);
+  if (!doppler)
+    return;
+  const auto &rows = doppler->rows;
+  const auto &sigmas = doppler->sigmas;
+  const std::size_t ref_index = doppler->ref;
+  const Vec3 &receiver = doppler->receiver;
   const auto &ref = rows[ref_index];
   for (std::size_t i = 0; i < rows.size(); ++i) {
-    if (i == std::size_t(ref_index))
+    if (i == ref_index)
       continue;
     const auto &row = rows[i];
     gtsam::SharedNoiseModel model =
         noise(1, std::hypot(sigmas[i], sigmas[ref_index]));
-    if (cfg_.doppler_huber > 0)
-      model = gtsam::noiseModel::Robust::Create(
-          gtsam::noiseModel::mEstimator::Huber::Create(cfg_.doppler_huber),
-          model);
+    model = gtsam::noiseModel::Robust::Create(
+        gtsam::noiseModel::mEstimator::Huber::Create(cfg_.doppler_huber),
+        model);
     graph.emplace_shared<SdDopplerFactor>(
         poseKey(k), velKey(k), row.d, ref.d, row.lam, ref.lam,
         row.sat->rover_sat, row.sat->sat_velocity, ref.sat->rover_sat,
-        ref.sat->sat_velocity, receiver, lever_, R_, gyro - bias_.gyroscope(),
-        model);
+        ref.sat->sat_velocity, receiver, stageLever(), R_,
+        gyro - bias_.gyroscope(),
+        model, row.sat->sat_clock_drift, ref.sat->sat_clock_drift);
+  }
+  // gnss_imu_fgo: the same rows gate the switch window (motion stage) and
+  // feed integrity check 1 (IMU stage, with the factors' angular rate).
+  if (!cfg_.gnss_motion) {
+    epoch_doppler_ = std::move(doppler);
+    epoch_omega_ = gyro - bias_.gyroscope();
   }
 }
 std::pair<double, std::map<int, double>>
-Engine::residuals(const Graph &graph, const Values &values) const {
+Engine::residuals(const Graph &graph, const DdRows &rows,
+                  const Values &values) const {
   double sum = 0;
   int n = 0;
   std::map<int, double> per_sat;
-  for (auto fac : graph) {
-    auto f = std::dynamic_pointer_cast<DdFactor>(fac);
-    if (!f || f->carrier)
+  for (const auto &row : rows) {
+    if (row.carrier)
       continue;
-    double r = std::sqrt(2. * std::max(0., f->error(values))) * cfg_.sigma_pr *
-               std::sqrt(2.);
+    double r =
+        std::sqrt(2. * std::max(0., graph.at(row.index)->error(values))) *
+        cfg_.sigma_pr * std::sqrt(2.);
     sum += r * r;
     ++n;
-    for (int sat : {f->ref_sat, f->target_sat})
+    for (int sat : {row.ref_sat, row.target_sat})
       if (r > per_sat[sat])
         per_sat[sat] = r;
   }
@@ -1314,56 +1541,81 @@ void Engine::resetAmbiguities() {
   for (auto [sf, key] : sats_.keys())
     keys.insert(key);
   gtsam::FactorIndices remove;
+  // The smoother's marginal factor of the epochs that left the lag (on the
+  // oldest state and the ambiguity keys of that time) is the only information
+  // the window's states have from before it; without it they rest on the
+  // window's code DDs alone, indeterminate with fewer than 3 independent ones.
+  // It is replaced by its marginal on the states (ambiguities integrated out).
+  Graph marginals;
   const auto &graph = p2_->getFactors();
   for (std::size_t i = 0; i < graph.size(); ++i)
     if (graph[i])
       for (auto key : graph[i]->keys())
         if (keys.count(key)) {
           remove.push_back(i);
+          if (const auto *marginal =
+                  dynamic_cast<const gtsam::LinearContainerFactor *>(
+                      graph[i].get()))
+            if (auto kept = marginalWithout(*marginal, keys))
+              marginals.push_back(kept);
           break;
         }
   try {
     if (!remove.empty()) {
       updateProbe("reset_ambiguities", false);
-      p2_->update(Graph{}, Values{}, gtsam::FixedLagSmoother::KeyTimestampMap{},
-                  remove);
+      p2_->update(marginals, Values{},
+                  gtsam::FixedLagSmoother::KeyTimestampMap{}, remove);
       updateProbe("reset_ambiguities", true);
     }
   } catch (...) {
     healthy_ = false;
     throw;
   }
+  // The removed factors leave these keys unused; ISAM2 drops them and the
+  // smoother their timestamps. The new arcs get new keys.
+  holds_.clear();
   for (auto &[sf, s] : sats_.track)
     s.invalidate();
   current_.accepted.clear();
   cp_hold_ = cfg_.recov_cp_hold;
 }
 void Engine::warmReset(const Vec3 &position, const gtsam::Rot3 &rotation) {
-  if (cfg_.gnss_motion) {
-    auto replacement = makeSmoother(actual_lag_, cfg_);
-    Graph graph; Values values;
+  if (motionStage()) {
+    auto replacement = makeSmoother(actual_lag_, cfg_, true);
+    Graph graph;
+    Values values;
     gtsam::Pose3 pose(gtsam::Rot3(), R_.transpose() * (position - base_));
     values.insert(poseKey(0), pose);
     values.insert(velKey(0), Vec3::Zero().eval());
-    graph.addPrior<gtsam::Pose3>(poseKey(0), pose, poseNoise(.01,.01,.01,100,100,100));
-    graph.addPrior<Vec3>(velKey(0), Vec3::Zero(), noise(3,100));
+    graph.addPrior<gtsam::Pose3>(poseKey(0), pose,
+                                 poseNoise(.01, .01, .01, 100, 100, 100));
+    graph.addPrior<Vec3>(velKey(0), Vec3::Zero(), noise(3, 100));
     updateProbe("warm_reset", false);
-    replacement->update(graph, values, {{poseKey(0),0.},{velKey(0),0.}});
+    replacement->update(graph, values, {{poseKey(0), 0.}, {velKey(0), 0.}});
     updateProbe("warm_reset", true);
     const auto estimate = replacement->calculateEstimate();
-    if (!estimate.at<gtsam::Pose3>(poseKey(0)).matrix().allFinite() || !estimate.at<Vec3>(velKey(0)).allFinite())
+    if (!estimate.at<gtsam::Pose3>(poseKey(0)).matrix().allFinite() ||
+        !estimate.at<Vec3>(velKey(0)).allFinite())
       throw std::runtime_error("invalid motion reset");
-    p2_ = std::move(replacement); graph_epoch_ = 0; graph_time_ = 0.;
-    graph_gpst_ = current_gpst_; healthy_ = true;
-    for (auto &[sf,s] : sats_.track) s.invalidate();
-    current_.accepted.clear(); current_.visible.clear();
-    zupt_anchor_.reset(); per_sat_res_.clear();
-    cp_hold_ = cfg_.recov_cp_hold; pim_break_ = false;
+    p2_ = std::move(replacement);
+    holds_.clear();
+    graph_epoch_ = 0;
+    graph_time_ = 0.;
+    graph_gpst_ = current_gpst_;
+    healthy_ = true;
+    for (auto &[sf, s] : sats_.track)
+      s.invalidate();
+    current_.accepted.clear();
+    current_.visible.clear();
+    zupt_anchor_.reset();
+    per_sat_res_.clear();
+    cp_hold_ = cfg_.recov_cp_hold;
+    pim_break_ = false;
     nav_position_ = position;
     return;
   }
   gtsam::Pose3 pose(rotation, R_.transpose() * (position - base_));
-  auto replacement = makeSmoother(actual_lag_, cfg_);
+  auto replacement = makeSmoother(actual_lag_, cfg_, false);
   Graph graph;
   Values values;
   values.insert(poseKey(0), pose);
@@ -1389,6 +1641,7 @@ void Engine::warmReset(const Vec3 &position, const gtsam::Rot3 &rotation) {
            .allFinite())
     throw std::runtime_error("invalid reset state");
   p2_ = std::move(replacement);
+  holds_.clear();
   graph_time_ = dt_;
   graph_epoch_ = 0;
   graph_gpst_ = current_gpst_;
@@ -1403,11 +1656,9 @@ void Engine::warmReset(const Vec3 &position, const gtsam::Rot3 &rotation) {
   pim_break_ = true;
   nav_position_ = antenna(pose);
 }
-std::optional<Solution> Engine::sanity(const Graph &graph,
+std::optional<Solution> Engine::sanity(const Graph &graph, const DdRows &rows,
                                        const gtsam::Pose3 &pose,
                                        const gtsam::NavState &pred, int k) {
-  if (!cfg_.ddpr_sanity_enable)
-    return {};
   if (main_res_ <= cfg_.main_ddpr_res_thresh) {
     bad_count_ = 0;
     return {};
@@ -1416,14 +1667,13 @@ std::optional<Solution> Engine::sanity(const Graph &graph,
   for (auto [s, v] : ar_per_sat_res_)
     r.push_back(v);
   std::sort(r.begin(), r.end());
-  if (cfg_.sanity_max_median_ratio > 0 &&
-      int(r.size()) >= cfg_.sanity_max_median_min_sats &&
+  if (int(r.size()) >= cfg_.sanity_max_median_min_sats &&
       r[r.size() / 2] > 1e-3 &&
       r.back() / r[r.size() / 2] > cfg_.sanity_max_median_ratio)
     return {};
   Values p;
   p.insert(poseKey(k), pred.pose());
-  double pred_res = residuals(graph, p).first;
+  double pred_res = residuals(graph, rows, p).first;
   bool fast = main_res_ > cfg_.main_ddpr_res_catastrophic && !r.empty() &&
               r.back() >= cfg_.ddpr_fast_worst_sat_min;
   if (!fast) {
@@ -1434,10 +1684,7 @@ std::optional<Solution> Engine::sanity(const Graph &graph,
   }
   resetAmbiguities();
   bad_count_ = 0;
-  if (cfg_.sanity_break_pim)
-    pim_break_ = true;
-  const bool replace = cfg_.sanity_pose_replace_thresh > 0 &&
-                       pred_res <= cfg_.sanity_pose_replace_thresh &&
+  const bool replace = pred_res <= cfg_.sanity_pose_replace_thresh &&
                        (pose.translation() - pred.pose().translation()).norm() >
                            cfg_.sanity_pose_replace_thresh;
   Solution sol;
@@ -1447,6 +1694,37 @@ std::optional<Solution> Engine::sanity(const Graph &graph,
   nav_position_ = antenna(pose);
   return sol;
 }
+// One key per ambiguity arc: a key carries over from epoch to epoch with no
+// new prior; the carrier DDs of all its epochs share it.
+// An arc ends (the next carrier DD starts a new key) on:
+//  - a slip or outage: LLI, input slip, geometry-free jump, or 6 epochs in a
+//    row without the band's carrier on both receivers (slips(); process()
+//    for epochs without GNSS);
+//  - a CP-suppressed epoch or a key the smoother no longer has
+//    (continueArcs());
+//  - a GNSS epoch without a carrier DD of the satellite/band (endUnusedArcs());
+//  - a hold release: after a GNSS epoch without a fix, the held band with the
+//    largest residual above a threshold (phase2()); the holds a rejected
+//    carrier DD contradicts (fde());
+//  - an ambiguity reset (resetAmbiguities(), warmReset(), fallback()) or the
+//    switch to the IMU graph (transition()), which end every arc.
+void Engine::continueArcs(const Values &estimate) {
+  for (auto &[sf, s] : sats_.track) {
+    if (s.key && (current_.cp_suppressed || !estimate.exists(*s.key)))
+      s.endArc();
+    // A hold lives on its arc's key. A held ambiguity whose key does not
+    // reach this epoch is released, so its next key is seeded from last_held.
+    if (s.held && !s.key)
+      s.release();
+  }
+}
+// After buildDd: a key without a carrier DD this epoch ends its arc. A held
+// one stays held until the next GNSS epoch releases it (continueArcs).
+void Engine::endUnusedArcs() {
+  for (auto &[sf, s] : sats_.track)
+    if (s.key && !current_.visible.count(sf))
+      s.endArc();
+}
 Solution Engine::phase2(const ObservationEpoch &obs, bool gnss) {
   const int k = graph_epoch_ + 1;
   Values estimate;
@@ -1454,101 +1732,100 @@ Solution Engine::phase2(const ObservationEpoch &obs, bool gnss) {
   Vec3 velocity = Vec3::Zero();
   gtsam::imuBias::ConstantBias previous_bias;
   gtsam::NavState pred;
-  Graph graph; Values values;
+  Graph graph;
+  Values values;
   std::vector<ImuSample> samples;
   IntegratedImu integrated(cfg_, bias_);
-  if (cfg_.gnss_motion) {
+  // For the plausibility guard (kMaxSpeed): the last committed antenna
+  // position and its time; a new motion graph is checked against its DD code
+  // seed.
+  Vec3 committed = nav_position_;
+  const double committed_gpst = graph_gpst_.value_or(obs.gpst);
+  if (motionStage()) {
     if (!graph_gpst_) {
-      gtsam::Pose3 seed(gtsam::Rot3(), R_.transpose()*(nav_position_-base_));
+      gtsam::Pose3 seed(gtsam::Rot3(),
+                        R_.transpose() * (nav_position_ - base_));
       const auto dd = ddprPosition(obs, seed, Vec3::Zero());
-      if (!dd.position || !dd.position->allFinite()) return {};
-      seed = gtsam::Pose3(gtsam::Rot3(), R_.transpose()*(*dd.position-base_));
+      if (!dd.position || !dd.position->allFinite())
+        return {};
+      committed = *dd.position;
+      seed = gtsam::Pose3(gtsam::Rot3(),
+                          R_.transpose() * (*dd.position - base_));
       pred = gtsam::NavState(seed, Vec3::Zero());
-      graph.addPrior<gtsam::Pose3>(poseKey(k), seed, poseNoise(.01,.01,.01,100,100,100));
-      graph.addPrior<Vec3>(velKey(k), Vec3::Zero(), noise(3,100));
+      graph.addPrior<gtsam::Pose3>(poseKey(k), seed,
+                                   poseNoise(.01, .01, .01, 100, 100, 100));
+      graph.addPrior<Vec3>(velKey(k), Vec3::Zero(), noise(3, 100));
     } else {
       estimate = p2_->calculateEstimate();
-      previous = estimate.at<gtsam::Pose3>(poseKey(k-1));
-      velocity = estimate.at<Vec3>(velKey(k-1));
+      previous = estimate.at<gtsam::Pose3>(poseKey(k - 1));
+      velocity = estimate.at<Vec3>(velKey(k - 1));
       const double elapsed = obs.gpst - *graph_gpst_;
-      pred = gtsam::NavState(gtsam::Pose3(gtsam::Rot3(),previous.translation()+elapsed*velocity),velocity);
-      graph.emplace_shared<MotionFactor>(poseKey(k-1),velKey(k-1),poseKey(k),velKey(k),elapsed,cfg_.motion_acceleration_psd);
-      graph.emplace_shared<gtsam::PoseRotationPrior<gtsam::Pose3>>(poseKey(k),gtsam::Rot3(),noise(3,.01));
+      pred = gtsam::NavState(
+          gtsam::Pose3(gtsam::Rot3(),
+                       previous.translation() + elapsed * velocity),
+          velocity);
+      graph.emplace_shared<MotionFactor>(poseKey(k - 1), velKey(k - 1),
+                                         poseKey(k), velKey(k), elapsed,
+                                         cfg_.motion_acceleration_psd);
+      graph.emplace_shared<gtsam::PoseRotationPrior<gtsam::Pose3>>(
+          poseKey(k), gtsam::Rot3(), noise(3, .01));
     }
-    values.insert(poseKey(k),pred.pose());
-    values.insert(velKey(k),Vec3(pred.velocity()));
+    values.insert(poseKey(k), pred.pose());
+    values.insert(velKey(k), Vec3(pred.velocity()));
   } else {
-  const auto cursor = imu_index_;
-  samples = collectImu(obs.gpst);
-  try {
-    integrated = integrateImu(
-        cfg_, bias_, samples,
-        graph_gpst_.value_or(std::numeric_limits<double>::quiet_NaN()),
-        obs.gpst);
-  } catch (...) {
-    imu_index_ = cursor;
-    throw;
-  }
-  estimate = p2_->calculateEstimate();
-  previous = estimate.at<gtsam::Pose3>(poseKey(k - 1));
-  velocity = estimate.at<Vec3>(velKey(k - 1));
-  previous_bias =
-      estimate.at<gtsam::imuBias::ConstantBias>(biasKey(k - 1));
-  pred = integrated.pim.predict(gtsam::NavState(previous, velocity),
-                                     previous_bias);
-  values.insert(poseKey(k), pred.pose());
-  values.insert(velKey(k), Vec3(pred.velocity()));
-  values.insert(biasKey(k), previous_bias);
-  addImuChain(graph, values, k, integrated, previous, velocity);
+    const auto cursor = imu_index_;
+    samples = collectImu(obs.gpst);
+    try {
+      integrated = integrateImu(
+          cfg_, bias_, samples,
+          graph_gpst_.value_or(std::numeric_limits<double>::quiet_NaN()),
+          obs.gpst);
+    } catch (...) {
+      imu_index_ = cursor;
+      throw;
+    }
+    estimate = p2_->calculateEstimate();
+    previous = estimate.at<gtsam::Pose3>(poseKey(k - 1));
+    velocity = estimate.at<Vec3>(velKey(k - 1));
+    previous_bias =
+        estimate.at<gtsam::imuBias::ConstantBias>(biasKey(k - 1));
+    pred = integrated.pim.predict(gtsam::NavState(previous, velocity),
+                                  previous_bias);
+    values.insert(poseKey(k), pred.pose());
+    values.insert(velKey(k), Vec3(pred.velocity()));
+    values.insert(biasKey(k), previous_bias);
+    addImuChain(graph, values, k, integrated, previous, velocity);
   }
   int nv = 0;
-  std::vector<Key> keep;
-  std::map<SF, std::pair<Key, double>> old;
+  DdRows rows;
   if (gnss) {
     slips(obs);
     current_.cp_suppressed = cp_hold_ > 0;
     if (current_.cp_suppressed)
       --cp_hold_;
-    for (auto [sf, key] : sats_.keys())
-      if (current_.cp_suppressed)
-        ++sats_.get(sf).generation;
-      else if (estimate.exists(key))
-        old[sf] = {key, estimate.at<double>(key)};
-    for (auto &[sf, s] : sats_.track)
-      s.key.reset();
-    nv = buildDd(graph, values, obs, poseKey(k), lever_, k, old,
+    continueArcs(estimate);
+    nv = buildDd(graph, rows, values, obs, poseKey(k), stageLever(),
                  current_.cp_suppressed);
-    if (!current_.cp_suppressed && cfg_.betweenn_enable)
-      for (auto [sf, key] : sats_.keys())
-        if (old.count(sf))
-          graph.emplace_shared<gtsam::BetweenFactor<double>>(
-              old[sf].first, key, 0.,
-              noise(1, previous_mode_ == 5 ? cfg_.sigma_n_between_flt
-                                           : cfg_.sigma_n_between));
-    if (nv < cfg_.min_dd_for_solve && !cfg_.gnss_motion) {
+    endUnusedArcs();
+    if (nv < cfg_.min_dd_for_solve && !motionStage()) {
       graph.addPrior<gtsam::Pose3>(poseKey(k), pred.pose(),
                                    noise(6, cfg_.propagate_pose_sigma));
       graph.addPrior<Vec3>(velKey(k), pred.velocity(),
                            noise(3, cfg_.propagate_vel_sigma));
       graph.addPrior<gtsam::imuBias::ConstantBias>(
           biasKey(k), previous_bias, noise(6, cfg_.propagate_bias_sigma));
-      if (!current_.cp_suppressed)
-        for (auto [sf, key] : sats_.keys())
-          if (old.count(sf))
-            graph.addPrior<double>(key, old[sf].second,
-                                   noise(1, cfg_.propagate_amb_sigma));
     }
     addDoppler(graph, k, obs, pred, integrated.mean_gyro, nv);
-  } else if (!cfg_.gnss_motion)
+  } else if (!motionStage())
     graph.addPrior<gtsam::imuBias::ConstantBias>(biasKey(k), bias_,
                                                  splitNoise(1e-4, 3e-6));
-  if (!cfg_.gnss_motion) addPseudo(graph, k, previous, velocity, samples, integrated.mean_gyro);
+  if (!motionStage())
+    addPseudo(graph, k, previous, velocity, samples, integrated.mean_gyro);
+  // Every key of a live arc is refreshed, also in epochs without GNSS; an
+  // ended arc's key is not and leaves through the lag.
+  std::vector<Key> keep;
   for (auto [sf, key] : sats_.keys())
     keep.push_back(key);
-  if (gnss)
-    for (auto [sf, kv] : old)
-      if (sats_.get(sf).key)
-        keep.push_back(kv.first);
   gtsam::FactorIndices slots;
   if (graph_observer_) {
     Values all(estimate);
@@ -1564,10 +1841,17 @@ Solution Engine::phase2(const ObservationEpoch &obs, bool gnss) {
       throw;
     Solution out;
     out.failure = ex.what();
-    const auto dd = ddprPosition(obs, pred.pose(), lever_);
+    // Seeded at the last committed position: `pred` comes from the graph
+    // that failed and may be implausible itself.
+    const gtsam::Rot3 rotation = pred.pose().rotation();
+    const auto dd = ddprPosition(
+        obs,
+        gtsam::Pose3(rotation, R_.transpose() * (committed - base_) -
+                                   rotation.matrix() * stageLever()),
+        stageLever());
     if (dd.position && std::isfinite(dd.rms) && dd.rms <= cfg_.ddpr_max_res) {
       try {
-        warmReset(*dd.position, pred.pose().rotation());
+        warmReset(*dd.position, rotation);
       } catch (const std::exception &reset_error) {
         healthy_ = false;
         out.failure += std::string("; reset: ") + reset_error.what();
@@ -1580,31 +1864,44 @@ Solution Engine::phase2(const ObservationEpoch &obs, bool gnss) {
     }
     return out;
   }
+  // Satellites with a code DD residual, in the order of the rows.
+  std::vector<int> residual_sat_order;
   if (gnss) {
-    auto res = residuals(graph, estimate);
+    auto res = residuals(graph, rows, estimate);
     main_res_ = res.first;
     ar_per_sat_res_ = res.second;
-    residual_sat_order_.clear();
     std::set<int> seen;
-    for (auto fac : graph) {
-      auto f = std::dynamic_pointer_cast<DdFactor>(fac);
-      if (!f || f->carrier)
+    for (const auto &row : rows) {
+      if (row.carrier)
         continue;
-      for (int s : {f->ref_sat, f->target_sat})
+      for (int s : {row.ref_sat, row.target_sat})
         if (ar_per_sat_res_.count(s) && seen.insert(s).second)
-          residual_sat_order_.push_back(s);
+          residual_sat_order.push_back(s);
     }
-    estimate = fde(*p2_, graph, slots, estimate, poseKey(k), nv);
+    estimate = fde(*p2_, graph, rows, slots, estimate, poseKey(k));
   }
   auto pose = estimate.at<gtsam::Pose3>(poseKey(k));
   auto vel = estimate.at<Vec3>(velKey(k));
-  if (!cfg_.gnss_motion) bias_ = estimate.at<gtsam::imuBias::ConstantBias>(biasKey(k));
+  const auto bias = motionStage()
+                        ? bias_
+                        : estimate.at<gtsam::imuBias::ConstantBias>(biasKey(k));
   if (!pose.matrix().allFinite() || !vel.allFinite() ||
-      !bias_.vector().allFinite())
+      !bias.vector().allFinite())
     throw std::runtime_error("nonfinite TC posterior");
+  // An implausible posterior (an indeterminate graph returns one without an
+  // error) is a failed update as well: process() restarts from the DD code
+  // position, and nav_position_, from which the node computes the elevation
+  // mask, keeps the last committed position.
+  if (plausibility_guard_ &&
+      ((antenna(pose) - committed).norm() >
+           kMaxSpeed * (obs.gpst - committed_gpst) + kMaxStepMargin ||
+       vel.norm() > kMaxSpeed))
+    throw std::runtime_error("implausible TC posterior");
+  bias_ = bias;
   nav_position_ = antenna(pose);
   ArDecision ar;
-  if (gnss && k >= (cfg_.gnss_motion ? 5 : cfg_.n_collect + 3) && !current_.cp_suppressed && !cp_hold_) {
+  if (gnss && k >= (motionStage() ? 5 : cfg_.n_collect + 3) &&
+      !current_.cp_suppressed && !cp_hold_) {
     double gdop = 999.;
     if (obs.sats.size() >= 4) {
       Eigen::MatrixXd G(obs.sats.size(), 4);
@@ -1617,24 +1914,15 @@ Solution Engine::phase2(const ObservationEpoch &obs, bool gnss) {
       Eigen::Matrix4d Q = (G.transpose() * G).inverse();
       gdop = std::sqrt(Q.trace());
     }
-    if (cfg_.ar_gdop_max <= 0 || gdop <= cfg_.ar_gdop_max) {
+    if (gdop <= cfg_.ar_gdop_max)
       ar = runAr(*p2_, estimate, poseKey(k), obs);
-      if (ar.nb)
-        starvation_ = 0;
-      else if (ar_outcome_ == ArOutcome::Zero && cfg_.ar_starve_reset > 0) {
-        ++starvation_;
-        if (starvation_ >= cfg_.ar_starve_reset && !cp_hold_ &&
-            main_res_ <= cfg_.ar_starve_max_res) {
-          resetAmbiguities();
-          starvation_ = 0;
-        }
-      }
-    }
   }
   if (gnss && !ar.nb) {
-    auto recovery = sanity(graph, pose, pred, k);
-    if (recovery)
+    auto recovery = sanity(graph, rows, pose, pred, k);
+    if (recovery) {
+      sanity_recovery_ = integrity_epoch_ = !motionStage();
       return *recovery;
+    }
   }
   if (ar.nb)
     hold(*p2_, ar);
@@ -1642,15 +1930,16 @@ Solution Engine::phase2(const ObservationEpoch &obs, bool gnss) {
     const double threshold = std::max(2., .5 * cfg_.ar_context_worst_sat_max);
     int worst = 0;
     double worst_res = 0;
-    for (auto s : residual_sat_order_)
-      if (ar_per_sat_res_[s] > worst_res) {
+    for (auto s : residual_sat_order)
+      if (residualOf(ar_per_sat_res_, s) > worst_res) {
         worst = s;
-        worst_res = ar_per_sat_res_[s];
+        worst_res = residualOf(ar_per_sat_res_, s);
       }
     std::optional<std::tuple<double, double, int, int>> best;
     for (auto sf : sats_.insertion_order)
       if (sats_.get(sf).held) {
-        double r = ar_per_sat_res_[sf.first], score = r >= threshold ? r : 0.;
+        double r = residualOf(ar_per_sat_res_, sf.first),
+               score = r >= threshold ? r : 0.;
         if (sf.first == worst && worst_res >= threshold)
           score += std::max(1., .25 * worst_res);
         auto candidate = std::make_tuple(score, r, sf.first, sf.second);
@@ -1671,6 +1960,9 @@ Solution Engine::phase2(const ObservationEpoch &obs, bool gnss) {
   sol.kind = gnss && nv ? UpdateKind::Gnss : UpdateKind::DeadReckoning;
   if (gnss)
     per_sat_res_ = ar_per_sat_res_;
+  motion_update_ =
+      motionStage() && gnss && nv >= cfg_.min_dd_for_solve;
+  integrity_epoch_ = !motionStage();
   return sol;
 }
 } // namespace gnss_fgo

@@ -84,7 +84,7 @@ One message per epoch; one `GnssObservation` per satellite and signal.
 | `pos_ecef`, `vel_ecef`, `pos_cov_ecef`, `vel_cov_ecef` | ECEF, covariances row-major |
 | `pos_enu`, `pos_enu_org_ecef` | ENU position relative to the origin set by `local_origin.*` ([parameter names](PARAMETER_NAMES.md#enu-origin)); NaN until the origin is known |
 | `vel_enu`, `pos_enu_cov`, `vel_enu_cov` | in the ENU frame at the current position |
-| `num_sats` | satellites used (RTK: satellites with a valid carrier double difference; EKF: 0) |
+| `num_sats` | satellites used (RTK: satellites with a valid carrier double difference; FGO: satellites common to rover and base that pass preprocessing, on FIX and FLOAT; EKF: 0) |
 | `ratio` | AR ratio |
 | `age_diff`, DOP | NaN when not available |
 

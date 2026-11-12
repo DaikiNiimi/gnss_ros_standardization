@@ -1,13 +1,14 @@
 #pragma once
 #include "engine.hpp"
 #include "ros_adapter.hpp"
+#include "gnss_ros_standardization/ephemeris_store.hpp"
 #include "gnss_ros_standardization/epoch_matcher.hpp"
 #include <Eigen/Core>
-#include <boost/property_tree/json_parser.hpp>
+#include <gnss_ros_standardization/msg/gnss_ephemerides.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <unistd.h>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -32,16 +33,11 @@ inline void configureDeterministicEigen() {
   Eigen::setCpuCacheSizes(32 * 1024, 256 * 1024, 2 * 1024 * 1024);
 }
 
-}  // namespace gnss_fgo
-
 // ROS intake, solver worker and publication shared by gnss_fgo (GNSS-only
 // MotionFactor) and gnss_imu_fgo (GNSS/IMU). The estimator itself is Engine.
 
-namespace gnss_fgo {
-
 struct NodeVariant {
   std::string node_name;      // also the logger name
-  std::string profile;        // the only accepted algorithm_profile
   std::string solution_topic; // default output topic
   std::string banner;
   bool imu = false;           // GNSS/IMU model (IMU input, lever arm, odometry)
@@ -54,7 +50,7 @@ struct IntakeCounters {
       imu_received{0}, nav_received{0};
   std::atomic<std::uint64_t> imu_invalid{0}, imu_reversed{0},
       imu_queue_overflow{0}, epochs_without_imu{0};
-  std::atomic<std::uint64_t> nav_records_invalid{0}, nav_messages_invalid{0};
+  std::atomic<std::uint64_t> nav_records_invalid{0};
   std::atomic<std::uint64_t> unsupported_satellites{0}, duplicate_signals{0};
   std::atomic<std::uint64_t> pairs_queue_overflow{0}, epoch_failures{0};
   std::atomic<std::uint64_t> timeline_resets{0}, after_end_marker{0};
@@ -100,12 +96,6 @@ public:
       const auto rpy = vectorParameter("imu_orientation");
       imu_to_body_ = gtsam::Rot3::RzRyRx(rpy).matrix();
     }
-    const auto profile =
-        declare_parameter("algorithm_profile", variant_.profile);
-    if (profile != variant_.profile)
-      throw std::invalid_argument("unsupported algorithm profile");
-    // The accepted profile is frozen. Unsupported legacy parameters must not
-    // silently appear to configure a different estimator.
     max_age_ = declare_parameter("max_age_s", 30.);
     if (!std::isfinite(max_age_) || max_age_ < 0)
       throw std::invalid_argument("invalid base age: max_age_s must be finite "
@@ -115,23 +105,20 @@ public:
       throw std::invalid_argument("queue_depth must be in [1, 1000000]");
     depth_ = static_cast<std::size_t>(depth);
     trace_dir_ = declare_parameter("debug.trace_directory", std::string{});
-    nav_indices_ =
-        declare_parameter("debug.navigation_indices_in_frame_id", false);
     // ENU origin of pos_enu and the odometry (shared local_origin.* schema):
     // mode fixed = local_origin.pos, mode auto = the base station, as RTK.
     const auto local_origin = gnss_utils::declareLocalOrigin(*this);
-    origin_ = local_origin.fixed
-                  ? Vec3(local_origin.ecef[0], local_origin.ecef[1], local_origin.ecef[2])
-                  : base_;
+    origin_ = local_origin.fixed ? Vec3(local_origin.ecef[0],
+                                        local_origin.ecef[1],
+                                        local_origin.ecef[2])
+                                 : base_;
     if (!trace_dir_.empty()) {
       std::filesystem::create_directories(trace_dir_);
       intake_trace_.open(trace_dir_ + "/intake-trace.jsonl");
-      worker_trace_.open(trace_dir_ + "/worker-trace.jsonl");
-      if (!intake_trace_ || !worker_trace_)
+      if (!intake_trace_)
         throw std::runtime_error("cannot open trace files");
-      std::ofstream(trace_dir_ + "/intake-ready") << getpid() << "\n";
     }
-    declareSignalPlans();
+    declareEstimatorParameters();
     engine_ = std::make_unique<Engine>(config_, initial_, base_, lever_);
     frontend_ = std::make_unique<Preprocessor>(config_, base_);
 
@@ -234,14 +221,14 @@ private:
   // Solver state: touched only by the worker thread (and the constructor).
   std::unique_ptr<Engine> engine_;
   std::unique_ptr<Preprocessor> frontend_;
+  gnss_utils::EphemerisStore ephemeris_;
   std::optional<Vec3> origin_;
-  ObsPtr decoded_base_msg_;
-  RawEpoch decoded_base_;
+  SignalPolicy policy_;
+  gnss_utils::SignalSelection signal_selection_;
   std::uint64_t reported_imu_backlog_ = 0;
   // Intake state: touched only by the executor thread.
-  ReceiverPlan rover_plan_, base_plan_;
   // Time scale of the header stamps (UTC by the topic contract; GPST in
-  // legacy converted bags), read off the rover observations: header vs
+  // some converted bags), read off the rover observations: header vs
   // week/tow. IMU stamps are converted with it; until it is known, IMU
   // samples wait (bounded).
   enum class Basis { Unknown, Utc, Gpst };
@@ -253,12 +240,11 @@ private:
       imu_watermark_ms_;
   double max_age_ = 30.;
   std::size_t depth_ = 4096;
-  int next_nav_id_ = 0;
-  bool nav_indices_ = false, input_closed_ = false;
+  bool input_closed_ = false;
   std::size_t rover_count_ = 0;
   std::atomic<std::size_t> published_{0};
   std::string trace_dir_;
-  std::ofstream intake_trace_, worker_trace_;
+  std::ofstream intake_trace_;
   IntakeCounters counters_;
   // Worker queue.
   std::mutex mutex_;
@@ -276,11 +262,6 @@ private:
   rclcpp::Subscription<rosmsg::GnssEphemerides>::SharedPtr nav_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr end_sub_;
 
-  static std::int64_t nowNs() {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-  }
   static bool validTime(const rosmsg::GnssObservations &m) {
     return m.week != 0 && std::isfinite(m.tow) && m.tow >= 0 &&
            m.tow < 604800.;
@@ -296,50 +277,95 @@ private:
       throw std::invalid_argument(name + " requires three finite numbers");
     return Vec3(p[0], p[1], p[2]);
   }
-  void declareSignalPlans() {
-    for (const std::string receiver : {"rover", "base"}) {
-      ReceiverPlan &plan = receiver == "rover" ? rover_plan_ : base_plan_;
-      for (const std::string system : {"G", "E", "J", "C"}) {
-        SignalPlan signals;
-        auto defaults =
-            system == "E"   ? std::vector<std::string>{"1X", "5X", "7X"}
-            : system == "C" ? std::vector<std::string>{"2I", "7I", "6I"}
-                            : std::vector<std::string>{"1C", "2W", "5Q"};
-        for (int t = 0; t < 4; ++t) {
-          const std::string name = "signals." + receiver + "." + system + "." +
-                                   std::string(1, "PLDS"[t]);
-          signals.codes[t] = declare_parameter(
-              name, t == 2 && receiver == "base" ? std::vector<std::string>{}
-                                                 : defaults);
-          if (signals.codes[t].size() > 3)
-            throw std::invalid_argument(name + " exceeds three bands");
-          std::set<char> bands;
-          for (auto &code : signals.codes[t]) {
-            if (code.size() != 2 || !bands.insert(code[0]).second)
-              throw std::invalid_argument(
-                  name + " contains an invalid or repeated band");
-            wavelength(system, code);
-          }
-        }
-        if (signals.codes[0].size() != signals.codes[1].size() ||
-            signals.codes[1].size() != signals.codes[3].size())
-          throw std::invalid_argument(
-              "P/L/S signal plans must have matching band counts");
-        for (std::size_t b = 0; b < signals.codes[1].size(); ++b)
-          for (int t : {0, 3})
-            if (signals.codes[t][b][0] != signals.codes[1][b][0])
-              throw std::invalid_argument("P/L/S signal bands must align");
-        if (!signals.codes[1].empty())
-          plan[system] = std::move(signals);
-      }
+  // Observation selection uses the parameter names of real_time_kinematic.
+  // The SNR mask (pos1.snrmask.*) has the same thresholds but acts on the
+  // whole satellite (Preprocessor::edit): a band the receiver has tracked with
+  // code and phase that is missing or below the mask in an epoch leaves the
+  // satellite out for that receiver in that epoch. Everything else stays an
+  // internal constant.
+  void declareEstimatorParameters() {
+    Config &c = config_;
+    const auto number = [this](const std::string &name, double &value) {
+      value = declare_parameter(name, value);
+    };
+    const auto integer = [this](const std::string &name, int &value) {
+      value = static_cast<int>(
+          declare_parameter<std::int64_t>(name, value));
+    };
+    const auto flag = [this](const std::string &name, int &value) {
+      value = declare_parameter(name, value != 0) ? 1 : 0;
+    };
+    policy_.frequencies.l1 = declare_parameter("frequencies.enable_l1", true);
+    policy_.frequencies.l2 = declare_parameter("frequencies.enable_l2", true);
+    policy_.frequencies.l5 = declare_parameter("frequencies.enable_l5", false);
+    policy_.systems.clear();
+    const auto useSystem = [this](const std::string &name, const char *system) {
+      if (declare_parameter(name, true))
+        policy_.systems.insert(system);
+    };
+    useSystem("pos1.navsys.gps", "G");
+    useSystem("pos1.navsys.gal", "E");
+    useSystem("pos1.navsys.bds", "C");
+    useSystem("pos1.navsys.qzs", "J");
+    number("pos1.elmask", c.elmin_deg);
+    c.snrmask_enable[0] = declare_parameter("pos1.snrmask.rover", false);
+    c.snrmask_enable[1] = declare_parameter("pos1.snrmask.base", false);
+    const auto snrBand = [this, &c](const std::string &name, int band) {
+      const auto values = declare_parameter(name, std::vector<double>(9, 0.));
+      if (values.size() != 9)
+        throw std::invalid_argument(name + " requires nine values");
+      std::copy(values.begin(), values.end(), c.snrmask[band].begin());
+    };
+    snrBand("pos1.snrmask.l1", 0);
+    snrBand("pos1.snrmask.l2", 1);
+    snrBand("pos1.snrmask.l5", 2);
+    for (const auto &id : declare_parameter(
+             "excluded_satellites", std::vector<std::string>{})) {
+      if (id.empty())
+        continue;
+      const int sat = satid2no(id.c_str());
+      if (sat <= 0)
+        throw std::invalid_argument("Invalid excluded_satellites entry: " + id);
+      policy_.excluded.insert(sat);
     }
-  }
-  static void writeTrace(std::ofstream &out, const char *event, std::int64_t ms,
-                         std::int64_t ns) {
-    if (out.is_open())
-      out << "{\"event\":\"" << event << "\",\"week\":" << ms / 604800000
-          << ",\"tow_ns\":" << (ms % 604800000) * 1000000
-          << ",\"monotonic_ns\":" << ns << "}\n";
+    integer("pos2.armode", c.ar_mode);
+    number("pos2.arthres", c.ar_thresar);
+    integer("pos2.minfixsats", c.ar_minfixsats);
+    number("pos2.slipthres", c.thres_slip);
+
+    number("noise.doppler_mps", c.doppler_sd_sigma);
+    number("graph.lag_s", c.fls_lag);
+    number("hold.variance_cycles2", c.varholdamb);
+    flag("ambiguity.exclude_bds_geo", c.exclude_bds_geo);
+    flag("fde.enable", c.fde_enable);
+    number("fde.pseudorange_m", c.fde_pr);
+    number("fde.carrier_m", c.fde_cp);
+
+    if (!variant_.imu) {
+      number("motion.acceleration_psd", c.motion_acceleration_psd);
+      return;
+    }
+    number("imu.gravity_mps2", c.gravity);
+    number("imu.sigma_acc", c.accel_noise);
+    number("imu.sigma_gyr", c.gyro_noise);
+    number("imu.integration_covariance", c.imu_integ_cov);
+    number("imu.sigma_acc_bias", c.accel_bias_sigma);
+    number("imu.sigma_gyr_bias", c.gyro_bias_sigma);
+    number("imu.bias_prior_sigma_acc_mps2", c.bias_prior_acc_sigma);
+    number("imu.bias_prior_sigma_gyr_rps", c.bias_prior_gyro_sigma);
+    integer("imu.bias_prior_mode", c.bias_prior_mode);
+    flag("nhc.enable", c.nhc_enable);
+    number("nhc.sigma_lat_mps", c.nhc_sigma_lat);
+    number("nhc.sigma_vert_mps", c.nhc_sigma_vert);
+    const Vec3 nhc_lever = vectorParameter("nhc.lever_arm");
+    c.nhc_lever = std::to_string(nhc_lever.x()) + "," +
+                  std::to_string(nhc_lever.y()) + "," +
+                  std::to_string(nhc_lever.z());
+    flag("zupt.enable", c.zupt_enable);
+    number("zupt.max_acc_std", c.zupt_max_acc_std);
+    number("zupt.max_gyr_std", c.zupt_max_gyro_std);
+    number("zupt.sigma_mps", c.zupt_sigma_zero_velocity);
+    number("init.pitch_deg", c.init_pitch_deg);
   }
   bool closed(const char *what) {
     if (!input_closed_)
@@ -357,7 +383,6 @@ private:
     if (variant_.imu)
       takeReceivedImu();
     ++counters_.rover_received;
-    const auto receipt = nowNs();
     if (validTime(*m)) {
       if (variant_.imu)
         learnBasis(*m);
@@ -367,7 +392,6 @@ private:
       if (!newest_rover_ms_ || t > *newest_rover_ms_)
         newest_rover_ms_ = t;
       ++rover_count_;
-      writeTrace(intake_trace_, "rover_intake", t, receipt);
     }
     matcher_.pushRover(m);
     collectDecided();
@@ -489,33 +513,17 @@ private:
     if (closed("navigation message"))
       return;
     ++counters_.nav_received;
-    std::vector<int> ids;
-    if (nav_indices_) {
-      try {
-        boost::property_tree::ptree tree;
-        std::istringstream s(m->header.frame_id);
-        boost::property_tree::read_json(s, tree);
-        for (auto &v : tree)
-          ids.push_back(v.second.get_value<int>());
-      } catch (const std::exception &) {
-        ids.clear();
-      }
-      if (ids.size() != m->gnss_ephemeris.size()) {
-        ++counters_.nav_messages_invalid;
-        RCLCPP_WARN(get_logger(), "Navigation provenance does not match its "
-                                  "records: message ignored");
-        return;
-      }
-    }
-    std::vector<BroadcastEphemeris> records;
-    for (std::size_t i = 0; i < m->gnss_ephemeris.size(); ++i) {
-      const auto &e = m->gnss_ephemeris[i];
+    std::vector<eph_t> records;
+    for (const auto &e : m->gnss_ephemeris) {
       if (e.system != "G" && e.system != "E" && e.system != "J" &&
           e.system != "C")
         continue;
-      const int id = nav_indices_ ? ids[i] : next_nav_id_++;
       try {
-        records.push_back(decodeEphemeris(e, id));
+        const eph_t record = gnss_utils::msgToEph(e);
+        if (record.sat <= 0)
+          throw std::invalid_argument("unknown satellite");
+        if (!policy_.excluded.count(record.sat))
+          records.push_back(record);
       } catch (const std::exception &error) {
         ++counters_.nav_records_invalid;
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
@@ -527,7 +535,8 @@ private:
       return;
     enqueue(TaskKind::Navigation, [this, records = std::move(records)] {
       for (const auto &record : records)
-        frontend_->navigation.insert(record);
+        ephemeris_.ingestEph(record);
+      ephemeris_.applyToNav(frontend_->navigation(), true);
     });
   }
   void onEnd(const std_msgs::msg::String &m) {
@@ -544,7 +553,6 @@ private:
     intake_trace_.flush();
     enqueue(TaskKind::End, [this, unresolved, rovers = rover_count_] {
       if (!trace_dir_.empty()) {
-        worker_trace_.flush();
         std::ofstream(trace_dir_ + "/intake-summary.json")
             << "{\"rover_count\":" << rovers
             << ",\"pending\":" << unresolved
@@ -688,28 +696,24 @@ private:
     rclcpp::shutdown();
   }
   void resetEstimator() {
-    auto navigation = std::move(frontend_->navigation);
     engine_ = std::make_unique<Engine>(config_, initial_, base_, lever_);
     frontend_ = std::make_unique<Preprocessor>(config_, base_);
-    frontend_->navigation = std::move(navigation);
-    decoded_base_msg_.reset();
+    ephemeris_.applyToNav(frontend_->navigation(), true);
+    signal_selection_.reset();
     reported_imu_backlog_ = 0;
   }
   void solve(const Matcher::Pair &pair) {
     Solution sol;
     ObservationEpoch prepared;
-    const auto t = epochMs(*pair.rover);
     try {
       DecodeStats stats;
-      const auto rover = decodeObservation(*pair.rover, rover_plan_, &stats);
+      const auto choice = gnss_utils::selectSignals(
+          *pair.rover, pair.base.get(), policy_.frequencies, signal_selection_);
+      const auto rover =
+          decodeObservation(*pair.rover, 1, policy_, choice, &stats);
       std::optional<RawEpoch> base;
-      if (pair.base) {
-        if (pair.base != decoded_base_msg_) {
-          decoded_base_ = decodeObservation(*pair.base, base_plan_, &stats);
-          decoded_base_msg_ = pair.base;
-        }
-        base = decoded_base_;
-      }
+      if (pair.base)
+        base = decodeObservation(*pair.base, 2, policy_, choice, &stats);
       counters_.unsupported_satellites += stats.unsupported_satellites;
       counters_.duplicate_signals += stats.duplicate_signals;
       prepared = frontend_->prepare(rover, base, engine_->floatPosition());
@@ -726,6 +730,14 @@ private:
       sol.gpst = std::int64_t(pair.rover->week) * 604800 + pair.rover->tow;
       prepared = ObservationEpoch{};
     }
+    // The engine caught a failed update of this epoch; the solution is then a
+    // warm-reset position or none.
+    if (!sol.failure.empty())
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "Epoch week %u tow %.3f: estimator update failed "
+                           "(%s)",
+                           pair.rover->week, pair.rover->tow,
+                           sol.failure.c_str());
     if (variant_.imu && engine_->imuBacklogDropped() > reported_imu_backlog_) {
       reported_imu_backlog_ = engine_->imuBacklogDropped();
       RCLCPP_WARN(get_logger(),
@@ -738,14 +750,14 @@ private:
       std::set<int> used;
       for (const auto &s : prepared.sats)
         used.insert(s.sat);
-      m.num_sats = static_cast<std::uint8_t>(std::min<std::size_t>(255, used.size()));
+      m.num_sats =
+          static_cast<std::uint8_t>(std::min<std::size_t>(255, used.size()));
     }
     if (m.status != m.STATUS_NONE && pair.base)
       m.age_diff = static_cast<float>(pair.age_s);
     // The header stamp is the rover observation's (same clock as the input).
     m.header.stamp = pair.rover->header.stamp;
     solution_pub_->publish(m);
-    writeTrace(worker_trace_, "solution_publish", t, nowNs());
     ++published_;
     if (odom_pub_)
       publishOdometry(sol, m.header.stamp);
@@ -809,11 +821,9 @@ private:
         waiting + queued, waiting, queued);
     RCLCPP_INFO(get_logger(),
                 "Rows skipped: unsupported satellite %llu, duplicate signal "
-                "%llu; navigation: messages %llu, invalid records %llu, "
-                "invalid messages %llu",
+                "%llu; navigation: messages %llu, invalid records %llu",
                 n(c.unsupported_satellites), n(c.duplicate_signals),
-                n(c.nav_received), n(c.nav_records_invalid),
-                n(c.nav_messages_invalid));
+                n(c.nav_received), n(c.nav_records_invalid));
     if (variant_.imu)
       RCLCPP_INFO(get_logger(),
                   "IMU: received %llu, invalid %llu, not advancing %llu, "
