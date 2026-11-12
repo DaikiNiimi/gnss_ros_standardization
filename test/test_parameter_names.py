@@ -33,7 +33,7 @@ SOURCES = {
     'gnss_imu_kalman_filter': ['src/positioning/ekf/gnss_imu_kalman_filter.cpp'],
     'gnss_fgo': ['src/positioning/fgo/ros_node.hpp'],
     'gnss_imu_fgo': ['src/positioning/fgo/ros_node.hpp'],
-    'gnss_visualizer': ['src/utils/gnss_visualizer.cpp'],
+    'gnss_visualizer': ['src/utils/visualizer/gnss_visualizer.cpp'],
 }
 # Declared by a shared header for every receiver node (NMEA date handling).
 SHARED = ['include/gnss_ros_standardization/decoder_common.hpp']

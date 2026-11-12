@@ -27,13 +27,11 @@ find_package(rclcpp REQUIRED)
 find_package(rcutils REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_storage REQUIRED)
+find_package(rosbag2_compression REQUIRED)
 find_package(Threads REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(cv_bridge QUIET)
-find_package(image_transport QUIET)
-find_package(OpenCV QUIET)
 
 # Options
 option(ENABLE_GLO "Enable GLONASS" ON)
@@ -312,6 +310,45 @@ target_link_libraries(rosbag_to_pos gnss_utils)
 add_dependencies(rosbag_to_pos ${_rosidl_deps})
 install(TARGETS rosbag_to_pos DESTINATION lib/${PROJECT_NAME})
 
+# gnss_visualizer (live dashboard served to a web browser)
+set(_visualizer_dir "${CMAKE_CURRENT_SOURCE_DIR}/src/utils/visualizer")
+set(_visualizer_gen "${CMAKE_CURRENT_BINARY_DIR}/visualizer_gen")
+file(READ "${_visualizer_dir}/page.html" _visualizer_page_hex HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," VISUALIZER_PAGE_BYTES "${_visualizer_page_hex}")
+configure_file("${_visualizer_dir}/page_embed.hpp.in"
+  "${_visualizer_gen}/gnss_visualizer_page_embed.hpp" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_visualizer_dir}/page.html")
+add_executable(gnss_visualizer src/utils/visualizer/gnss_visualizer.cpp)
+target_include_directories(gnss_visualizer PUBLIC ${_gen_include}
+  PRIVATE "${_visualizer_gen}" "${_visualizer_dir}" "${RTKLIB_ROOT}/src")
+ament_target_dependencies(gnss_visualizer rclcpp std_msgs geometry_msgs sensor_msgs builtin_interfaces)
+target_link_libraries(gnss_visualizer gnss_utils Threads::Threads)
+add_dependencies(gnss_visualizer ${_rosidl_deps})
+install(TARGETS gnss_visualizer DESTINATION lib/${PROJECT_NAME})
+
+# rtk_bag_plot (rosbag2 -> RTKPLOT-style HTML report)
+set(_rtk_bag_plot_dir "${CMAKE_CURRENT_SOURCE_DIR}/src/utils/rtk_bag_plot")
+set(_rtk_bag_plot_gen "${CMAKE_CURRENT_BINARY_DIR}/rtk_bag_plot_gen")
+file(READ "${_rtk_bag_plot_dir}/viewer.html" _rtk_bag_plot_viewer_hex HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," RTK_BAG_PLOT_VIEWER_BYTES "${_rtk_bag_plot_viewer_hex}")
+configure_file("${_rtk_bag_plot_dir}/viewer_embed.hpp.in"
+  "${_rtk_bag_plot_gen}/rtk_bag_plot_viewer_embed.hpp" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_rtk_bag_plot_dir}/viewer.html")
+add_library(bag_plot_core STATIC
+  src/utils/rtk_bag_plot/bag_session.cpp
+  src/utils/rtk_bag_plot/encode.cpp
+  src/utils/rtk_bag_plot/extract.cpp
+  src/utils/rtk_bag_plot/geometry.cpp)
+target_include_directories(bag_plot_core PUBLIC ${_gen_include} "${_rtk_bag_plot_dir}" "${RTKLIB_ROOT}/src")
+ament_target_dependencies(bag_plot_core rclcpp rosbag2_cpp rosbag2_storage rosbag2_compression sensor_msgs std_msgs geometry_msgs builtin_interfaces)
+target_link_libraries(bag_plot_core gnss_utils)
+add_dependencies(bag_plot_core ${_rosidl_deps})
+add_executable(rtk_bag_plot src/utils/rtk_bag_plot/rtk_bag_plot.cpp)
+target_compile_definitions(rtk_bag_plot PRIVATE PACKAGE_VERSION="${PROJECT_VERSION}")
+target_include_directories(rtk_bag_plot PRIVATE "${_rtk_bag_plot_gen}")
+target_link_libraries(rtk_bag_plot bag_plot_core)
+install(TARGETS rtk_bag_plot DESTINATION lib/${PROJECT_NAME})
+
 # pos_to_rosbag (RTKLIB .pos -> GnssSolution bag)
 add_executable(pos_to_rosbag src/converter/pos_to_rosbag.cpp)
 target_include_directories(pos_to_rosbag PUBLIC ${_gen_include})
@@ -357,18 +394,6 @@ if(BUILD_EKF_NODE)
   target_link_libraries(gnss_imu_kalman_filter gnss_utils Eigen3::Eigen Threads::Threads)
   add_dependencies(gnss_imu_kalman_filter ${_rosidl_deps})
   install(TARGETS gnss_imu_kalman_filter DESTINATION lib/${PROJECT_NAME})
-endif()
-
-# gnss_visualizer
-if(cv_bridge_FOUND AND image_transport_FOUND AND OpenCV_FOUND)
-  add_executable(gnss_visualizer src/utils/gnss_visualizer.cpp)
-  target_include_directories(gnss_visualizer PUBLIC ${_gen_include})
-  ament_target_dependencies(gnss_visualizer rclcpp std_msgs sensor_msgs cv_bridge image_transport builtin_interfaces)
-  target_link_libraries(gnss_visualizer gnss_utils ${OpenCV_LIBRARIES})
-  add_dependencies(gnss_visualizer ${_rosidl_deps})
-  install(TARGETS gnss_visualizer DESTINATION lib/${PROJECT_NAME})
-else()
-  message(STATUS "Skipping gnss_visualizer: cv_bridge, image_transport, or OpenCV not found.")
 endif()
 
 # FGO uses repository-defined GNSS factors and the GTSAM nonlinear factor API.
@@ -721,14 +746,21 @@ if(BUILD_TESTING)
   # Core matcher/preprocessor regressions are MANDATORY (not EXISTS-guarded):
   # silently omitting a missing source file previously left only the FGO math
   # test registered, hiding losslessness regressions.
-  if(TARGET gnss_visualizer)
-    ament_add_gtest(test_visualizer_release test/test_visualizer_release.cpp)
-    target_include_directories(test_visualizer_release PUBLIC ${_gen_include})
-    ament_target_dependencies(test_visualizer_release rclcpp std_msgs sensor_msgs cv_bridge image_transport builtin_interfaces)
-    target_link_libraries(test_visualizer_release gnss_utils ${OpenCV_LIBRARIES})
-    add_dependencies(test_visualizer_release ${_rosidl_deps})
-  endif()
+  ament_add_test(test_visualizer
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test/test_visualizer.py"
+      --bin-dir "${CMAKE_CURRENT_BINARY_DIR}"
+    ENV "PYTHONDONTWRITEBYTECODE=1" "ROS_LOCALHOST_ONLY=1" TIMEOUT 120)
+  ament_add_gtest(test_imu_monitor test/test_imu_monitor.cpp)
+  target_include_directories(test_imu_monitor PRIVATE "${_visualizer_dir}")
 
+  ament_add_gtest(test_bag_plot_core test/test_bag_plot_core.cpp)
+  target_link_libraries(test_bag_plot_core bag_plot_core)
+  ament_add_test(test_bag_plot
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test/test_bag_plot.py"
+      --bin-dir "${CMAKE_CURRENT_BINARY_DIR}"
+    ENV "PYTHONDONTWRITEBYTECODE=1" TIMEOUT 180)
   ament_add_gtest(test_epoch_matcher test/test_epoch_matcher.cpp)
   target_include_directories(test_epoch_matcher PUBLIC ${_gen_include})
   target_link_libraries(test_epoch_matcher gnss_utils)

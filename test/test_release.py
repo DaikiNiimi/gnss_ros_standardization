@@ -186,6 +186,12 @@ class ReleaseSourceContracts(unittest.TestCase):
         for flag in ['--topic-obs','--topic-nav','--topic-pos','--timestamp-scale','--imu','--imu-frame','--reference','--topic-reference']:
             self.assertRegex(docs,r'`'+re.escape(flag)+r'[` ]')
 
+    def test_release_rtk_bag_plot_flags_documented(self):
+        docs=(ROOT/'src/utils/README.md').read_text()
+        source=(ROOT/'src/utils/rtk_bag_plot/rtk_bag_plot.cpp').read_text()
+        for flag in re.findall(r'arg == "(--[a-z-]+)"',source):
+            self.assertRegex(docs,r'`'+re.escape(flag)+r'[` ]',flag)
+
     def test_release_F11_navigation_does_not_share_observation_loss_callback(self):
         # Navigation losses are counted separately from observation losses.
         text=(ROOT/'src/positioning/fgo/ros_node.hpp').read_text()

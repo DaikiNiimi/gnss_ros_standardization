@@ -1,0 +1,8 @@
+// Generated from page.html by CMake. Do not edit.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+inline constexpr uint8_t kVisualizerPage[] = {@VISUALIZER_PAGE_BYTES@};
+inline constexpr std::size_t kVisualizerPageSize = sizeof(kVisualizerPage);

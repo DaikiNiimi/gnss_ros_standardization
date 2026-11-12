@@ -10,7 +10,7 @@ is declared by its node.
 
 | Rule | Examples |
 |---|---|
-| Topics are `topics.<stream>` | `topics.observation`, `topics.ephemeris`, `topics.solution`, `topics.imu`, `topics.imu_raw`, `topics.rover_observation`, `topics.base_observation`, `topics.gnss_solution`, `topics.wheel_speed`, `topics.image` |
+| Topics are `topics.<stream>` | `topics.observation`, `topics.ephemeris`, `topics.solution`, `topics.imu`, `topics.imu_raw`, `topics.rover_observation`, `topics.base_observation`, `topics.gnss_solution`, `topics.wheel_speed` |
 | A physical quantity carries its unit | `_s`, `_hz`, `_deg`, `_m`, `_mps`, `_mps2`, `_rps` (rad/s): `rate_hz`, `zupt.window_s`, `wheel.sigma_mps` |
 | A feature switch is `<group>.enable` | `zupt.enable`, `leveling.enable`, `wheel.enable`, `wheel.nhc.enable`, `rtcm_input.enable`, `snrmask.enable` |
 | Related settings share a group | `wheel.*`, `init.*`, `gnss.*`, `zupt.*`, `leveling.*`, `ekf.*` |

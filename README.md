@@ -41,7 +41,8 @@ Message IDs and topics per receiver: [decoders](src/decoders/README.md#decoded-m
 | Drivers (configure the receiver, then decode) | `ubx_driver_node`, `sbf_driver_node`, `novatel_driver_node` | [drivers](src/drivers/README.md) |
 | Converters | `rinex_to_rosbag`, `rosbag_to_rinex`, `pos_to_rosbag`, `rosbag_to_pos` | [converters](src/converter/README.md) |
 | Positioning | `single_point_positioning`, `real_time_kinematic`, `gnss_imu_kalman_filter`, `gnss_fgo`, `gnss_imu_fgo` | [positioning](src/positioning/README.md) |
-| Visualizer | `gnss_visualizer` | [visualizer](src/utils/README.md) |
+| Visualizer | `gnss_visualizer` | [visualizer](src/utils/README.md#gnss_visualizer) |
+| Bag plotter | `rtk_bag_plot` | [bag plotter](src/utils/README.md#rtk_bag_plot) |
 | Launch | `pipeline.launch.py` (logging, RTK, FGO, EKF, on-chip RTK) | [pipelines](launch/README.md) |
 
 Messages: [msg/README.md](msg/README.md).

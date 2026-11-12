@@ -25,7 +25,8 @@ be run directly, e.g. `python3 test/test_pvt_specification.py --bin-dir build/gn
 | Converters (RINEX ⇄ bag, POS ⇄ bag) | `test_converter_roundtrip.py`, `test_rinex_audit.py` |
 | Positioning (SPP, RTK, EKF, matcher, preprocessing) | `test_spp_node.cpp`, `test_rtk_node.cpp`, `test_gnss_imu_ekf.cpp`, `test_epoch_matcher.cpp`, `test_gnss_preprocessor.cpp`, `test_ins_tick_clock.cpp` |
 | FGO | `fgo/` (`test_fgo_*`) |
-| Launch, parameter names, release files | `test_launch_settings.py`, `test_parameter_names.py`, `test_release.py`, `check_diagnostic_*.py`, `test_visualizer_release.py` |
+| Launch, parameter names, release files | `test_launch_settings.py`, `test_parameter_names.py`, `test_release.py`, `check_diagnostic_*.py`, `test_visualizer.py`, `test_imu_monitor.cpp` |
+| Bag plotter | `test_bag_plot_core.cpp`, `test_bag_plot.py` |
 
 ## Installed package
 

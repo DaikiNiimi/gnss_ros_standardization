@@ -1,0 +1,12 @@
+// Generated from viewer.html by CMake. Do not edit.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+namespace rtk_bag_plot {
+
+inline constexpr uint8_t kViewerHtml[] = {@RTK_BAG_PLOT_VIEWER_BYTES@};
+inline constexpr std::size_t kViewerHtmlSize = sizeof(kViewerHtml);
+
+}  // namespace rtk_bag_plot

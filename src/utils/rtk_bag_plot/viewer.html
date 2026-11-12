@@ -1,0 +1,1946 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rtk_bag_plot</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f4f5f7; --line: #d5d8dd; --text: #1d232b; --muted: #68717d;
+    --accent: #1266c2; --warn: #b64a00;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 12px 2px; }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  header .meta { color: var(--muted); }
+  #tabs { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 4px 12px; border-bottom: 1px solid var(--line); }
+  #tabs .group { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+  #tabs .group-label { color: var(--muted); font-size: 11px; margin-right: 4px; }
+  #tabs button {
+    border: 0; background: none; color: var(--text); font: inherit; padding: 3px 7px; border-radius: 4px; cursor: pointer;
+  }
+  #tabs button:hover { background: var(--panel); }
+  #tabs button.active { background: var(--accent); color: #fff; }
+  #controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 5px 12px; background: var(--panel); min-height: 36px; }
+  #controls label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+  #controls select { font: inherit; color: var(--text); padding: 1px 2px; max-width: 280px; }
+  #controls input[type="range"] { width: min(260px, 32vw); }
+  #controls button { font: inherit; padding: 1px 8px; cursor: pointer; }
+  #controls .time-readout { color: var(--text); font-variant-numeric: tabular-nums; min-width: 190px; }
+  #legend { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; padding: 3px 12px; min-height: 22px; font-size: 12px; color: var(--muted); }
+  #legend .key { display: inline-flex; align-items: center; gap: 4px; }
+  #legend .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  #legend canvas { vertical-align: middle; }
+  #stage { position: relative; flex: 1 1 auto; min-height: 240px; overflow: hidden; }
+  #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #overlay { cursor: crosshair; }
+  #report { position: absolute; inset: 0; overflow: auto; padding: 12px; display: none; }
+  #report h2 { font-size: 14px; margin: 14px 0 6px; }
+  #report h2:first-child { margin-top: 0; }
+  #report table { border-collapse: collapse; }
+  #report th, #report td { text-align: right; padding: 3px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  #report th { color: var(--muted); font-weight: 500; }
+  #report td:first-child, #report th:first-child, #report td.left, #report th.left { text-align: left; }
+  #report .bad { color: var(--warn); font-weight: 600; }
+  #report ul { margin: 4px 0; padding-left: 18px; }
+  #status { padding: 3px 12px; border-top: 1px solid var(--line); color: var(--muted); min-height: 24px; font-variant-numeric: tabular-nums; }
+  #tooltip {
+    position: absolute; pointer-events: none; display: none; background: rgba(28,32,38,.92); color: #fff;
+    padding: 3px 7px; border-radius: 4px; font-size: 12px; white-space: pre; z-index: 5;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">rtk_bag_plot</h1>
+  <span class="meta" id="subtitle"></span>
+</header>
+<nav id="tabs"></nav>
+<div id="controls"></div>
+<div id="legend"></div>
+<div id="stage">
+  <canvas id="plot"></canvas>
+  <canvas id="overlay"></canvas>
+  <div id="report"></div>
+  <div id="tooltip"></div>
+</div>
+<div id="status"></div>
+<!--RTK_BAG_PLOT_DATA-->
+<script>
+"use strict";
+(function () {
+const TYPES = { f64: Float64Array, f32: Float32Array, u32: Uint32Array, u16: Uint16Array, i16: Int16Array, u8: Uint8Array };
+const FLAG = { SLIP: 1, HALF: 2, P: 4, L: 8, D: 16, LG: 32 };
+const SNR_SCALE = 0.25, MP_SCALE = 0.002, MP_INVALID = -32768, ANGLE_INVALID = 0xffff;
+const BAND_LABELS = ["L1", "L2", "L5", "L6", "L7"];
+const SYSTEMS = [[1, "G"], [2, "S"], [4, "R"], [8, "E"], [16, "J"], [32, "C"], [64, "I"]];
+const Q_LABELS = ["", "FIX", "FLOAT", "SBAS", "DGPS", "SINGLE", "PPP", "DR"];
+const MARGIN = { left: 64, right: 12, top: 8, bottom: 26 };
+
+const $ = (id) => document.getElementById(id);
+const M = JSON.parse($("manifest").textContent);
+const columns = new Map();
+
+function decodeColumns() {
+  const parts = new Map();
+  document.querySelectorAll("script[data-column]").forEach((node) => {
+    if (!parts.has(node.dataset.column)) parts.set(node.dataset.column, []);
+    parts.get(node.dataset.column).push(node);
+  });
+  for (const meta of M.columns) {
+    const nodes = parts.get(meta.name) || [];
+    let total = 0;
+    const chunks = nodes.map((node) => {
+      const binary = atob(node.textContent);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; ++i) bytes[i] = binary.charCodeAt(i);
+      total += bytes.length;
+      return bytes;
+    });
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.length; }
+    columns.set(meta.name, new TYPES[meta.type](merged.buffer, 0, meta.count));
+  }
+  document.querySelectorAll("script[data-column]").forEach((node) => node.remove());
+}
+const col = (name) => columns.get(name);
+
+function hexToRgb(hex) { return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]; }
+const PALETTE = {
+  snr: M.palettes.snr.map(hexToRgb),
+  mp: M.palettes.mp.map(hexToRgb),
+  iono: M.palettes.iono.map(hexToRgb),
+  marker: M.palettes.marker.map(hexToRgb),
+  marker2: M.palettes.marker2.map(hexToRgb),
+};
+const rgbCss = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
+const qColor = (q) => PALETTE.marker[q >= 0 && q < 8 ? q : 0];
+const MAX_CURSOR_OFFSET = 1.0;  // s; a solution with no epoch this close shows no marker
+const qColor2 = (q) => PALETTE.marker2[q >= 0 && q < 8 ? q : 0];
+const snrColor = (snr) => PALETTE.snr[Math.max(0, Math.min(255, Math.round(snr / SNR_SCALE)))];
+const mpColor = (mp) => PALETTE.mp[Math.max(0, Math.min(160, Math.round((mp + 0.8) / 0.01)))];
+const ionoColor = (v) => PALETTE.iono[Number.isNaN(v) ? 0 : Math.max(0, Math.min(140, Math.round(v / 0.5)))];
+
+const state = {
+  plot: "overview", sol: 0, sol2: -1, q: 0, obs: 0, signal: "ALL", snrSignal: null, sat: "ALL",
+  mask: 0, lli: "LLI", half: true, eph: false, hideLow: false, band: 1, sigma: false, reported: true,
+  time: M.time_basis === "gpst" ? "GPST" : "Elapsed", cursor: null, xView: null, track: null, panels: [true, true, true],
+};
+
+// Time axis ---------------------------------------------------------------
+const GPS_EPOCH_MS = Date.UTC(1980, 0, 6);
+function pad(v, n = 2) { return String(v).padStart(n, "0"); }
+function clockOf(t) {
+  if (state.time === "Elapsed" || M.time_basis !== "gpst") return null;
+  const seconds = M.origin_gpst + t + (state.time === "UTC" ? M.leap : 0);
+  return new Date(GPS_EPOCH_MS + seconds * 1000);
+}
+function timeTick(t, step) {
+  const d = clockOf(t);
+  if (!d) return `${t.toFixed(step < 1 ? 1 : 0)}`;
+  const base = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  return step < 1 ? `${base}.${String(Math.floor(d.getUTCMilliseconds() / 100))}` : base;
+}
+function timeLabel(t) {
+  const d = clockOf(t);
+  if (!d) return `${t.toFixed(3)} s`;
+  const ms = pad(d.getUTCMilliseconds(), 3);
+  const date = `${d.getUTCFullYear()}/${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())}`;
+  return `${date} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${ms} ${state.time}`;
+}
+const TIME_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400];
+function timeTicks(lo, hi, count) {
+  const wanted = (hi - lo) / Math.max(1, count);
+  let step = TIME_STEPS[TIME_STEPS.length - 1];
+  for (const s of TIME_STEPS) if (s >= wanted) { step = s; break; }
+  const origin = state.time === "Elapsed" || M.time_basis !== "gpst"
+    ? 0 : (M.origin_gpst + (state.time === "UTC" ? M.leap : 0));
+  const ticks = [];
+  for (let v = Math.ceil((lo + origin) / step) * step; v <= hi + origin; v += step) ticks.push(v - origin);
+  return { ticks, step };
+}
+function niceStep(range, count) {
+  const raw = range / Math.max(1, count);
+  const power = Math.pow(10, Math.floor(Math.log10(raw)));
+  const scaled = raw / power;
+  return (scaled < 1.5 ? 1 : scaled < 3 ? 2 : scaled < 7 ? 5 : 10) * power;
+}
+function valueTicks(lo, hi, count) {
+  if (!(hi > lo)) return { ticks: [lo], step: 1 };
+  const step = niceStep(hi - lo, count);
+  const ticks = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-6; v += step) ticks.push(v);
+  return { ticks, step };
+}
+function fmtValue(v, step) {
+  const digits = Math.max(0, Math.min(6, -Math.floor(Math.log10(step || 1))));
+  return (Math.abs(v) < step * 1e-6 ? 0 : v).toFixed(digits);
+}
+
+// Canvases ---------------------------------------------------------------
+const plotCanvas = $("plot"), overlayCanvas = $("overlay");
+const plotCtx = plotCanvas.getContext("2d"), overlayCtx = overlayCanvas.getContext("2d");
+let width = 0, height = 0, dpr = 1;
+
+function resize() {
+  const rect = $("stage").getBoundingClientRect();
+  width = Math.max(320, Math.floor(rect.width));
+  height = Math.max(200, Math.floor(rect.height));
+  dpr = window.devicePixelRatio || 1;
+  for (const canvas of [plotCanvas, overlayCanvas]) {
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+  }
+  plotCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+class Raster {
+  constructor(w, h) {
+    this.w = Math.max(1, Math.round(w * dpr));
+    this.h = Math.max(1, Math.round(h * dpr));
+    this.image = new ImageData(this.w, this.h);
+    this.data = this.image.data;
+  }
+  dot(x, y, c, size) {
+    const s = Math.max(1, Math.round(size * dpr));
+    const half = s >> 1;
+    let x0 = Math.round(x * dpr) - half, y0 = Math.round(y * dpr) - half;
+    let x1 = x0 + s, y1 = y0 + s;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > this.w) x1 = this.w;
+    if (y1 > this.h) y1 = this.h;
+    for (let yy = y0; yy < y1; ++yy) {
+      let i = (yy * this.w + x0) * 4;
+      for (let xx = x0; xx < x1; ++xx, i += 4) {
+        this.data[i] = c[0]; this.data[i + 1] = c[1]; this.data[i + 2] = c[2]; this.data[i + 3] = 255;
+      }
+    }
+  }
+  paint(ctx, x, y) {
+    const scratch = document.createElement("canvas");
+    scratch.width = this.w; scratch.height = this.h;
+    scratch.getContext("2d").putImageData(this.image, 0, 0);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(scratch, Math.round(x * dpr), Math.round(y * dpr));
+    ctx.restore();
+  }
+}
+
+function lowerBound(array, value, lo = 0, hi = array.length) {
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (array[mid] < value) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+// Observation access -----------------------------------------------------
+const obsCache = new Map();
+function obsData(index) {
+  if (obsCache.has(index)) return obsCache.get(index);
+  const o = M.observations[index];
+  const data = {
+    meta: o, t: col(o.t), satEpoch: col(o.sat_epoch), az: col(o.az), el: col(o.el), iono: col(o.iono),
+    sigEpoch: col(o.sig_epoch), snr: col(o.snr), mp: col(o.mp), flags: col(o.flags),
+    dops: o.dops.map((d) => ({ mask: d.mask, g: col(d.g), p: col(d.p), h: col(d.h), v: col(d.v), ns: col(d.ns) })),
+    selections: new Map(), angles: null,
+  };
+  obsCache.set(index, data);
+  return data;
+}
+
+// Az/el per satellite and epoch, holding the nearest stored sample.
+function satelliteAngles(data) {
+  if (data.angles) return data.angles;
+  const n = data.t.length;
+  data.angles = data.meta.sats.map((sat) => {
+    const az = new Float32Array(n).fill(NaN), el = new Float32Array(n).fill(NaN);
+    let previous = 0;
+    for (let i = 0; i < sat.n; ++i) {
+      const position = sat.off + i;
+      const epoch = data.satEpoch[position];
+      const a = data.az[position], e = data.el[position];
+      const azimuth = a === ANGLE_INVALID ? NaN : a / 100, elevation = e === ANGLE_INVALID ? NaN : e / 100;
+      for (let k = previous; k <= epoch; ++k) { az[k] = azimuth; el[k] = elevation; }
+      previous = epoch + 1;
+    }
+    if (sat.n > 0) {
+      const last = sat.off + sat.n - 1;
+      const a = data.az[last], e = data.el[last];
+      az.fill(a === ANGLE_INVALID ? NaN : a / 100, previous);
+      el.fill(e === ANGLE_INVALID ? NaN : e / 100, previous);
+    }
+    return { az, el };
+  });
+  return data.angles;
+}
+
+// Per-satellite arrays for one signal selector (ALL / L1 ... / code).
+function selection(data, selector) {
+  if (data.selections.has(selector)) return data.selections.get(selector);
+  const nEpochs = data.t.length, nSats = data.meta.sats.length;
+  const isAll = selector === "ALL";
+  const band = BAND_LABELS.indexOf(selector);
+  const code = !isAll && band < 0 ? selector.slice(1) : null;
+  const result = data.meta.sats.map(() => ({ snr: null, flags: null, mp: null, count: null, any: false }));
+  for (const signal of data.meta.signals) {
+    if (!isAll && (band >= 0 ? signal.band !== band : signal.code !== code)) continue;
+    const s = result[signal.sat];
+    if (!s.snr) {
+      s.snr = new Float32Array(nEpochs).fill(0);
+      s.flags = new Uint8Array(nEpochs);
+      s.mp = new Float32Array(nEpochs).fill(NaN);
+      s.count = new Uint8Array(nEpochs);
+    }
+    for (let i = 0; i < signal.n; ++i) {
+      const position = signal.off + i;
+      const epoch = data.sigEpoch[position];
+      const f = data.flags[position];
+      const present = (f & (FLAG.P | FLAG.L)) !== 0;
+      if (present && s.count[epoch] < 255) s.count[epoch] += 1;
+      s.any = s.any || present;
+      if (isAll) {
+        s.flags[epoch] |= f & (FLAG.SLIP | FLAG.HALF | (signal.band > 0 ? FLAG.LG : 0));
+        if (s.snr[epoch] === 0) s.snr[epoch] = data.snr[position] * SNR_SCALE;
+        s.flags[epoch] |= f & (FLAG.P | FLAG.L | FLAG.D);
+      } else if (s.snr[epoch] === 0 && (present || data.snr[position] > 0)) {
+        s.snr[epoch] = data.snr[position] * SNR_SCALE;
+        s.flags[epoch] = f;
+        const mp = data.mp[position];
+        if (mp !== MP_INVALID) s.mp[epoch] = mp * MP_SCALE;
+      }
+    }
+  }
+  const out = { sats: result, nEpochs, nSats };
+  if (data.selections.size > 6) data.selections.delete(data.selections.keys().next().value);
+  data.selections.set(selector, out);
+  return out;
+}
+
+// Signal selector entries available in this topic.
+function signalOptions(data, withAll) {
+  const options = withAll ? ["ALL"] : [];
+  const bands = new Set(data.meta.signals.map((s) => s.band));
+  for (let b = 0; b < BAND_LABELS.length; ++b) if (bands.has(b)) options.push(BAND_LABELS[b]);
+  const codes = [...new Set(data.meta.signals.map((s) => s.code))].sort();
+  for (const code of codes) options.push("L" + code);
+  return options;
+}
+
+function satelliteSelected(sat) {
+  if (state.sat === "ALL") return true;
+  if (state.sat.length === 1) return sat.id[0] === state.sat;
+  return sat.id === state.sat;
+}
+
+// Value of the "ALL" colouring in Sat Vis: signals tracked per satellite.
+function allSignalColor(count) {
+  const n = Math.min(count, 5);
+  return PALETTE.marker[3 - n + (n > 2 ? 5 : 0)];
+}
+
+// Panels ------------------------------------------------------------------
+function panelRects(count) {
+  const usable = height - MARGIN.top - MARGIN.bottom;
+  const gap = 6;
+  const panelHeight = (usable - gap * (count - 1)) / count;
+  return Array.from({ length: count }, (_, i) => ({
+    x: MARGIN.left, y: MARGIN.top + i * (panelHeight + gap),
+    w: width - MARGIN.left - MARGIN.right, h: panelHeight,
+  }));
+}
+
+function xLimits(plotRange) {
+  if (!state.xView) state.xView = plotRange.slice();
+  return state.xView;
+}
+const xToPixel = (t, rect, view) => rect.x + (t - view[0]) / (view[1] - view[0]) * rect.w;
+
+function drawXAxis(rect, view) {
+  const ctx = plotCtx;
+  const { ticks, step } = timeTicks(view[0], view[1], Math.max(4, rect.w / 110));
+  ctx.fillStyle = "#68717d"; ctx.textAlign = "center"; ctx.textBaseline = "top";
+  ctx.font = "11px system-ui, sans-serif";
+  for (const t of ticks) ctx.fillText(timeTick(t, step), xToPixel(t, rect, view), rect.y + rect.h + 4);
+}
+
+function drawPanelFrame(rect, xview, yview, label, unit, showYTicks = true) {
+  const ctx = plotCtx;
+  ctx.strokeStyle = "#e6e8ec"; ctx.lineWidth = 1;
+  ctx.beginPath();
+  const { ticks: xTicks } = timeTicks(xview[0], xview[1], Math.max(4, rect.w / 110));
+  for (const t of xTicks) {
+    const x = Math.round(xToPixel(t, rect, xview)) + 0.5;
+    ctx.moveTo(x, rect.y); ctx.lineTo(x, rect.y + rect.h);
+  }
+  let yInfo = null;
+  if (showYTicks) {
+    yInfo = valueTicks(yview[0], yview[1], Math.max(2, rect.h / 32));
+    for (const v of yInfo.ticks) {
+      const y = Math.round(rect.y + rect.h - (v - yview[0]) / (yview[1] - yview[0]) * rect.h) + 0.5;
+      ctx.moveTo(rect.x, y); ctx.lineTo(rect.x + rect.w, y);
+    }
+  }
+  ctx.stroke();
+  ctx.strokeStyle = "#9aa2ad";
+  ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+  ctx.fillStyle = "#68717d"; ctx.font = "11px system-ui, sans-serif";
+  if (yInfo) {
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (const v of yInfo.ticks) {
+      const y = rect.y + rect.h - (v - yview[0]) / (yview[1] - yview[0]) * rect.h;
+      ctx.fillText(fmtValue(v, yInfo.step), rect.x - 5, y);
+    }
+  }
+  ctx.save();
+  ctx.translate(11, rect.y + rect.h / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  ctx.fillStyle = "#1d232b";
+  ctx.fillText(unit ? `${label} (${unit})` : label, 0, 0);
+  ctx.restore();
+}
+
+// Automatic y limits over the visible part of all series.
+function autoRange(panel, view) {
+  if (panel.yRange) return panel.yRange;
+  let lo = Infinity, hi = -Infinity;
+  for (const series of panel.series) {
+    const i0 = lowerBound(series.x, view[0]), i1 = lowerBound(series.x, view[1]);
+    for (let i = i0; i < i1; ++i) {
+      if (series.keep && !series.keep(i)) continue;
+      const v = series.y[i];
+      if (v === v) { if (v < lo) lo = v; if (v > hi) hi = v; }
+      if (series.y2) {
+        const u = series.y2[i];
+        if (u === u) { if (u < lo) lo = u; if (u > hi) hi = u; }
+      }
+    }
+  }
+  if (!(hi >= lo)) return [-1, 1];
+  if (hi === lo) return [lo - 1, hi + 1];
+  const margin = (hi - lo) * 0.06;
+  return [lo - margin, hi + margin];
+}
+
+function drawPanel(panel, rect, xview) {
+  const ctx = plotCtx;
+  const yview = autoRange(panel, xview);
+  panel.yview = yview;
+  panel.rect = rect;
+  drawPanelFrame(rect, xview, yview, panel.label, panel.unit);
+  const toY = (v) => rect.h - (v - yview[0]) / (yview[1] - yview[0]) * rect.h;
+  const raster = new Raster(rect.w, rect.h);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(rect.x, rect.y, rect.w, rect.h); ctx.clip();
+  for (const series of panel.series) {
+    const i0 = lowerBound(series.x, xview[0]);
+    const i1 = lowerBound(series.x, xview[1]);
+    if (series.y2) {  // min/max band per pixel column
+      ctx.strokeStyle = rgbCss(series.color); ctx.lineWidth = 1;
+      ctx.beginPath();
+      let column = -1, low = Infinity, high = -Infinity;
+      const flush = () => {
+        if (column < 0 || !(high >= low)) return;
+        const x = rect.x + column + 0.5;
+        const y0 = rect.y + toY(low), y1 = rect.y + toY(high);
+        ctx.moveTo(x, y0); ctx.lineTo(x, Math.abs(y1 - y0) < 1 ? y0 + 1 : y1);
+      };
+      for (let i = i0; i < i1; ++i) {
+        const c = Math.floor((series.x[i] - xview[0]) / (xview[1] - xview[0]) * rect.w);
+        if (c !== column) { flush(); column = c; low = Infinity; high = -Infinity; }
+        const a = series.y[i], b = series.y2[i];
+        if (a === a) { if (a < low) low = a; if (a > high) high = a; }
+        if (b === b) { if (b < low) low = b; if (b > high) high = b; }
+      }
+      flush();
+      ctx.stroke();
+      continue;
+    }
+    if (series.line) {
+      ctx.strokeStyle = rgbCss(series.color); ctx.lineWidth = 1;
+      ctx.beginPath();
+      let pen = false, lastT = NaN;
+      for (let i = i0; i < i1; ++i) {
+        if (series.keep && !series.keep(i)) continue;
+        const v = series.y[i];
+        if (v !== v) { pen = false; continue; }
+        const x = xToPixel(series.x[i], rect, xview), y = rect.y + toY(v);
+        const gap = series.maxGap && series.x[i] - lastT > series.maxGap;
+        if (!pen || gap) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        pen = true; lastT = series.x[i];
+      }
+      ctx.stroke();
+    }
+    if (series.sigma) {
+      ctx.strokeStyle = "rgba(120,130,145,.55)"; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = i0; i < i1; ++i) {
+        if (series.keep && !series.keep(i)) continue;
+        const s = series.sigma[i], v = series.y[i];
+        if (s !== s || v !== v) continue;
+        const x = Math.round(xToPixel(series.x[i], rect, xview)) + 0.5;
+        ctx.moveTo(x, rect.y + toY(v + s)); ctx.lineTo(x, rect.y + toY(v - s));
+      }
+      ctx.stroke();
+    }
+    if (series.noDots) continue;
+    const size = series.size || 2;
+    for (let i = i0; i < i1; ++i) {
+      if (series.keep && !series.keep(i)) continue;
+      const v = series.y[i];
+      if (v !== v) continue;
+      const color = series.colorAt ? series.colorAt(i) : series.color;
+      raster.dot(xToPixel(series.x[i], rect, xview) - rect.x, toY(v), color, size);
+    }
+  }
+  ctx.restore();
+  raster.paint(ctx, rect.x, rect.y);
+  if (panel.text) {
+    ctx.fillStyle = "#1d232b"; ctx.font = "11px system-ui, sans-serif";
+    ctx.textAlign = "right"; ctx.textBaseline = "top";
+    panel.text.forEach((line, i) => ctx.fillText(line, rect.x + rect.w - 6, rect.y + 4 + i * 14));
+  }
+}
+
+function drawTimePanels(panels) {
+  plotCtx.clearRect(0, 0, width, height);
+  const visible = panels.filter((p, i) => panelEnabled(i, panels.length));
+  if (!visible.length) return;
+  const range = timeRange();
+  const xview = xLimits(range);
+  const rects = panelRects(visible.length);
+  visible.forEach((panel, i) => drawPanel(panel, rects[i], xview));
+  drawXAxis(rects[rects.length - 1], xview);
+  current.panels = visible;
+  current.xview = xview;
+}
+
+function panelEnabled(index, count) { return count > 3 || count !== 3 || state.panels[index] !== false; }
+function statLine(stats, q, axis, unit) {
+  const s = stats[q][axis];
+  if (!s[0]) return "no data";
+  return `AVE ${s[1].toFixed(4)} ${unit}, STD ${s[2].toFixed(4)} ${unit}, RMS ${s[3].toFixed(4)} ${unit}, n=${s[0]}`;
+}
+
+function solData(index) {
+  const s = M.solutions[index];
+  if (!s.cols) {
+    s.cols = {};
+    for (const key of ["t", "e", "n", "u", "q", "ns", "ratio", "age", "gdop", "pdop", "hdop", "vdop", "sd_e", "sd_n", "sd_u", "vel_e", "vel_n", "vel_u"]) {
+      s.cols[key] = col(s[key]);
+    }
+    const series = (m) => ({ t: col(m.t), x: col(m.x), y: col(m.y), z: col(m.z), q: col(m.q) });
+    s.vel = series(s.velocity);
+    s.acc = series(s.acceleration);
+  }
+  return s;
+}
+const qFilter = (q) => (i) => state.q === 0 || q[i] === state.q;
+
+// Solution time plots -----------------------------------------------------
+function plotPosition() {
+  const s = solData(state.sol), d = s.cols;
+  const keep = qFilter(d.q), colorAt = (i) => qColor(d.q[i]);
+  const other = state.sol2 >= 0 ? solData(state.sol2).cols : null;
+  const overlay = (key) => (other ? [{ x: other.t, y: other[key], keep: qFilter(other.q), colorAt: (i) => qColor2(other.q[i]), size: 2 }] : []);
+  const panel = (label, y, sigma, axis, key) => ({
+    label, unit: "m", text: [statLine(s.pos_stats, state.q, axis, "m")],
+    series: [...overlay(key), { x: d.t, y, keep, colorAt, size: 3, sigma: state.sigma ? sigma : null }],
+  });
+  drawTimePanels([panel("E-W", d.e, d.sd_e, 0, "e"), panel("N-S", d.n, d.sd_n, 1, "n"), panel("U-D", d.u, d.sd_u, 2, "u")]);
+  legend([...qLegend(s.status_counts), ...(other ? secondLegend(state.sol2) : [])]);
+}
+
+function plotDerivative(kind) {
+  const s = solData(state.sol), series = kind === "velocity" ? s.vel : s.acc;
+  const stats = kind === "velocity" ? s.vel_stats : s.acc_stats;
+  const unit = kind === "velocity" ? "m/s" : "m/s²";
+  const keep = qFilter(series.q), colorAt = (i) => qColor(series.q[i]);
+  const d = s.cols;
+  const reported = (y) => (kind === "velocity" && state.reported
+    ? [{ x: d.t, y, noDots: true, line: true, color: [70, 70, 90], maxGap: 5, keep: qFilter(d.q) }] : []);
+  const panel = (label, y, axis, rep) => ({
+    label, unit, text: [statLine(stats, state.q, axis, unit)],
+    series: [{ x: series.t, y, keep, colorAt, size: 3 }, ...reported(rep)],
+  });
+  drawTimePanels([panel("E-W", series.x, 0, d.vel_e), panel("N-S", series.y, 1, d.vel_n), panel("U-D", series.z, 2, d.vel_u)]);
+}
+
+function plotNsat() {
+  const s = solData(state.sol), d = s.cols, keep = qFilter(d.q), colorAt = (i) => qColor(d.q[i]);
+  const panel = (label, unit, y) => ({ label, unit, series: [{ x: d.t, y, keep, colorAt, size: 3 }] });
+  drawTimePanels([panel("# of Satellites", "", d.ns), panel("Age of Differential", "s", d.age), panel("Ratio Factor", "", d.ratio)]);
+}
+
+function differencePair() {
+  for (const d of M.differences) {
+    if (d.a === state.sol && d.b === state.sol2) return { pair: d, sign: 1 };
+    if (d.b === state.sol && d.a === state.sol2) return { pair: d, sign: -1 };
+  }
+  return null;
+}
+function plotDifference() {
+  const found = differencePair();
+  if (!found) {
+    plotCtx.clearRect(0, 0, width, height);
+    message("Select two solutions that share epochs in Sol 1 and Sol 2.");
+    current.panels = [];
+    return;
+  }
+  const { pair, sign } = found;
+  const series = { t: col(pair.series.t), x: col(pair.series.x), y: col(pair.series.y), z: col(pair.series.z), q: col(pair.series.q) };
+  const keep = qFilter(series.q), colorAt = (i) => qColor(series.q[i]);
+  const scaled = (y) => (sign > 0 ? y : y.map((v) => -v));
+  const panel = (label, y, axis) => ({
+    label, unit: "m", text: [statLine(pair.stats, state.q, axis, "m")],
+    series: [{ x: series.t, y: scaled(y), keep, colorAt, size: 3 }],
+  });
+  drawTimePanels([panel("ΔE", series.x, 0), panel("ΔN", series.y, 1), panel("ΔU", series.z, 2)]);
+}
+
+const currentImu = () => M.imus[Math.min(state.imu || 0, M.imus.length - 1)];
+function plotImu() {
+  const imu = currentImu();
+  const t = col(imu.t);
+  const colors = [[220, 40, 40], [20, 140, 60], [30, 80, 220]];
+  const band = (label, unit, axes) => ({
+    label, unit,
+    series: axes.map((axis, i) => ({ x: t, y: col(imu[`${axis}_min`]), y2: col(imu[`${axis}_max`]), color: colors[i], noDots: true })),
+  });
+  drawTimePanels([band("Acceleration", "m/s²", ["ax", "ay", "az"]), band("Angular rate", "rad/s", ["gx", "gy", "gz"])]);
+  legend(["X", "Y", "Z"].map((name, i) => swatch(colors[i], name)));
+}
+
+function plotObsDop() {
+  const data = obsData(state.obs);
+  const dop = data.dops.find((d) => d.mask === state.mask);
+  if (!dop) { noGeometry(); return; }
+  const scale = (a) => { const out = new Float32Array(a.length); for (let i = 0; i < a.length; ++i) out[i] = a[i] > 0 ? a[i] / 100 : NaN; return out; };
+  const colors = [PALETTE.marker[2], PALETTE.marker[3], PALETTE.marker[4], PALETTE.marker[5]];
+  const line = (y, c) => ({ x: data.t, y: scale(y), color: c, size: 2 });
+  drawTimePanels([
+    { label: `DOP (El≥${state.mask}°)`, unit: "", series: [line(dop.g, colors[0]), line(dop.p, colors[1]), line(dop.h, colors[2]), line(dop.v, colors[3])] },
+    { label: `# of Satellites (El≥${state.mask}°)`, unit: "", series: [{ x: data.t, y: dop.ns, color: PALETTE.marker[1], size: 2 }] },
+  ]);
+  legend([swatch(colors[0], "GDOP"), swatch(colors[1], "PDOP"), swatch(colors[2], "HDOP"), swatch(colors[3], "VDOP")]);
+}
+
+function noGeometry() {
+  plotCtx.clearRect(0, 0, width, height);
+  message("This plot needs ephemeris data, which is not in this bag.");
+  current.panels = [];
+}
+
+// SNR, multipath, elevation time plots ------------------------------------
+function currentSnrSignal(data) {
+  const options = signalOptions(data, false);
+  if (!state.snrSignal || !options.includes(state.snrSignal)) state.snrSignal = options[0] || "";
+  return state.snrSignal;
+}
+function plotSnr() {
+  const data = obsData(state.obs);
+  const signal = currentSnrSignal(data);
+  const chosen = selection(data, signal);
+  const angles = data.meta.geometry ? satelliteAngles(data) : null;
+  const panels = [
+    { label: "SNR", unit: "dB-Hz", series: [] },
+    { label: "Multipath", unit: "m", series: [] },
+    { label: "Elevation", unit: "°", series: [], yRange: [0, 90] },
+  ];
+  let sum = 0, sumSq = 0, count = 0;
+  data.meta.sats.forEach((sat, index) => {
+    const s = chosen.sats[index];
+    if (!s.snr || !satelliteSelected(sat)) return;
+    const y = new Float32Array(chosen.nEpochs).fill(NaN);
+    const mp = new Float32Array(chosen.nEpochs).fill(NaN);
+    let hasValue = false;
+    for (let e = 0; e < chosen.nEpochs; ++e) {
+      if (s.snr[e] > 0) { y[e] = s.snr[e]; hasValue = true; }
+      if (s.mp[e] === s.mp[e] && s.mp[e] !== 0) { mp[e] = s.mp[e]; sum += s.mp[e]; sumSq += s.mp[e] * s.mp[e]; ++count; }
+    }
+    if (!hasValue) return;
+    const color = (e) => snrColor(y[e] === y[e] ? y[e] : 0);
+    panels[0].series.push({ x: data.t, y, colorAt: color });
+    panels[1].series.push({ x: data.t, y: mp, colorAt: (e) => mpColor(mp[e]) });
+    if (angles) panels[2].series.push({ x: data.t, y: angles[index].el, colorAt: color, keep: (e) => y[e] === y[e] });
+  });
+  if (count) {
+    panels[1].text = [`AVE ${(sum / count).toFixed(4)} m, RMS ${Math.sqrt(sumSq / count).toFixed(4)} m`];
+  }
+  drawTimePanels(panels);
+}
+
+function plotSnrElevation() {
+  const data = obsData(state.obs);
+  if (!data.meta.geometry) { noGeometry(); return; }
+  const signal = currentSnrSignal(data);
+  const chosen = selection(data, signal);
+  const angles = satelliteAngles(data);
+  plotCtx.clearRect(0, 0, width, height);
+  const count = 2, rects = panelRects(count);
+  const xview = [0, 90];
+  const xs = [], ySnr = [], yMp = [], colors = [];
+  data.meta.sats.forEach((sat, index) => {
+    const s = chosen.sats[index];
+    if (!s.snr || !satelliteSelected(sat)) return;
+    for (let e = 0; e < chosen.nEpochs; ++e) {
+      if (!(s.snr[e] > 0)) continue;
+      const el = angles[index].el[e];
+      if (el !== el) continue;
+      xs.push(el); ySnr.push(s.snr[e]); yMp.push(s.mp[e]); colors.push(snrColor(s.snr[e]));
+    }
+  });
+  const scatter = (rect, ys, label, unit, range, colorFn) => {
+    const ctx = plotCtx;
+    const yview = range || (() => {
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < ys.length; ++i) { const v = ys[i]; if (v === v) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+      return hi > lo ? [lo, hi] : [-1, 1];
+    })();
+    frameValue(rect, xview, yview, label, unit);
+    const raster = new Raster(rect.w, rect.h);
+    for (let i = 0; i < xs.length; ++i) {
+      if (ys[i] !== ys[i]) continue;
+      const x = (xs[i] - xview[0]) / (xview[1] - xview[0]) * rect.w;
+      const y = rect.h - (ys[i] - yview[0]) / (yview[1] - yview[0]) * rect.h;
+      raster.dot(x, y, colorFn(i), 2);
+    }
+    raster.paint(ctx, rect.x, rect.y);
+  };
+  scatter(rects[0], ySnr, "SNR", "dB-Hz", [10, 60], (i) => colors[i]);
+  scatter(rects[1], yMp, "Multipath", "m", null, (i) => mpColor(yMp[i]));
+  valueAxis(rects[1], xview, "Elevation (°)");
+  current.panels = [];
+}
+
+function frameValue(rect, xview, yview, label, unit) {
+  const ctx = plotCtx;
+  ctx.strokeStyle = "#e6e8ec"; ctx.beginPath();
+  const xTicks = valueTicks(xview[0], xview[1], rect.w / 80).ticks;
+  for (const t of xTicks) {
+    const x = Math.round(rect.x + (t - xview[0]) / (xview[1] - xview[0]) * rect.w) + 0.5;
+    ctx.moveTo(x, rect.y); ctx.lineTo(x, rect.y + rect.h);
+  }
+  const y = valueTicks(yview[0], yview[1], Math.max(2, rect.h / 32));
+  for (const v of y.ticks) {
+    const py = Math.round(rect.y + rect.h - (v - yview[0]) / (yview[1] - yview[0]) * rect.h) + 0.5;
+    ctx.moveTo(rect.x, py); ctx.lineTo(rect.x + rect.w, py);
+  }
+  ctx.stroke();
+  ctx.strokeStyle = "#9aa2ad";
+  ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+  ctx.fillStyle = "#68717d"; ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (const v of y.ticks) ctx.fillText(fmtValue(v, y.step), rect.x - 5, rect.y + rect.h - (v - yview[0]) / (yview[1] - yview[0]) * rect.h);
+  ctx.save();
+  ctx.translate(11, rect.y + rect.h / 2); ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillStyle = "#1d232b";
+  ctx.fillText(unit ? `${label} (${unit})` : label, 0, 0);
+  ctx.restore();
+}
+function valueAxis(rect, xview, label) {
+  const ctx = plotCtx;
+  ctx.fillStyle = "#68717d"; ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  const info = valueTicks(xview[0], xview[1], rect.w / 80);
+  for (const t of info.ticks) ctx.fillText(fmtValue(t, info.step), rect.x + (t - xview[0]) / (xview[1] - xview[0]) * rect.w, rect.y + rect.h + 4);
+  ctx.textAlign = "right";
+  ctx.fillText(label, rect.x + rect.w, rect.y + rect.h + 14);
+}
+
+// Satellite visibility ----------------------------------------------------
+function plotSatVis() {
+  plotCtx.clearRect(0, 0, width, height);
+  const data = obsData(state.obs);
+  const chosen = selection(data, state.signal);
+  const angles = data.meta.geometry ? satelliteAngles(data) : null;
+  const sats = data.meta.sats
+    .map((sat, index) => ({ sat, index, s: chosen.sats[index] }))
+    .filter((row) => row.s.snr && row.s.any && satelliteSelected(row.sat));
+  const rect = {
+    x: MARGIN.left, y: MARGIN.top, w: width - MARGIN.left - MARGIN.right,
+    h: height - MARGIN.top - MARGIN.bottom,
+  };
+  const xview = xLimits(timeRange());
+  drawPanelFrame(rect, xview, [0, 1], "Satellite", "", false);
+  drawXAxis(rect, xview);
+  current.panels = [];
+  current.xview = xview;
+  current.satRows = { rect, rows: sats, data, chosen, rowHeight: sats.length ? rect.h / sats.length : 0 };
+  if (!sats.length) { message("No satellites match this selection."); return; }
+
+  const ctx = plotCtx;
+  const rowHeight = rect.h / sats.length;
+  ctx.font = `${Math.min(11, Math.max(7, rowHeight))}px system-ui, sans-serif`;
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  sats.forEach((row, r) => {
+    ctx.fillStyle = "#1d232b";
+    if (rowHeight >= 7) ctx.fillText(row.sat.id, rect.x - 4, rect.y + (r + 0.5) * rowHeight);
+    if (r % 2 === 1) { ctx.fillStyle = "rgba(0,0,0,.025)"; ctx.fillRect(rect.x, rect.y + r * rowHeight, rect.w, rowHeight); }
+  });
+
+  const raster = new Raster(rect.w, rect.h);
+  const barHeight = Math.max(2, Math.min(rowHeight - 2, 12));
+  const e0 = lowerBound(data.t, xview[0]), e1 = lowerBound(data.t, xview[1]);
+  const span = xview[1] - xview[0];
+  const mask = state.mask;
+  const slipTicks = [], halfTicks = [];
+  const useLg = state.lli === "LG";
+
+  sats.forEach((row, r) => {
+    const y = (r + 0.5) * rowHeight;
+    let lastColumn = -1;
+    for (let e = e0; e < e1; ++e) {
+      if (row.s.count[e] === 0) continue;
+      const el = angles ? angles[row.index].el[e] : NaN;
+      const low = el === el && el < mask;
+      if (low && state.hideLow) continue;
+      const column = Math.floor((data.t[e] - xview[0]) / span * rect.w);
+      const f = row.s.flags[e];
+      if (!low || !state.hideLow) {
+        if (state.lli !== "OFF") {
+          const slip = useLg ? (f & FLAG.LG) : (f & FLAG.SLIP);
+          if (slip) slipTicks.push(column, y);
+          if (state.half && (f & FLAG.HALF)) halfTicks.push(column, y);
+        }
+      }
+      if (column === lastColumn) continue;
+      lastColumn = column;
+      let color;
+      if (low) color = PALETTE.marker[0];
+      else if (state.signal === "ALL") color = allSignalColor(row.s.count[e]);
+      else color = snrColor(row.s.snr[e]);
+      for (let k = 0; k < barHeight; ++k) raster.dot(column, y - barHeight / 2 + k, color, 2);
+    }
+  });
+  raster.paint(ctx, rect.x, rect.y);
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(rect.x, rect.y, rect.w, rect.h); ctx.clip();
+  const tick = barHeight * 0.75;
+  ctx.lineWidth = 1.5;
+  if (halfTicks.length) {
+    ctx.strokeStyle = rgbCss(PALETTE.marker[7]);
+    ctx.beginPath();
+    for (let i = 0; i < halfTicks.length; i += 2) {
+      const x = rect.x + halfTicks[i] + 0.5, y = rect.y + halfTicks[i + 1];
+      ctx.moveTo(x, y - tick); ctx.lineTo(x, y + tick);
+    }
+    ctx.stroke();
+  }
+  if (slipTicks.length) {
+    ctx.strokeStyle = rgbCss(PALETTE.marker[5]);
+    ctx.beginPath();
+    for (let i = 0; i < slipTicks.length; i += 2) {
+      const x = rect.x + slipTicks[i] + 0.5, y = rect.y + slipTicks[i + 1];
+      ctx.moveTo(x, y - tick); ctx.lineTo(x, y + tick);
+    }
+    ctx.stroke();
+  }
+  if (state.eph) drawEphemerides(rect, xview, sats, rowHeight);
+  ctx.restore();
+
+  const keys = [];
+  if (state.signal === "ALL") {
+    keys.push(swatch(allSignalColor(1), "1 signal"), swatch(allSignalColor(2), "2"), swatch(allSignalColor(3), "3"),
+      swatch(allSignalColor(4), "4"), swatch(allSignalColor(5), "5+"));
+  } else {
+    keys.push(snrScale());
+  }
+  if (state.lli !== "OFF") keys.push(swatch(PALETTE.marker[5], useLg ? "LG jump" : "LLI slip"));
+  if (state.half) keys.push(swatch(PALETTE.marker[7], "half-cycle"));
+  if (mask > 0 && !state.hideLow) keys.push(swatch(PALETTE.marker[0], `below ${mask}°`));
+  legend(keys);
+}
+
+function drawEphemerides(rect, xview, sats, rowHeight) {
+  const ctx = plotCtx, e = M.ephemeris;
+  if (!e.sats.length) return;
+  const satCol = col(e.sat), transmit = col(e.transmit), reference = col(e.reference), unhealthy = col(e.unhealthy);
+  const rowOf = new Map(sats.map((row, r) => [row.sat.id, r]));
+  const span = xview[1] - xview[0];
+  const offset = new Map();
+  for (let i = 0; i < satCol.length; ++i) {
+    const id = e.sats[satCol[i]];
+    if (!rowOf.has(id)) continue;
+    const r = rowOf.get(id);
+    const extra = (offset.get(id) || 0) ? 0 : 3;
+    offset.set(id, extra);
+    const y = rect.y + (r + 1) * rowHeight - 1 - extra;
+    const x0 = rect.x + (transmit[i] - xview[0]) / span * rect.w;
+    const x1 = rect.x + (reference[i] - xview[0]) / span * rect.w;
+    ctx.strokeStyle = unhealthy[i] ? "#d00" : "#7a818c";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x0, y - 2); ctx.lineTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.beginPath(); ctx.arc(x1, y, unhealthy[i] ? 2.5 : 1.8, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function snrScale() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 120; canvas.height = 10;
+  const ctx = canvas.getContext("2d");
+  for (let x = 0; x < 120; ++x) {
+    ctx.fillStyle = rgbCss(snrColor(20 + x / 120 * 32));
+    ctx.fillRect(x, 0, 1, 10);
+  }
+  const span = document.createElement("span");
+  span.className = "key";
+  span.append("20", canvas, "52 dB-Hz");
+  return span;
+}
+
+// Sky plots ---------------------------------------------------------------
+function skyGeometry() {
+  const r = Math.min(width, height) / 2 - 18;
+  return { cx: width / 2, cy: height / 2, r };
+}
+function drawSkyFrame(g) {
+  const ctx = plotCtx;
+  ctx.clearRect(0, 0, width, height);
+  ctx.strokeStyle = "#c9cdd4"; ctx.lineWidth = 1;
+  ctx.font = "11px system-ui, sans-serif"; ctx.fillStyle = "#68717d";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let el = 0; el < 90; el += 15) {
+    const radius = g.r * (1 - el / 90);
+    ctx.beginPath(); ctx.arc(g.cx, g.cy, radius, 0, Math.PI * 2); ctx.stroke();
+    if (el > 0) ctx.fillText(String(el), g.cx + 8, g.cy - radius + 8);
+  }
+  for (let az = 0; az < 360; az += 30) {
+    const a = az * Math.PI / 180;
+    ctx.beginPath(); ctx.moveTo(g.cx, g.cy); ctx.lineTo(g.cx + g.r * Math.sin(a), g.cy - g.r * Math.cos(a)); ctx.stroke();
+    const label = { 0: "N", 90: "E", 180: "S", 270: "W" }[az] || String(az);
+    ctx.fillText(label, g.cx + (g.r + 10) * Math.sin(a), g.cy - (g.r + 10) * Math.cos(a));
+  }
+}
+function skyPoint(g, az, el) {
+  const radius = g.r * (1 - 2 * (el * Math.PI / 180) / Math.PI);
+  const a = az * Math.PI / 180;
+  return [g.cx + radius * Math.sin(a), g.cy - radius * Math.cos(a)];
+}
+// Points of a sky plot, grouped by satellite and ordered by time.
+class SkyPoints {
+  constructor(g, times, valueLabel) {
+    Object.assign(this, { g, times, valueLabel, segments: [], x: [], y: [], t: [], az: [], el: [], color: [], value: [] });
+  }
+  begin(id) {
+    this.close();
+    this.segments.push({ id, start: this.t.length, end: this.t.length, tolerance: 0 });
+  }
+  close() {
+    const segment = this.segments[this.segments.length - 1];
+    if (segment) segment.end = this.t.length;
+  }
+  add(t, az, el, color, value) {
+    const p = skyPoint(this.g, az, el);
+    this.x.push(p[0]); this.y.push(p[1]); this.t.push(t); this.az.push(az); this.el.push(el);
+    this.color.push(color); this.value.push(value);
+  }
+  // A satellite counts as present at a time within a few of its own sample steps.
+  finish() {
+    this.close();
+    for (const segment of this.segments) {
+      const steps = [];
+      for (let i = segment.start + 1; i < segment.end; ++i) steps.push(this.t[i] - this.t[i - 1]);
+      steps.sort((a, b) => a - b);
+      segment.tolerance = steps.length ? steps[steps.length >> 1] * 2.5 : 0;
+    }
+    this.segments = this.segments.filter((segment) => segment.end > segment.start);
+  }
+  at(t) {
+    const found = [];
+    for (const segment of this.segments) {
+      let i = lowerBound(this.t, t, segment.start, segment.end);
+      if (i >= segment.end) i = segment.end - 1;
+      if (i > segment.start && Math.abs(this.t[i - 1] - t) < Math.abs(this.t[i] - t)) i -= 1;
+      if (Math.abs(this.t[i] - t) <= Math.max(segment.tolerance, 1e-6)) found.push({ id: segment.id, index: i });
+    }
+    return found;
+  }
+  arcEnds() { return this.segments.map((segment) => ({ id: segment.id, index: segment.end - 1 })); }
+  nearest(x, y, radius) {
+    let best = -1, bestDistance = radius * radius;
+    for (let i = 0; i < this.t.length; ++i) {
+      const dx = this.x[i] - x, dy = this.y[i] - y, distance = dx * dx + dy * dy;
+      if (distance <= bestDistance) { bestDistance = distance; best = i; }
+    }
+    if (best < 0) return null;
+    return { index: best, id: this.segments.find((s) => best >= s.start && best < s.end).id };
+  }
+}
+
+function plotSky(mode) {
+  const data = obsData(state.obs);
+  if (!data.meta.geometry) { noGeometry(); return; }
+  const g = skyGeometry();
+  drawSkyFrame(g);
+  const raster = new Raster(width, height);
+  const angles = satelliteAngles(data);
+  const signal = mode === "mp" ? currentSnrSignal(data) : mode === "iono" ? "ALL" : state.signal;
+  const chosen = selection(data, signal);
+  const size = 2;
+  const unit = { obs: "SNR %s dB-Hz", mp: "MP %s m", iono: "Iono %s TECU" }[mode];
+  const points = new SkyPoints(g, data.t, unit);
+  data.meta.sats.forEach((sat, index) => {
+    if (!satelliteSelected(sat)) return;
+    const s = chosen.sats[index];
+    if (!s.snr && mode !== "iono") return;
+    const a = angles[index];
+    points.begin(sat.id);
+    for (let i = 0; i < sat.n; ++i) {
+      const position = sat.off + i;
+      const e = data.satEpoch[position];
+      const el = a.el[e], az = a.az[e];
+      if (el !== el || az !== az || el <= 0) continue;
+      let color = null, value = NaN;
+      if (mode === "iono") {
+        color = ionoColor(data.iono[position]);
+        value = data.iono[position];
+      } else {
+        if (!s.snr) continue;
+        if (mode === "mp") {
+          if (s.mp[e] !== s.mp[e] || s.mp[e] === 0) continue;
+          color = mpColor(s.mp[e]);
+          value = s.mp[e];
+        } else {
+          if (s.count[e] === 0) continue;
+          if (el < state.mask && state.hideLow) continue;
+          color = el < state.mask ? PALETTE.marker[0]
+            : (state.signal === "ALL" ? allSignalColor(s.count[e]) : snrColor(s.snr[e]));
+          value = s.snr[e] > 0 ? s.snr[e] : NaN;
+        }
+      }
+      points.add(data.t[e], az, el, color, value);
+      const p = skyPoint(g, az, el);
+      raster.dot(p[0], p[1], color, size);
+    }
+  });
+  points.finish();
+  raster.paint(plotCtx, 0, 0);
+  current.sky = points;
+  current.panels = [];
+  if (mode === "mp") legend([mpScale()]);
+  else if (mode === "iono") legend([ionoScale()]);
+  else if (state.signal !== "ALL") legend([snrScale()]);
+  else legend([swatch(allSignalColor(1), "1 signal"), swatch(allSignalColor(2), "2"), swatch(allSignalColor(3), "3"), swatch(allSignalColor(4), "4"), swatch(allSignalColor(5), "5+")]);
+}
+
+function scaleCanvas(colorFn, low, high, unit) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 120; canvas.height = 10;
+  const ctx = canvas.getContext("2d");
+  for (let x = 0; x < 120; ++x) {
+    ctx.fillStyle = rgbCss(colorFn(low + x / 120 * (high - low)));
+    ctx.fillRect(x, 0, 1, 10);
+  }
+  const span = document.createElement("span");
+  span.className = "key";
+  span.append(String(low), canvas, `${high} ${unit}`);
+  return span;
+}
+const mpScale = () => scaleCanvas(mpColor, -0.8, 0.8, "m");
+const ionoScale = () => scaleCanvas(ionoColor, 0, 70, "TECU");
+
+// Ground track ------------------------------------------------------------
+function trackLimits(s) {
+  let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
+  const d = s.cols;
+  for (let i = 0; i < d.t.length; ++i) {
+    if (d.e[i] < minE) minE = d.e[i]; if (d.e[i] > maxE) maxE = d.e[i];
+    if (d.n[i] < minN) minN = d.n[i]; if (d.n[i] > maxN) maxN = d.n[i];
+  }
+  return { minE, maxE, minN, maxN };
+}
+function ensureTrackView() {
+  if (state.track) return state.track;
+  const s = solData(state.sol);
+  const box = trackLimits(s);
+  const cx = (box.minE + box.maxE) / 2, cy = (box.minN + box.maxN) / 2;
+  const span = Math.max(box.maxE - box.minE, box.maxN - box.minN, 1);
+  state.track = { cx, cy, span: span * 1.08 };
+  return state.track;
+}
+function trackGeometry() {
+  const rect = { x: MARGIN.left, y: MARGIN.top, w: width - MARGIN.left - MARGIN.right, h: height - MARGIN.top - MARGIN.bottom };
+  const v = ensureTrackView();
+  const scale = Math.min(rect.w, rect.h) / v.span;
+  return { rect, v, scale };
+}
+function plotTrack() {
+  plotCtx.clearRect(0, 0, width, height);
+  const { rect, v, scale } = trackGeometry();
+  const ctx = plotCtx;
+  const xview = [v.cx - rect.w / 2 / scale, v.cx + rect.w / 2 / scale];
+  const yview = [v.cy - rect.h / 2 / scale, v.cy + rect.h / 2 / scale];
+  frameValue(rect, xview, yview, "N-S", "m");
+  valueAxis(rect, xview, "E-W (m)");
+  current.track = { rect, v, scale, xview, yview };
+  current.panels = [];
+  const raster = new Raster(rect.w, rect.h);
+  const drawTrackOf = (index, second) => {
+    const s = solData(index), d = s.cols;
+    for (let i = 0; i < d.t.length; ++i) {
+      if (state.q && d.q[i] !== state.q) continue;
+      const x = (d.e[i] - xview[0]) * scale;
+      const y = rect.h - (d.n[i] - yview[0]) * scale;
+      if (x < -2 || x > rect.w + 2 || y < -2 || y > rect.h + 2) continue;
+      raster.dot(x, y, second ? qColor2(d.q[i]) : qColor(d.q[i]), 3);
+    }
+  };
+  const showSecond = state.sol2 >= 0 && M.solutions[state.sol2];
+  if (showSecond) drawTrackOf(state.sol2, true);
+  drawTrackOf(state.sol, false);
+  raster.paint(ctx, rect.x, rect.y);
+
+  const s = solData(state.sol);
+  const total = s.status_counts.reduce((a, b) => a + b, 0) || 1;
+  const parts = [];
+  s.status_counts.forEach((count, q) => {
+    if (count) parts.push(`${Q_LABELS[q]} ${count} (${(count / total * 100).toFixed(1)}%)`);
+  });
+  ctx.fillStyle = "#1d232b"; ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "right"; ctx.textBaseline = "top";
+  ctx.fillText(parts.join("  "), rect.x + rect.w - 6, rect.y + 4);
+  const llh = M.solution_origin_llh;
+  ctx.fillText(`Origin ${llh[0].toFixed(9)}° ${llh[1].toFixed(9)}° ${llh[2].toFixed(3)} m (${M.solution_origin_topic})`,
+    rect.x + rect.w - 6, rect.y + 18);
+  legend([...qLegend(s.status_counts), ...(showSecond ? secondLegend(state.sol2) : [])]);
+  drawTrackScaleBar(rect, scale);
+}
+
+// A bar of a round length, about one fifth of the plot wide.
+function drawTrackScaleBar(rect, scale) {
+  const ctx = plotCtx, target = rect.w * 0.2 / scale, power = Math.pow(10, Math.floor(Math.log10(target)));
+  const ratio = target / power, length = (ratio >= 5 ? 5 : ratio >= 2 ? 2 : 1) * power;
+  const label = length >= 1000 ? `${length / 1000} km` : length >= 1 ? `${length} m` : `${Math.round(length * 1000) / 10} cm`;
+  const right = rect.x + rect.w - 16, left = right - length * scale, y = rect.y + rect.h - 16;
+  const line = (width, color) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = "square"; ctx.beginPath();
+    ctx.moveTo(left, y - 5); ctx.lineTo(left, y); ctx.lineTo(right, y); ctx.lineTo(right, y - 5); ctx.stroke();
+  };
+  line(5, "#fff"); line(2, "#1d232b");
+  ctx.lineCap = "butt"; ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+  ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.strokeText(label, (left + right) / 2, y - 3);
+  ctx.fillStyle = "#1d232b"; ctx.fillText(label, (left + right) / 2, y - 3);
+}
+
+function secondLegend(index) {
+  const solution = M.solutions[index], name = document.createElement("span");
+  name.textContent = `${solution.topic}:`;
+  const keys = [name];
+  solution.status_counts.forEach((count, q) => { if (count) keys.push(swatch(qColor2(q), Q_LABELS[q])); });
+  return keys;
+}
+
+function qLegend(counts) {
+  const keys = [];
+  counts.forEach((count, q) => { if (count) keys.push(swatch(qColor(q), Q_LABELS[q])); });
+  return keys;
+}
+
+// Residuals ---------------------------------------------------------------
+function residualData() {
+  const r = M.residuals;
+  if (!r.cols) {
+    r.cols = {};
+    for (const key of ["t", "sat", "frq", "flags", "az", "el", "resp", "resc", "snr", "dop_t"]) r.cols[key] = col(r[key]);
+    r.dopCols = r.dops.map((d) => ({ mask: d.mask, g: col(d.g), p: col(d.p), h: col(d.h), v: col(d.v), ns: col(d.ns) }));
+  }
+  return r;
+}
+function residualTimes() {
+  const r = residualData();
+  if (!r.uniqueTimes) {
+    const t = r.cols.t, unique = [];
+    for (let i = 0; i < t.length; ++i) if (!unique.length || t[i] > unique[unique.length - 1]) unique.push(t[i]);
+    r.uniqueTimes = Float64Array.from(unique);
+  }
+  return r.uniqueTimes;
+}
+function residualQuality(flag) {
+  if (!(flag >> 5)) return 0;
+  const f = flag & 7;
+  return f <= 1 ? 2 : f <= 3 ? 1 : 6;
+}
+function residualKeep(r) {
+  const d = r.cols, frequency = state.band;
+  const selected = new Uint8Array(r.sats.length);
+  r.sats.forEach((id, i) => { selected[i] = satelliteSelected({ id }) ? 1 : 0; });
+  return (i) => d.frq[i] === frequency && selected[d.sat[i]] === 1;
+}
+function plotResiduals() {
+  const r = residualData(), d = r.cols, keep = residualKeep(r);
+  const color = (i) => PALETTE.marker[residualQuality(d.flags[i])];
+  const colorSlip = (i) => ((d.flags[i] >> 3) & 1 ? [255, 0, 0] : color(i));
+  let sumP = 0, sq = 0, nP = 0, sumC = 0, sqC = 0, nC = 0;
+  for (let i = 0; i < d.t.length; ++i) {
+    if (!keep(i)) continue;
+    if (d.resp[i] !== 0) { sumP += d.resp[i]; sq += d.resp[i] * d.resp[i]; ++nP; }
+    if (d.resc[i] !== 0) { sumC += d.resc[i]; sqC += d.resc[i] * d.resc[i]; ++nC; }
+  }
+  const stat = (sum, s2, n) => (n ? `AVE ${(sum / n).toFixed(4)} m, RMS ${Math.sqrt(s2 / n).toFixed(4)} m, n=${n}` : "no data");
+  drawTimePanels([
+    { label: "Pseudorange residuals", unit: "m", text: [stat(sumP, sq, nP)], series: [{ x: d.t, y: d.resp, keep, colorAt: color }] },
+    { label: "Carrier-phase residuals", unit: "m", text: [stat(sumC, sqC, nC)], series: [{ x: d.t, y: d.resc, keep, colorAt: colorSlip }] },
+    { label: "Elevation (°) / SNR (dB-Hz)", unit: "", yRange: [0, 90], series: [
+      { x: d.t, y: d.el, keep, color: PALETTE.marker[1] },
+      { x: d.t, y: d.snr, keep, color: PALETTE.marker[4] },
+    ] },
+  ]);
+  legend([swatch(PALETTE.marker[1], "fix"), swatch(PALETTE.marker[2], "float"), swatch(PALETTE.marker[0], "invalid"), swatch([255, 0, 0], "slip")]);
+}
+function plotResidualsElevation() {
+  const r = residualData(), d = r.cols, keep = residualKeep(r);
+  plotCtx.clearRect(0, 0, width, height);
+  const rects = panelRects(2);
+  const xview = [0, 90];
+  const plot = (rect, values, label) => {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < d.t.length; ++i) {
+      if (!keep(i)) continue;
+      const v = values[i]; if (v < lo) lo = v; if (v > hi) hi = v;
+    }
+    if (!(hi > lo)) { lo = -1; hi = 1; }
+    const yview = [lo, hi];
+    frameValue(rect, xview, yview, label, "m");
+    const raster = new Raster(rect.w, rect.h);
+    for (let i = 0; i < d.t.length; ++i) {
+      if (!keep(i)) continue;
+      const x = d.el[i] / 90 * rect.w, y = rect.h - (values[i] - lo) / (hi - lo) * rect.h;
+      raster.dot(x, y, PALETTE.marker[residualQuality(d.flags[i])], 2);
+    }
+    raster.paint(plotCtx, rect.x, rect.y);
+  };
+  plot(rects[0], d.resp, "Pseudorange residuals");
+  plot(rects[1], d.resc, "Carrier-phase residuals");
+  valueAxis(rects[1], xview, "Elevation (°)");
+  current.panels = [];
+}
+function plotSolSky() {
+  const r = residualData(), d = r.cols, keep = residualKeep(r);
+  const g = skyGeometry();
+  drawSkyFrame(g);
+  const raster = new Raster(width, height);
+  const points = new SkyPoints(g, residualTimes(), "SNR %s dB-Hz");
+  const rowsBySat = r.sats.map(() => []);
+  for (let i = 0; i < d.t.length; ++i) {
+    if (keep(i) && d.el[i] > 0 && !(d.el[i] < state.mask && state.hideLow)) rowsBySat[d.sat[i]].push(i);
+  }
+  rowsBySat.forEach((rows, sat) => {
+    if (!rows.length) return;
+    points.begin(r.sats[sat]);
+    for (const i of rows) {
+      let color = snrColor(d.snr[i]);
+      if (!(d.flags[i] & 0x20)) color = PALETTE.marker[7];
+      if (d.el[i] < state.mask) color = PALETTE.marker[0];
+      points.add(d.t[i], d.az[i], d.el[i], color, d.snr[i]);
+      const p = skyPoint(g, d.az[i], d.el[i]);
+      raster.dot(p[0], p[1], color, 2);
+    }
+  });
+  points.finish();
+  raster.paint(plotCtx, 0, 0);
+  current.sky = points;
+  current.panels = [];
+  legend([snrScale(), swatch(PALETTE.marker[7], "invalid")]);
+}
+function plotSolDop() {
+  const r = residualData();
+  const dop = r.dopCols.find((d) => d.mask === state.mask);
+  const t = r.cols.dop_t;
+  const scale = (a) => { const out = new Float32Array(a.length); for (let i = 0; i < a.length; ++i) out[i] = a[i] > 0 ? a[i] / 100 : NaN; return out; };
+  const colors = [PALETTE.marker[2], PALETTE.marker[3], PALETTE.marker[4], PALETTE.marker[5]];
+  drawTimePanels([
+    { label: `DOP (El≥${state.mask}°)`, unit: "", series: ["g", "p", "h", "v"].map((k, i) => ({ x: t, y: scale(dop[k]), color: colors[i] })) },
+    { label: "# of Satellites", unit: "", series: [{ x: t, y: dop.ns, color: PALETTE.marker[1] }] },
+  ]);
+  legend([swatch(colors[0], "GDOP"), swatch(colors[1], "PDOP"), swatch(colors[2], "HDOP"), swatch(colors[3], "VDOP")]);
+}
+
+// Overview ----------------------------------------------------------------
+function fixed(v, digits) { return v === null || v === undefined ? "" : Number(v).toFixed(digits); }
+function plotOverview() {
+  const report = $("report");
+  const out = [`<h2>Topics</h2><table><thead><tr><th>Topic</th><th class="left">Type</th><th>Messages</th><th>Rate (Hz)</th><th>Gaps</th><th>Longest gap (s)</th><th>Out of order</th><th>Duplicates</th><th>Invalid</th></tr></thead><tbody>`];
+  for (const t of M.topics) {
+    const bad = (v) => (v > 0 ? `<td class="bad">${v}</td>` : `<td>${v}</td>`);
+    out.push(`<tr><td>${escapeHtml(t.name)}</td><td class="left">${escapeHtml(t.type.split("/").pop())}</td><td>${t.count}</td><td>${fixed(t.hz, t.hz < 1 ? 3 : 1)}</td>${bad(t.gap_count)}<td>${fixed(t.max_gap, 2)}</td>${bad(t.out_of_order)}${bad(t.duplicates)}${bad(t.invalid)}</tr>`);
+  }
+  out.push("</tbody></table>");
+  if (M.notes.length) {
+    out.push(`<h2>Notes</h2><ul>${M.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>`);
+  }
+  const gapRows = [];
+  for (const t of M.topics) {
+    for (const g of t.gaps) gapRows.push(`<tr><td>${escapeHtml(t.name)}</td><td>${timeLabel(g[0])}</td><td>${g[1].toFixed(3)}</td></tr>`);
+  }
+  if (gapRows.length) {
+    out.push(`<h2>Gaps</h2><table><thead><tr><th>Topic</th><th>Start</th><th>Duration (s)</th></tr></thead><tbody>${gapRows.join("")}</tbody></table>`);
+  }
+  if (M.solutions.length) {
+    out.push(`<h2>Solutions</h2><table><thead><tr><th>Topic</th><th>Epochs</th>`);
+    for (let q = 1; q < Q_LABELS.length; ++q) out.push(`<th>${Q_LABELS[q]}</th>`);
+    out.push(`</tr></thead><tbody>`);
+    for (const s of M.solutions) {
+      const total = s.status_counts.reduce((a, b) => a + b, 0) || 1;
+      const cells = s.status_counts.slice(1).map((c) => `<td>${c ? `${c} (${(c / total * 100).toFixed(1)}%)` : ""}</td>`).join("");
+      out.push(`<tr><td>${escapeHtml(s.topic)}</td><td>${s.total}</td>${cells}</tr>`);
+    }
+    out.push(`</tbody></table>`);
+  }
+  report.innerHTML = out.join("");
+}
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Registry ----------------------------------------------------------------
+const hasSol = M.solutions.length > 0, hasObs = M.observations.length > 0;
+const hasGeo = M.observations.some((o) => o.geometry);
+const hasRes = !!M.residuals;
+const PLOTS = [
+  { id: "overview", label: "Overview", group: "Data", draw: plotOverview, kind: "report", enabled: true },
+  { id: "track", label: "Gnd Trk", group: "Solution", draw: plotTrack, kind: "track", enabled: hasSol, controls: ["sol", "sol2", "q"] },
+  { id: "position", label: "Position", group: "Solution", draw: plotPosition, kind: "time", enabled: hasSol, controls: ["sol", "sol2", "q", "sigma", "panels"] },
+  { id: "velocity", label: "Velocity", group: "Solution", draw: () => plotDerivative("velocity"), kind: "time", enabled: hasSol, controls: ["sol", "q", "reported", "panels"] },
+  { id: "accel", label: "Accel", group: "Solution", draw: () => plotDerivative("accel"), kind: "time", enabled: hasSol, controls: ["sol", "q", "panels"] },
+  { id: "nsat", label: "NSat", group: "Solution", draw: plotNsat, kind: "time", enabled: hasSol, controls: ["sol", "q", "panels"] },
+  { id: "diff", label: "Sol 1-2", group: "Solution", draw: plotDifference, kind: "time", enabled: M.differences.length > 0, controls: ["sol", "sol2", "q", "panels"] },
+  { id: "satvis", label: "Sat Vis", group: "Observation", draw: plotSatVis, kind: "vis", enabled: hasObs, controls: ["obs", "signal", "sat", "mask", "lli", "half", "eph", "hideLow"] },
+  { id: "snr", label: "SNR/MP/EL", group: "Observation", draw: plotSnr, kind: "time", enabled: hasObs, controls: ["obs", "snrSignal", "sat", "panels"] },
+  { id: "snre", label: "SNR/MP-EL", group: "Observation", draw: plotSnrElevation, kind: "value", enabled: hasGeo, controls: ["obs", "snrSignal", "sat"] },
+  { id: "sky", label: "Skyplot", group: "Observation", draw: () => plotSky("obs"), kind: "sky", enabled: hasGeo, controls: ["obs", "signal", "sat", "mask", "hideLow"] },
+  { id: "dop", label: "DOP/NSat", group: "Observation", draw: plotObsDop, kind: "time", enabled: hasGeo, controls: ["obs", "mask"] },
+  { id: "mpsky", label: "MP-Sky", group: "Observation", draw: () => plotSky("mp"), kind: "sky", enabled: hasGeo, controls: ["obs", "snrSignal", "sat"] },
+  { id: "ionosky", label: "Iono-Sky", group: "Observation", draw: () => plotSky("iono"), kind: "sky", enabled: hasGeo, controls: ["obs", "sat"] },
+  { id: "res", label: "Residuals", group: "Residual", draw: plotResiduals, kind: "time", enabled: hasRes, controls: ["band", "sat", "panels"] },
+  { id: "rese", label: "Resid-EL", group: "Residual", draw: plotResidualsElevation, kind: "value", enabled: hasRes, controls: ["band", "sat"] },
+  { id: "solsky", label: "Sol Sky", group: "Residual", draw: plotSolSky, kind: "sky", enabled: hasRes, controls: ["band", "sat", "mask", "hideLow"] },
+  { id: "soldop", label: "Sol DOP", group: "Residual", draw: plotSolDop, kind: "time", enabled: hasRes, controls: ["mask"] },
+  { id: "imu", label: "IMU", group: "Sensor", draw: plotImu, kind: "time", enabled: M.imus.length > 0, controls: ["imu"] },
+];
+const current = { plot: PLOTS[0], panels: [], xview: null };
+
+function timeRange() {
+  let lo = Infinity, hi = -Infinity;
+  const extend = (a) => { if (a && a.length) { if (a[0] < lo) lo = a[0]; if (a[a.length - 1] > hi) hi = a[a.length - 1]; } };
+  for (const s of M.solutions) extend(col(s.t));
+  for (const o of M.observations) extend(col(o.t));
+  for (const i of M.imus) extend(col(i.t));
+  if (M.residuals) extend(col(M.residuals.t));
+  if (!(hi > lo)) return [0, 1];
+  const margin = (hi - lo) * 0.01;
+  return [lo - margin, hi + margin];
+}
+
+// Controls ----------------------------------------------------------------
+function swatch(color, label) {
+  const key = document.createElement("span");
+  key.className = "key";
+  const box = document.createElement("span");
+  box.className = "swatch";
+  box.style.background = rgbCss(color);
+  key.append(box, label);
+  return key;
+}
+function legend(items) {
+  const node = $("legend");
+  node.replaceChildren(...items);
+}
+function message(text) {
+  plotCtx.fillStyle = "#68717d"; plotCtx.font = "14px system-ui, sans-serif";
+  plotCtx.textAlign = "center"; plotCtx.textBaseline = "middle";
+  plotCtx.fillText(text, width / 2, height / 2);
+}
+
+function addSelect(label, value, options, onChange) {
+  const wrap = document.createElement("label");
+  wrap.append(label + " ");
+  const select = document.createElement("select");
+  for (const option of options) {
+    const node = document.createElement("option");
+    node.value = String(option.value);
+    node.textContent = option.label;
+    select.append(node);
+  }
+  select.value = String(value);
+  select.addEventListener("change", () => onChange(select.value));
+  wrap.append(select);
+  $("controls").append(wrap);
+}
+function addCheck(label, value, onChange) {
+  const wrap = document.createElement("label");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = value;
+  input.addEventListener("change", () => onChange(input.checked));
+  wrap.append(input, label);
+  $("controls").append(wrap);
+}
+
+function satelliteChoices(data) {
+  const options = [{ value: "ALL", label: "ALL" }];
+  const systems = new Set(data.map((id) => id[0]));
+  for (const [, letter] of SYSTEMS) if (systems.has(letter)) options.push({ value: letter, label: letter });
+  for (const id of [...data].sort()) options.push({ value: id, label: id });
+  return options;
+}
+
+function buildControls() {
+  const box = $("controls");
+  stopPlaying();
+  timeControl = null;
+  box.replaceChildren();
+  const needs = current.plot.controls || [];
+  const refresh = (key, value, resetView) => {
+    state[key] = value;
+    if (resetView) state.track = null;
+    render();
+  };
+  if (needs.includes("sol")) {
+    addSelect("Sol 1", state.sol, M.solutions.map((s, i) => ({ value: i, label: s.topic })), (v) => {
+      state.sol = +v;
+      state.track = null;
+      buildControls();
+      render();
+    });
+  }
+  if (needs.includes("sol2")) {
+    addSelect("Sol 2", state.sol2, [{ value: -1, label: "none" }, ...M.solutions.map((s, i) => ({ value: i, label: s.topic }))], (v) => refresh("sol2", +v, false));
+  }
+  if (needs.includes("q")) {
+    const options = Q_LABELS.map((label, q) => ({ value: q, label: q ? `${q}: ${label}` : "ALL" }));
+    addSelect("Q", state.q, options, (v) => refresh("q", +v, false));
+  }
+  if (needs.includes("obs")) {
+    addSelect("Receiver", state.obs, M.observations.map((o, i) => ({ value: i, label: o.topic })), (v) => {
+      state.signal = "ALL"; state.snrSignal = null; state.sat = "ALL";
+      state.obs = +v;
+      buildControls();
+      render();
+    });
+  }
+  const data = hasObs && (needs.includes("signal") || needs.includes("snrSignal") || (needs.includes("sat") && current.plot.group === "Observation"))
+    ? obsData(state.obs) : null;
+  if (needs.includes("signal")) {
+    const options = signalOptions(data, true).map((v) => ({ value: v, label: v }));
+    if (!options.some((o) => o.value === state.signal)) state.signal = "ALL";
+    addSelect("Signal", state.signal, options, (v) => refresh("signal", v, false));
+  }
+  if (needs.includes("snrSignal")) {
+    const options = signalOptions(data, false).map((v) => ({ value: v, label: v }));
+    addSelect("Signal", currentSnrSignal(data), options, (v) => refresh("snrSignal", v, false));
+  }
+  if (needs.includes("band")) {
+    const options = [1, 2, 3, 4, 5].map((v) => ({ value: v, label: `L${["", "1", "2", "5", "6", "7"][v]}` }));
+    addSelect("Freq", state.band, options, (v) => refresh("band", +v, false));
+  }
+  if (needs.includes("sat")) {
+    const choices = data ? satelliteChoices(data.meta.sats.map((s) => s.id)) : satelliteChoices(M.residuals ? M.residuals.sats : []);
+    if (!choices.some((c) => c.value === state.sat)) state.sat = "ALL";
+    addSelect("Satellite", state.sat, choices, (v) => refresh("sat", v, false));
+  }
+  if (needs.includes("mask")) {
+    addSelect("El mask", state.mask, M.masks.map((m) => ({ value: m, label: `${m}°` })), (v) => refresh("mask", +v, false));
+  }
+  if (needs.includes("lli")) {
+    addSelect("Slip", state.lli, [{ value: "LLI", label: "LLI Flag" }, { value: "LG", label: "LG Jump" }, { value: "OFF", label: "OFF" }], (v) => refresh("lli", v, false));
+  }
+  if (needs.includes("half")) addCheck("Half-cycle", state.half, (v) => refresh("half", v, false));
+  if (needs.includes("eph")) addCheck("Ephemeris", state.eph, (v) => refresh("eph", v, false));
+  if (needs.includes("hideLow")) addCheck("Hide below mask", state.hideLow, (v) => refresh("hideLow", v, false));
+  if (needs.includes("sigma")) addCheck("±1σ", state.sigma, (v) => refresh("sigma", v, false));
+  if (needs.includes("reported")) addCheck("Reported velocity", state.reported, (v) => refresh("reported", v, false));
+  if (needs.includes("imu") && M.imus.length > 1) {
+    addSelect("IMU", state.imu || 0, M.imus.map((m, i) => ({ value: i, label: m.topic })), (v) => {
+      state.imu = +v;
+      buildControls();
+      render();
+    });
+  }
+  if (needs.includes("panels")) {
+    const names = panelNames();
+    names.forEach((name, i) => addCheck(name, state.panels[i], (v) => { state.panels[i] = v; render(); }));
+  }
+  if (current.plot.kind === "sky" || current.plot.group === "Solution" || current.plot.group === "Sensor") addTimeControl();
+  if (["time", "vis", "track"].includes(current.plot.kind)) addFitButton();
+  if (current.plot.kind === "time" || current.plot.kind === "vis" || current.plot.kind === "report" || current.plot.kind === "sky") {
+    const options = M.time_basis === "gpst"
+      ? [{ value: "GPST", label: "GPST" }, { value: "UTC", label: "UTC" }, { value: "Elapsed", label: "Elapsed" }]
+      : [{ value: "Elapsed", label: "Elapsed" }];
+    addSelect("Time", state.time, options, (v) => refresh("time", v, false));
+  }
+}
+// Time slider of the solution and sky plots --------------------------------
+let timeControl = null, playTimer = 0;
+function controlTimes() {
+  if (current.plot.group === "Solution") return solData(state.sol).cols.t;
+  if (current.plot.group === "Sensor") return col(currentImu().t);
+  return current.plot.group === "Residual" ? residualTimes() : obsData(state.obs).t;
+}
+function stopPlaying() {
+  if (playTimer) clearInterval(playTimer);
+  playTimer = 0;
+  if (timeControl) timeControl.play.textContent = "\u25b6";
+}
+function syncTimeControl() {
+  if (!timeControl) return;
+  const { slider, readout, times } = timeControl;
+  if (state.cursor === null) {
+    slider.value = "0";
+    readout.textContent = "All times";
+  } else {
+    slider.value = String(epochIndexFor(times, state.cursor));
+    readout.textContent = timeLabel(state.cursor);
+  }
+}
+// Moves a zoomed view when the selected time has left it.
+function keepCursorVisible(t) {
+  if (t === null) return;
+  if (state.xView && (current.panels.length || current.satRows) && (t < state.xView[0] || t > state.xView[1])) {
+    const half = (state.xView[1] - state.xView[0]) / 2;
+    state.xView = [t - half, t + half];
+    render();
+  }
+  if (current.track) {
+    const d = solData(state.sol).cols, g = current.track;
+    if (!d.t.length) return;
+    const i = epochIndexFor(d.t, t);
+    if (d.e[i] < g.xview[0] || d.e[i] > g.xview[1] || d.n[i] < g.yview[0] || d.n[i] > g.yview[1]) {
+      state.track.cx = d.e[i];
+      state.track.cy = d.n[i];
+      render();
+    }
+  }
+}
+function setCursor(t) {
+  state.cursor = t;
+  syncTimeControl();
+  keepCursorVisible(t);
+  drawOverlay();
+}
+// Shows the whole plot again; the selected time stays.
+function addFitButton() {
+  const fit = document.createElement("button");
+  fit.type = "button"; fit.textContent = "Fit"; fit.title = "Show the whole plot";
+  fit.addEventListener("click", (event) => {
+    event.preventDefault();
+    state.xView = null;
+    state.track = null;
+    render();
+  });
+  $("controls").append(fit);
+}
+function addTimeControl() {
+  const times = controlTimes();
+  if (!times.length) return;
+  const wrap = document.createElement("label");
+  const slider = document.createElement("input");
+  slider.type = "range"; slider.min = "0"; slider.max = String(times.length - 1); slider.step = "1";
+  slider.addEventListener("input", () => { stopPlaying(); setCursor(times[+slider.value]); });
+  const play = document.createElement("button");
+  play.type = "button"; play.textContent = "\u25b6"; play.title = "Play";
+  play.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (playTimer) { stopPlaying(); return; }
+    let index = state.cursor === null ? 0 : epochIndexFor(times, state.cursor);
+    if (index >= times.length - 1) index = 0;
+    const step = Math.max(1, Math.ceil(times.length / 600));
+    play.textContent = "\u275a\u275a";
+    setCursor(times[index]);
+    playTimer = setInterval(() => {
+      index = Math.min(times.length - 1, index + step);
+      setCursor(times[index]);
+      if (index >= times.length - 1) stopPlaying();
+    }, 50);
+  });
+  const all = document.createElement("button");
+  all.type = "button"; all.textContent = "All"; all.title = "Show the whole period";
+  all.addEventListener("click", (event) => { event.preventDefault(); stopPlaying(); setCursor(null); });
+  const readout = document.createElement("span");
+  readout.className = "time-readout";
+  wrap.append(slider);
+  $("controls").append(wrap, play, all, readout);
+  timeControl = { slider, readout, times, play };
+  syncTimeControl();
+}
+
+function panelNames() {
+  switch (current.plot.id) {
+    case "position": case "velocity": case "accel": case "diff": return ["E-W", "N-S", "U-D"];
+    case "nsat": return ["Nsat", "Age", "Ratio"];
+    case "snr": return ["SNR", "MP", "EL"];
+    case "res": return ["Code", "Phase", "EL/SNR"];
+    default: return [];
+  }
+}
+
+function buildTabs() {
+  const nav = $("tabs");
+  nav.replaceChildren();
+  const groups = new Map();
+  for (const plot of PLOTS) {
+    if (!plot.enabled) continue;
+    if (!groups.has(plot.group)) groups.set(plot.group, []);
+    groups.get(plot.group).push(plot);
+  }
+  for (const [name, plots] of groups) {
+    const group = document.createElement("div");
+    group.className = "group";
+    const label = document.createElement("span");
+    label.className = "group-label";
+    label.textContent = name;
+    group.append(label);
+    for (const plot of plots) {
+      const button = document.createElement("button");
+      button.textContent = plot.label;
+      button.dataset.plot = plot.id;
+      button.addEventListener("click", () => selectPlot(plot));
+      group.append(button);
+    }
+    nav.append(group);
+  }
+}
+
+function selectPlot(plot) {
+  current.plot = plot;
+  state.plot = plot.id;
+  if (plot.id === "diff" && !differencePair()) {
+    const pair = M.differences.find((d) => d.a === state.sol || d.b === state.sol) || M.differences[0];
+    if (pair.a === state.sol || pair.b === state.sol) state.sol2 = pair.a === state.sol ? pair.b : pair.a;
+    else { state.sol = pair.a; state.sol2 = pair.b; }
+  }
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.plot === plot.id));
+  buildControls();
+  render();
+}
+
+// Rendering ---------------------------------------------------------------
+let frame = 0;
+function render() {
+  if (frame) return;
+  frame = requestAnimationFrame(() => {
+    frame = 0;
+    draw();
+  });
+}
+function draw() {
+  $("report").style.display = current.plot.kind === "report" ? "block" : "none";
+  plotCanvas.style.display = current.plot.kind === "report" ? "none" : "block";
+  overlayCanvas.style.display = current.plot.kind === "report" ? "none" : "block";
+  legend([]);
+  current.track = null; current.satRows = null; current.sky = null;
+  if (current.plot.kind !== "report") plotCtx.clearRect(0, 0, width, height);
+  current.plot.draw();
+  drawOverlay();
+  document.body.dataset.state = "ready";
+}
+
+function drawOverlay() {
+  const ctx = overlayCtx;
+  ctx.clearRect(0, 0, width, height);
+  const t = state.cursor;
+  if (current.plot.kind === "report") return;
+  if (current.sky) drawSkyLabels(t);
+  if (t === null) return;
+  if (current.panels.length || current.satRows) {
+    const view = current.xview;
+    const rects = current.panels.length ? current.panels.map((p) => p.rect) : [current.satRows.rect];
+    ctx.strokeStyle = "#1266c2"; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const rect of rects) {
+      const x = Math.round(xToPixel(t, rect, view)) + 0.5;
+      if (x < rect.x || x > rect.x + rect.w) continue;
+      ctx.moveTo(x, rect.y); ctx.lineTo(x, rect.y + rect.h);
+    }
+    ctx.stroke();
+    if (current.satRows) highlightVisColumn(t);
+  }
+  if (current.track) drawTrackCursor(t);
+  $("status").textContent = statusText(t);
+}
+function epochIndexFor(array, t) {
+  const i = lowerBound(array, t);
+  if (i <= 0) return 0;
+  if (i >= array.length) return array.length - 1;
+  return t - array[i - 1] < array[i] - t ? i - 1 : i;
+}
+function highlightVisColumn(t) {
+  const { rect, rows, data, chosen, rowHeight } = current.satRows;
+  const e = epochIndexFor(data.t, t);
+  const x = xToPixel(data.t[e], rect, current.xview);
+  overlayCtx.lineWidth = 1;
+  rows.forEach((row, r) => {
+    const s = chosen.sats[row.index];
+    if (!s.snr || !s.count[e]) return;
+    overlayCtx.strokeStyle = "#1266c2";
+    overlayCtx.strokeRect(x - 3, rect.y + r * rowHeight + 1, 6, Math.max(2, rowHeight - 2));
+  });
+}
+function drawTrackCursor(t) {
+  const g = current.track;
+  const mark = (d, color) => {
+    if (!d.t.length) return;
+    const i = epochIndexFor(d.t, t);
+    if (Math.abs(d.t[i] - t) > MAX_CURSOR_OFFSET) return;
+    const x = g.rect.x + (d.e[i] - g.xview[0]) * g.scale;
+    const y = g.rect.y + g.rect.h - (d.n[i] - g.yview[0]) * g.scale;
+    overlayCtx.fillStyle = rgbCss(color(d.q[i]));
+    overlayCtx.strokeStyle = "#1d232b"; overlayCtx.lineWidth = 1.5;
+    overlayCtx.beginPath(); overlayCtx.arc(x, y, 6, 0, Math.PI * 2); overlayCtx.fill(); overlayCtx.stroke();
+  };
+  if (state.sol2 >= 0 && M.solutions[state.sol2]) mark(solData(state.sol2).cols, qColor2);
+  mark(solData(state.sol).cols, qColor);
+}
+// Names at the selected time, or at the end of each arc for the whole period.
+function drawSkyLabels(t) {
+  const sky = current.sky, ctx = overlayCtx;
+  const items = t === null ? sky.arcEnds() : sky.at(t);
+  const placed = items.map(({ index }) => ({ x: sky.x[index] - 6, y: sky.y[index] - 6, w: 12, h: 12 }));
+  ctx.font = "bold 11px system-ui, sans-serif";
+  ctx.textBaseline = "middle"; ctx.textAlign = "left";
+  for (const { index } of items) {
+    if (t === null) continue;
+    ctx.beginPath(); ctx.arc(sky.x[index], sky.y[index], 5.5, 0, Math.PI * 2);
+    ctx.fillStyle = rgbCss(sky.color[index]); ctx.fill();
+    ctx.strokeStyle = "#1d232b"; ctx.lineWidth = 1.2; ctx.stroke();
+  }
+  for (const { id, index } of items) {
+    const x = sky.x[index], y = sky.y[index];
+    const w = ctx.measureText(id).width, h = 13;
+    const offsets = [[8, 0], [-8 - w, 0], [-w / 2, -12], [-w / 2, 12], [8, -11], [8, 11], [-8 - w, -11], [-8 - w, 11]];
+    let chosen = offsets[0];
+    for (const offset of offsets) {
+      const box = { x: x + offset[0], y: y + offset[1] - h / 2, w, h };
+      if (!placed.some((o) => box.x < o.x + o.w && box.x + box.w > o.x && box.y < o.y + o.h && box.y + box.h > o.y)) { chosen = offset; break; }
+    }
+    const lx = x + chosen[0], ly = y + chosen[1];
+    placed.push({ x: lx, y: ly - h / 2, w, h });
+    ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.strokeText(id, lx, ly);
+    ctx.fillStyle = "#1d232b"; ctx.fillText(id, lx, ly);
+  }
+  ctx.font = "13px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+  const title = t === null ? "All times (names at the end of each arc)" : timeLabel(t);
+  ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.strokeText(title, 10, 8);
+  ctx.fillStyle = "#1d232b"; ctx.fillText(title, 10, 8);
+}
+function skyHover(position) {
+  const tooltip = $("tooltip"), sky = current.sky;
+  const hit = sky.nearest(position.x, position.y, 10);
+  if (!hit) { tooltip.style.display = "none"; return; }
+  const i = hit.index, lines = [hit.id, timeLabel(sky.t[i]), `Az ${sky.az[i].toFixed(1)}\u00b0  El ${sky.el[i].toFixed(1)}\u00b0`];
+  const value = sky.value[i];
+  if (value === value) lines.push(sky.valueLabel.replace("%s", value.toFixed(2)));
+  tooltip.textContent = lines.join("\n");
+  tooltip.style.display = "block";
+  const bounds = $("stage").getBoundingClientRect();
+  tooltip.style.left = `${Math.min(position.x + 14, bounds.width - 220)}px`;
+  tooltip.style.top = `${Math.min(position.y + 14, bounds.height - 90)}px`;
+}
+function statusText(t) {
+  let text = timeLabel(t);
+  const plot = current.plot;
+  if (plot.group === "Solution" && hasSol) {
+    const s = solData(state.sol), d = s.cols;
+    if (d.t.length) {
+      const i = epochIndexFor(d.t, t);
+      text += `   E ${d.e[i].toFixed(3)} N ${d.n[i].toFixed(3)} U ${d.u[i].toFixed(3)} m  Q=${Q_LABELS[d.q[i]] || d.q[i]} ns=${d.ns[i]} ratio=${d.ratio[i].toFixed(1)}`;
+    }
+  }
+  if (plot.group === "Sensor" && M.imus.length) {
+    const imu = currentImu(), i = epochIndexFor(col(imu.t), t);
+    const value = (axis) => ((col(imu[`${axis}_min`])[i] + col(imu[`${axis}_max`])[i]) / 2).toFixed(3);
+    text += `   Acc ${value("ax")} ${value("ay")} ${value("az")} m/s\u00b2   Gyro ${value("gx")} ${value("gy")} ${value("gz")} rad/s`;
+  }
+  return text;
+}
+
+// Pointer -----------------------------------------------------------------
+let drag = null;
+const mousePosition = (event) => {
+  const rect = overlayCanvas.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+};
+function pointerTime(x) {
+  const view = state.xView || current.xview;
+  if (!view) return null;
+  const rect = current.panels.length ? current.panels[0].rect : current.satRows ? current.satRows.rect : null;
+  if (!rect) return null;
+  return view[0] + (x - rect.x) / rect.w * (view[1] - view[0]);
+}
+function panelAt(position) {
+  const rects = current.panels.length ? current.panels.map((p) => p.rect) : current.satRows ? [current.satRows.rect] : [];
+  return rects.find((r) => position.x >= r.x && position.x <= r.x + r.w && position.y >= r.y && position.y <= r.y + r.h);
+}
+function satHover(position) {
+  const tooltip = $("tooltip");
+  const rows = current.satRows;
+  if (!rows || !panelAt(position)) { tooltip.style.display = "none"; return; }
+  const r = Math.floor((position.y - rows.rect.y) / rows.rowHeight);
+  const row = rows.rows[r];
+  if (!row) { tooltip.style.display = "none"; return; }
+  const t = pointerTime(position.x);
+  const e = epochIndexFor(rows.data.t, t);
+  const s = row.s;
+  const lines = [`${row.sat.id}  ${state.signal}`, timeLabel(rows.data.t[e])];
+  if (s.count[e]) {
+    if (s.snr[e] > 0) lines.push(`SNR ${s.snr[e].toFixed(2)} dB-Hz`);
+    const f = s.flags[e];
+    lines.push(`LLI slip=${f & FLAG.SLIP ? 1 : 0} half=${f & FLAG.HALF ? 1 : 0}`);
+    lines.push(`P:${f & FLAG.P ? "yes" : "no"} L:${f & FLAG.L ? "yes" : "no"} D:${f & FLAG.D ? "yes" : "no"}`);
+    if (rows.data.meta.geometry) {
+      const el = satelliteAngles(rows.data)[row.index].el[e];
+      if (el === el) lines.push(`El ${el.toFixed(1)}°`);
+    }
+  } else {
+    lines.push("not tracked");
+  }
+  tooltip.textContent = lines.join("\n");
+  tooltip.style.display = "block";
+  const bounds = $("stage").getBoundingClientRect();
+  tooltip.style.left = `${Math.min(position.x + 14, bounds.width - 190)}px`;
+  tooltip.style.top = `${Math.min(position.y + 14, bounds.height - 110)}px`;
+}
+
+overlayCanvas.addEventListener("mousedown", (event) => {
+  const p = mousePosition(event);
+  if (current.xview && (current.panels.length || current.satRows)) {
+    drag = { kind: "time", start: p, view: current.xview.slice(), moved: false };
+  } else if (current.track) {
+    drag = { kind: "track", start: p, cx: state.track.cx, cy: state.track.cy, moved: false };
+  } else {
+    drag = { kind: "none", moved: false };
+  }
+});
+window.addEventListener("mousemove", (event) => {
+  const p = mousePosition(event);
+  if (drag && drag.kind === "time") {
+    const rect = current.panels.length ? current.panels[0].rect : current.satRows.rect;
+    const dt = (drag.start.x - p.x) / rect.w * (drag.view[1] - drag.view[0]);
+    if (Math.abs(p.x - drag.start.x) > 2) drag.moved = true;
+    if (drag.moved) { state.xView = [drag.view[0] + dt, drag.view[1] + dt]; render(); }
+    return;
+  }
+  if (drag && drag.kind === "track") {
+    const scale = current.track.scale;
+    if (Math.abs(p.x - drag.start.x) + Math.abs(p.y - drag.start.y) > 2) drag.moved = true;
+    if (drag.moved) {
+      state.track.cx = drag.cx - (p.x - drag.start.x) / scale;
+      state.track.cy = drag.cy + (p.y - drag.start.y) / scale;
+      render();
+    }
+    return;
+  }
+  if (!overlayCanvas.matches(":hover")) { $("tooltip").style.display = "none"; return; }
+  if (current.satRows) satHover(p);
+  else if (current.sky) skyHover(p);
+  else $("tooltip").style.display = "none";
+  if (panelAt(p)) {
+    const t = pointerTime(p.x);
+    if (t !== null) $("status").textContent = statusText(t);
+  }
+});
+window.addEventListener("mouseup", (event) => {
+  if (!drag) return;
+  const wasClick = !drag.moved;
+  const kind = drag.kind;
+  drag = null;
+  if (!wasClick) return;
+  const p = mousePosition(event);
+  if (kind === "track" && current.track) {
+    const d = solData(state.sol).cols, g = current.track;
+    let best = -1, bestDistance = 12 * 12;
+    for (let i = 0; i < d.t.length; ++i) {
+      const dx = g.rect.x + (d.e[i] - g.xview[0]) * g.scale - p.x;
+      const dy = g.rect.y + g.rect.h - (d.n[i] - g.yview[0]) * g.scale - p.y;
+      if (dx * dx + dy * dy < bestDistance) { bestDistance = dx * dx + dy * dy; best = i; }
+    }
+    if (best >= 0) { stopPlaying(); setCursor(d.t[best]); }
+    return;
+  }
+  if (kind === "none" && current.sky) {
+    const hit = current.sky.nearest(p.x, p.y, 10);
+    if (hit) { stopPlaying(); setCursor(current.sky.t[hit.index]); }
+    return;
+  }
+  if (kind === "time" && panelAt(p)) {
+    if (current.satRows && p.x < current.satRows.rect.x) return;
+    stopPlaying();
+    setCursor(pointerTime(p.x));
+  }
+});
+overlayCanvas.addEventListener("click", (event) => {
+  // Clicking a satellite label focuses the SNR plot on that satellite.
+  const p = mousePosition(event);
+  const rows = current.satRows;
+  if (!rows || p.x >= rows.rect.x) return;
+  const row = rows.rows[Math.floor((p.y - rows.rect.y) / rows.rowHeight)];
+  if (!row) return;
+  state.sat = row.sat.id;
+  if (state.signal !== "ALL") state.snrSignal = state.signal;
+  selectPlot(PLOTS.find((plot) => plot.id === "snr"));
+});
+overlayCanvas.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const p = mousePosition(event);
+  const factor = event.deltaY > 0 ? 1.2 : 1 / 1.2;
+  if (current.xview && (current.panels.length || current.satRows)) {
+    const view = state.xView || current.xview;
+    const anchor = pointerTime(p.x);
+    state.xView = [anchor + (view[0] - anchor) * factor, anchor + (view[1] - anchor) * factor];
+    render();
+  } else if (current.track) {
+    const g = current.track;
+    const anchorX = g.xview[0] + (p.x - g.rect.x) / g.scale;
+    const anchorY = g.yview[0] + (g.rect.y + g.rect.h - p.y) / g.scale;
+    state.track.span *= factor;
+    state.track.cx = anchorX + (state.track.cx - anchorX) * factor;
+    state.track.cy = anchorY + (state.track.cy - anchorY) * factor;
+    render();
+  }
+}, { passive: false });
+overlayCanvas.addEventListener("dblclick", () => {
+  state.xView = null;
+  state.track = null;
+  stopPlaying();
+  state.cursor = null;
+  syncTimeControl();
+  $("status").textContent = "";
+  render();
+});
+new ResizeObserver(() => { resize(); render(); }).observe($("stage"));
+
+// Start -------------------------------------------------------------------
+window.addEventListener("error", (event) => {
+  document.body.dataset.state = "error";
+  document.body.dataset.error = String(event.message);
+});
+decodeColumns();
+state.obs = Math.max(0, M.observations.findIndex((o) => !o.topic.includes("base")));
+{
+  // With comparison inputs, start by showing the bag against the first of them.
+  const main = M.solutions.findIndex((s) => s.source === "bag");
+  const other = M.solutions.findIndex((s) => s.source !== "bag");
+  if (main >= 0 && other >= 0) { state.sol = main; state.sol2 = other; }
+}
+$("title").textContent = M.bag;
+$("subtitle").textContent = `${M.topics.length} topics, ${M.solutions.length} solutions, ${M.observations.length} receivers` +
+  (M.observations.some((o) => o.kept < o.rows) ? ", decimated" : "");
+resize();
+buildTabs();
+selectPlot(PLOTS.find((plot) => plot.id === (hasSol ? "track" : hasObs ? "satvis" : "overview")) || PLOTS[0]);
+}());
+</script>
+</body>
+</html>

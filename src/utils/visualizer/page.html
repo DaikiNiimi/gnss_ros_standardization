@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GNSS Visualizer</title>
+<style>
+  :root {
+    --bg: #f5f5f5; --panel: #ffffff; --head: #373737; --line: #d5d8dd; --text: #1d232b; --muted: #68717d;
+    --grid: #e2e4e8; --accent: #1266c2; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e; --still: rgba(42, 157, 75, 0.14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15181c; --panel: #1f2329; --head: #2c3138; --line: #363c45; --text: #e7eaee; --muted: #9aa3af;
+      --grid: #2f353d; --accent: #5aa2f0; --ok: #6fdc8c; --warn: #ffb454; --bad: #ff7b72; --still: rgba(111, 220, 140, 0.13);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15181c; --panel: #1f2329; --head: #2c3138; --line: #363c45; --text: #e7eaee; --muted: #9aa3af;
+    --grid: #2f353d; --accent: #5aa2f0; --ok: #6fdc8c; --warn: #ffb454; --bad: #ff7b72; --still: rgba(111, 220, 140, 0.13);
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 6px 8px 0; }
+  #bar label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+  #bar select { font: inherit; max-width: min(320px, 90vw); color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 3px; }
+  #hint { color: var(--muted); font-size: 13px; }
+  #tabs { display: inline-flex; gap: 2px; }
+  #tabs button { font: inherit; font-size: 13px; font-weight: 600; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 12px; cursor: pointer; }
+  #tabs button.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+  #grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 6px; flex: 1 1 auto; min-height: 0; padding: 6px; }
+  #imu-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 2fr) minmax(0, 3fr); gap: 6px; flex: 1 1 auto; min-height: 0; padding: 6px; }
+  #imu-grid .wide { grid-column: 1 / -1; }
+  .panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .panel h2 { display: flex; align-items: center; gap: 8px; margin: 0; padding: 3px 10px; min-height: 30px; background: var(--head); color: #f0f0f0; font-size: 13px; font-weight: 600; }
+  .panel h2 .tools { margin-left: auto; display: flex; gap: 3px; }
+  .panel h2 button { font: inherit; font-size: 12px; font-weight: 500; background: #4c535c; color: #fff; border: 0; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+  .panel h2 button:hover { background: #5f6771; }
+  .panel h2 button.on { background: var(--accent); }
+  .body { position: relative; flex: 1 1 auto; min-height: 0; }
+  .body canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #link { margin-left: auto; font-weight: 600; font-size: 12px; }
+  #link.live { color: var(--ok); }
+  #link.stale { color: var(--warn); }
+  #link.lost { color: var(--bad); }
+  #status, #imu-status { padding: 10px 14px; overflow: auto; font-variant-numeric: tabular-nums; }
+  #badge, #imu-badge { display: inline-block; min-width: 76px; text-align: center; color: #fff; font-weight: 700; font-size: 16px; border-radius: 5px; padding: 2px 10px; margin: 2px 0 8px; }
+  #status .big, #imu-status .big { font-size: 17px; }
+  #status .row, #imu-status .row { margin: 1px 0; }
+  #status .dim, #imu-status .dim { color: var(--muted); }
+  #imu-status .alert { color: var(--bad); font-weight: 600; }
+  #systems { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 4px 0; }
+  #systems span { display: inline-flex; align-items: center; gap: 4px; }
+  #systems i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  @media (max-width: 760px) {
+    #grid { grid-template-columns: 1fr; grid-template-rows: auto 340px 340px 340px; height: auto; }
+    #imu-grid { grid-template-columns: 1fr; grid-template-rows: auto 300px 280px 420px; height: auto; }
+    html, body { height: auto; }
+  }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span id="tabs"><button data-tab="gnss">GNSS</button><button data-tab="imu">IMU</button></span>
+  <label data-page="gnss">Receiver <select id="sel-obs" data-slot="obs"></select></label>
+  <label data-page="gnss">Solution <select id="sel-sol" data-slot="sol"></select></label>
+  <label data-page="gnss">Compare <select id="sel-sol2" data-slot="sol2"></select></label>
+  <label data-page="imu">IMU <select id="sel-imu" data-slot="imu"></select></label>
+  <span id="hint"></span>
+  <span id="link" class="lost">connecting</span>
+</div>
+<div id="grid">
+  <section class="panel">
+    <h2>Status</h2>
+    <div id="status" class="body">
+      <div class="big" id="time">Week --- TOW ---</div>
+      <div id="badge" style="background:#828282">NONE</div>
+      <div class="row big" id="lat"></div>
+      <div class="row big" id="lon"></div>
+      <div class="row big" id="alt"></div>
+      <div class="row dim" id="vel"></div>
+      <div class="row" id="sats"></div>
+      <div id="systems"></div>
+      <div class="row dim" id="dop"></div>
+      <div class="row dim" id="ar"></div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Skyplot</h2>
+    <div class="body"><canvas id="sky"></canvas></div>
+  </section>
+  <section class="panel">
+    <h2>Position (ENU)
+      <span class="tools">
+        <button data-view="fixed">Fixed</button><button data-view="fit">Fit</button><button data-view="follow">Follow</button>
+        <button id="zoomout">&minus;</button><button id="zoomin">+</button><button id="clear">Clear</button>
+      </span>
+    </h2>
+    <div class="body"><canvas id="pos"></canvas></div>
+  </section>
+  <section class="panel">
+    <h2>Elevation / SNR</h2>
+    <div class="body"><canvas id="snr"></canvas></div>
+  </section>
+</div>
+<div id="imu-grid" hidden>
+  <section class="panel">
+    <h2>Status</h2>
+    <div id="imu-status" class="body">
+      <div id="imu-badge" style="background:#828282">NO DATA</div>
+      <div class="row big" id="imu-rate"></div>
+      <div class="row" id="imu-counts"></div>
+      <div class="row alert" id="imu-frame"></div>
+      <div class="row dim" id="imu-gap"></div>
+      <div class="row" id="imu-norm"></div>
+      <div class="row" id="imu-bias"></div>
+      <div class="row" id="imu-noise"></div>
+      <div class="row dim" id="imu-offset"></div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Orientation</h2>
+    <div class="body"><canvas id="imu-box"></canvas></div>
+  </section>
+  <section class="panel">
+    <h2>Timing</h2>
+    <div class="body"><canvas id="imu-timing"></canvas></div>
+  </section>
+  <section class="panel wide">
+    <h2>Motion</h2>
+    <div class="body"><canvas id="imu-motion"></canvas></div>
+  </section>
+</div>
+<script>
+"use strict";
+(function () {
+const SYS = { G: ["GPS", "#32a032"], R: ["GLO", "#dcb400"], E: ["GAL", "#c832c8"], C: ["BDS", "#dc0000"], J: ["QZS", "#0000c8"], I: ["IRN", "#ff6400"], S: ["SBS", "#00c8ff"] };
+// RTKPLOT's default marker colours by quality, for the first and second solution.
+const Q = [
+  ["#c0c0c0", "#008000", "#ffaa00", "#ff00ff", "#000080", "#ff0000", "#808000", "#a0a0a4"],
+  ["#c0c0c0", "#004080", "#808000", "#8000ff", "#0080ff", "#ff8080", "#8080ff", "#a0a0a4"],
+];
+const QUALITY = ["NONE", "FIX", "FLOAT", "SBAS", "DGPS", "SINGLE", "PPP", "DR"];
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const view = { mode: "fit", cx: 0, cy: 0, span: 100 };
+let tracks = [[], []], names = { sol: "", sol2: "" }, maxHistory = 50000, latest = null, lastMessage = 0, dirty = false;
+let page = "gnss", imuBins = [], imuLastSeq = -1, imuStatus = null;
+
+function fit(canvas) {
+  const r = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(10, Math.floor(r.width)), h = Math.max(10, Math.floor(r.height));
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function drawSky() {
+  const { ctx, w, h } = fit($("sky"));
+  const r = Math.min(w, h) / 2 - 26, cx = w / 2, cy = h / 2;
+  const grid = css("--grid"), text = css("--text"), muted = css("--muted"), panel = css("--panel");
+  ctx.strokeStyle = grid; ctx.lineWidth = 1;
+  for (const el of [0, 30, 60]) { ctx.beginPath(); ctx.arc(cx, cy, r * (1 - el / 90), 0, Math.PI * 2); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy); ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r); ctx.stroke();
+  ctx.fillStyle = text; ctx.font = "13px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("N", cx, cy - r - 12); ctx.fillText("S", cx, cy + r + 13); ctx.fillText("E", cx + r + 12, cy); ctx.fillText("W", cx - r - 12, cy);
+  ctx.fillStyle = muted; ctx.font = "11px system-ui, sans-serif";
+  for (const el of [30, 60]) ctx.fillText(String(el), cx + 11, cy - r * (1 - el / 90) + 9);
+  if (!latest) return;
+  ctx.font = "11px system-ui, sans-serif";
+  for (const s of latest.sats.list) {
+    if (s[2] === null || s[3] === null) continue;
+    const a = s[2] * Math.PI / 180, d = r * (1 - s[3] / 90);
+    const x = cx + d * Math.sin(a), y = cy - d * Math.cos(a);
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = (SYS[s[1]] || ["", "#888"])[1]; ctx.fill();
+    ctx.strokeStyle = panel; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.textAlign = "left"; ctx.lineWidth = 3; ctx.strokeStyle = panel;
+    ctx.strokeText(s[0], x + 8, y); ctx.fillStyle = text; ctx.fillText(s[0], x + 8, y);
+  }
+}
+
+function niceStep(range, count) {
+  const raw = range / Math.max(1, count), p = Math.pow(10, Math.floor(Math.log10(raw))), s = raw / p;
+  return (s < 1.5 ? 1 : s < 3 ? 2 : s < 7 ? 5 : 10) * p;
+}
+
+function drawPos() {
+  const { ctx, w, h } = fit($("pos"));
+  const grid = css("--grid"), muted = css("--muted");
+  const n = tracks[0].length + tracks[1].length;
+  const newest = tracks[0].length ? tracks[0] : tracks[1];
+  if (n && view.mode === "fit") {
+    let a = Infinity, b = -Infinity, c = Infinity, d = -Infinity;
+    for (const track of tracks) for (const p of track) { if (p[0] < a) a = p[0]; if (p[0] > b) b = p[0]; if (p[1] < c) c = p[1]; if (p[1] > d) d = p[1]; }
+    view.cx = (a + b) / 2; view.cy = (c + d) / 2;
+    view.span = Math.max(b - a, d - c, 2) * 1.15;
+  } else if (n && view.mode === "follow") {
+    view.cx = newest[newest.length - 1][0]; view.cy = newest[newest.length - 1][1];
+  }
+  const scale = Math.min(w, h) / view.span;
+  const toX = (e) => w / 2 + (e - view.cx) * scale, toY = (v) => h / 2 - (v - view.cy) * scale;
+  const step = niceStep(w / scale, Math.max(3, w / 90));
+  ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.beginPath();
+  ctx.fillStyle = muted; ctx.font = "11px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  const labels = [];
+  for (let v = Math.ceil((view.cx - w / 2 / scale) / step) * step; v < view.cx + w / 2 / scale; v += step) {
+    const x = Math.round(toX(v)) + 0.5; ctx.moveTo(x, 0); ctx.lineTo(x, h); labels.push([String(Math.round(v * 1e3) / 1e3), x + 3, h - 5]);
+  }
+  for (let v = Math.ceil((view.cy - h / 2 / scale) / step) * step; v < view.cy + h / 2 / scale; v += step) {
+    const y = Math.round(toY(v)) + 0.5; ctx.moveTo(0, y); ctx.lineTo(w, y); labels.push([String(Math.round(v * 1e3) / 1e3), 4, y - 3]);
+  }
+  ctx.stroke();
+  for (const l of labels) ctx.fillText(l[0], l[1], l[2]);
+  for (const slot of [1, 0]) {
+    const track = tracks[slot];
+    for (const p of track) {
+      const x = toX(p[0]), y = toY(p[1]);
+      if (x < -3 || x > w + 3 || y < -3 || y > h + 3) continue;
+      ctx.fillStyle = Q[slot][p[2]] || "#888"; ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+    }
+    if (track.length) {
+      const p = track[track.length - 1];
+      ctx.beginPath(); ctx.arc(toX(p[0]), toY(p[1]), 6, 0, Math.PI * 2);
+      ctx.fillStyle = Q[slot][p[2]] || "#888"; ctx.fill(); ctx.strokeStyle = css("--text"); ctx.lineWidth = 1.5; ctx.stroke();
+    }
+  }
+  drawQualityLegend(ctx);
+  ctx.fillStyle = muted; ctx.textAlign = "right"; ctx.textBaseline = "top";
+  ctx.fillText(`${n} points`, w - 8, 6);
+  drawScaleBar(ctx, w, h, scale);
+}
+
+// One row per solution shown: its topic and the qualities it contains.
+function drawQualityLegend(ctx) {
+  ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+  let y = 7;
+  [names.sol, names.sol2].forEach((name, slot) => {
+    if (!name || !tracks[slot].length) return;
+    const present = new Set(tracks[slot].map((p) => p[2]));
+    ctx.fillStyle = css("--text"); ctx.fillText(name, 8, y);
+    let x = 8 + ctx.measureText(name).width + 10;
+    for (const q of [...present].sort()) {
+      ctx.fillStyle = Q[slot][q] || "#888"; ctx.fillRect(x, y + 2, 10, 10); x += 14;
+      ctx.fillStyle = css("--text"); ctx.fillText(QUALITY[q] || String(q), x, y); x += ctx.measureText(QUALITY[q] || String(q)).width + 10;
+    }
+    y += 17;
+  });
+}
+
+// A bar of a round length, about one fifth of the panel wide.
+function drawScaleBar(ctx, w, h, scale) {
+  const target = w * 0.2 / scale, power = Math.pow(10, Math.floor(Math.log10(target)));
+  const ratio = target / power, length = (ratio >= 5 ? 5 : ratio >= 2 ? 2 : 1) * power;
+  const label = length >= 1000 ? `${length / 1000} km` : length >= 1 ? `${length} m` : `${Math.round(length * 1000) / 10} cm`;
+  const right = w - 16, left = right - length * scale, y = h - 26;
+  const line = (width, color) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = "square"; ctx.beginPath();
+    ctx.moveTo(left, y - 5); ctx.lineTo(left, y); ctx.lineTo(right, y); ctx.lineTo(right, y - 5); ctx.stroke();
+  };
+  line(5, css("--panel")); line(2, css("--text"));
+  ctx.lineCap = "butt"; ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+  ctx.lineWidth = 3; ctx.strokeStyle = css("--panel"); ctx.strokeText(label, (left + right) / 2, y - 3);
+  ctx.fillStyle = css("--text"); ctx.fillText(label, (left + right) / 2, y - 3);
+}
+
+function drawSnr() {
+  const { ctx, w, h } = fit($("snr"));
+  if (!latest || !latest.sats.list.length) return;
+  const list = latest.sats.list, muted = css("--muted"), grid = css("--grid"), text = css("--text");
+  const left = 54, right = 8, bottom = 42, top = 6, gap = 8;
+  const rows = [["Elev", 90, 15, 3], ["L1", 60, 10, 4], ["L2", 60, 10, 5], ["L5", 60, 10, 6]];
+  const plotH = (h - top - bottom - gap * (rows.length - 1)) / rows.length;
+  const plotW = w - left - right, slot = plotW / list.length, bar = Math.max(2, Math.min(slot * 0.7, 20));
+  ctx.font = "11px system-ui, sans-serif";
+  rows.forEach(([name, max, step, index], r) => {
+    const y0 = top + r * (plotH + gap), yB = y0 + plotH;
+    ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.fillStyle = muted; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (let v = step; v < max; v += step * 2) {
+      const y = Math.round(yB - v / max * plotH) + 0.5; ctx.moveTo(left, y); ctx.lineTo(left + plotW, y);
+      ctx.fillText(String(v), left - 4, y);
+    }
+    ctx.moveTo(left, yB + 0.5); ctx.lineTo(left + plotW, yB + 0.5); ctx.stroke();
+    ctx.fillStyle = text; ctx.textAlign = "left"; ctx.fillText(name, 2, y0 + plotH / 2);
+    if (index > 3) {
+      ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+      for (const [limit, color] of [[20, "#ff8c00"], [35, "#2a9d4b"]]) {
+        const y = Math.round(yB - limit / max * plotH) + 0.5;
+        ctx.strokeStyle = color; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + plotW, y); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+    list.forEach((s, i) => {
+      const v = s[index];
+      if (v === null || !(v > 0)) return;
+      ctx.fillStyle = (SYS[s[1]] || ["", "#888"])[1];
+      const height = Math.min(v, max) / max * plotH;
+      ctx.fillRect(left + (i + 0.5) * slot - bar / 2, yB - height, bar, height);
+    });
+  });
+  ctx.fillStyle = text; ctx.textBaseline = "top";
+  const labelY = h - bottom + 5;
+  list.forEach((s, i) => {
+    ctx.save(); ctx.translate(left + (i + 0.5) * slot + 4, labelY); ctx.rotate(-Math.PI / 2); ctx.textAlign = "right";
+    ctx.fillText(s[0], 0, 0); ctx.restore();
+  });
+}
+
+function setText(id, value) { const n = $(id); if (n.textContent !== value) n.textContent = value; }
+const f = (v, d) => (v === null || v === undefined ? "--" : Number(v).toFixed(d));
+
+function updateStatus() {
+  if (!latest) return;
+  const s = latest.status;
+  setText("time", s.week !== undefined ? `Week ${s.week}   TOW ${f(s.tow, 1)}` : "Week --- TOW ---");
+  const badge = $("badge");
+  setText("badge", s.status);
+  badge.style.background = s.q ? (Q[0][s.q] || "#828282") : (s.status === "MANUAL" ? "#787800" : "#828282");
+  setText("lat", s.lat !== undefined ? `Lat  ${f(s.lat, 8)}°` : "");
+  setText("lon", s.lon !== undefined ? `Lon  ${f(s.lon, 8)}°` : "");
+  setText("alt", s.alt !== undefined ? `Alt  ${f(s.alt, 3)} m` : "");
+  if (s.ve !== undefined && s.ve !== null) {
+    const speed = Math.sqrt(s.ve * s.ve + s.vn * s.vn + (s.vu || 0) * (s.vu || 0));
+    setText("vel", `Vel  E ${f(s.ve, 2)}  N ${f(s.vn, 2)}  U ${f(s.vu, 2)}  |${speed.toFixed(2)}| m/s`);
+  } else setText("vel", "");
+  setText("sats", `Sats  ${s.ns === undefined ? "--" : s.ns} / ${latest.sats.list.length}  (${latest.sats.signals} signals)`);
+  const counts = {};
+  for (const sat of latest.sats.list) counts[sat[1]] = (counts[sat[1]] || 0) + 1;
+  $("systems").replaceChildren(...Object.keys(SYS).filter((k) => k !== "I" || counts[k]).map((k) => {
+    const span = document.createElement("span");
+    const dot = document.createElement("i");
+    dot.style.background = SYS[k][1];
+    span.append(dot, `${SYS[k][0]}:${counts[k] || 0}`);
+    return span;
+  }));
+  setText("dop", s.gdop !== undefined ? `GDOP ${f(s.gdop, 1)}  PDOP ${f(s.pdop, 1)}  HDOP ${f(s.hdop, 1)}  VDOP ${f(s.vdop, 1)}` : "");
+  const ar = [];
+  if (s.ratio > 0.01) ar.push(`AR Ratio ${f(s.ratio, 1)}`);
+  if (s.age > 0.01) ar.push(`Age ${f(s.age, 1)} s`);
+  setText("ar", ar.join("   "));
+}
+
+const IMU_WINDOW = 120, IMU_BIN = 0.2, IMU_STALE = 2;
+const AXIS_COLORS = ["#d1453b", "#2a9d4b", "#2f6fd0"];
+const imuHasData = () => imuStatus && imuStatus.age !== null && imuStatus.age < IMU_STALE;
+
+function updateImuStatus() {
+  if (!imuStatus) return;
+  const s = imuStatus, live = imuHasData(), badge = $("imu-badge");
+  const state = !live ? "NO DATA" : s.still ? "STILL" : "MOVING";
+  setText("imu-badge", state);
+  badge.style.background = !live ? "#828282" : s.still ? "#2a9d4b" : css("--accent");
+  setText("imu-rate", s.rate === null ? "-- Hz" : `${f(s.rate, 1)} Hz   dt ${f(s.period, 2)} ms`);
+  const issues = s.gaps + s.out_of_order + s.duplicates + s.rejected;
+  setText("imu-counts", `Gaps ${s.gaps}   Out of order ${s.out_of_order}   Duplicates ${s.duplicates}` + (s.rejected ? `   Rejected ${s.rejected}` : ""));
+  $("imu-counts").className = issues ? "row alert" : "row";
+  setText("imu-frame", s.frame_mismatch ? "Gyro and accelerometer disagree: axes not right-handed, or gyro sign reversed" : "");
+  setText("imu-gap", s.max_gap === null ? "" : `Max interval ${f(s.max_gap, 1)} ms  (${IMU_WINDOW} s)   ${s.samples} samples`);
+  const dim = s.still ? "row" : "row dim";
+  for (const id of ["imu-norm", "imu-bias", "imu-noise"]) $(id).className = dim;
+  if (s.have_still && !s.gravity_free) {
+    const error = s.norm - 9.80665;
+    setText("imu-norm", `|a| ${f(s.norm, 3)} m/s²  (g ${error >= 0 ? "+" : ""}${f(error, 3)})` + (s.still ? "" : "  last still"));
+  } else setText("imu-norm", s.gravity_free ? "|a| not shown: no gravity in this topic" : "|a| waits for a still interval");
+  setText("imu-bias", s.have_still ? `Gyro mean  ${f(s.bias[0], 3)}  ${f(s.bias[1], 3)}  ${f(s.bias[2], 3)} °/s` : "");
+  setText("imu-noise", s.have_still ? `Noise  accel ${f(s.accel_std, 4)} m/s²  gyro ${f(s.gyro_std, 4)} °/s` : "");
+  setText("imu-offset", s.imu_minus_obs === null ? "" : `Newest IMU stamp − GNSS observation stamp  ${s.imu_minus_obs >= 0 ? "+" : ""}${f(s.imu_minus_obs, 3)} s`);
+}
+
+function rotate(q, v) {
+  const [w, x, y, z] = q;
+  const tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+  return [v[0] + w * tx + y * tz - z * ty, v[1] + w * ty + z * tx - x * tz, v[2] + w * tz + x * ty - y * tx];
+}
+
+// Sensor axes drawn in a level frame seen from above and to the side.
+function drawImuBox() {
+  const { ctx, w, h } = fit($("imu-box"));
+  const s = imuStatus, text = css("--text"), muted = css("--muted"), panel = css("--panel");
+  ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "13px system-ui, sans-serif";
+  if (!s || !s.ready) {
+    ctx.fillStyle = muted;
+    ctx.fillText(s && s.gravity_free ? "No gravity in this topic" : "Waiting for IMU data", w / 2, h / 2);
+    if (s && s.gravity_free) ctx.fillText("Choose the raw IMU topic to see the orientation", w / 2, h / 2 + 20);
+    return;
+  }
+  const az = 35 * Math.PI / 180, el = 25 * Math.PI / 180;
+  const view = [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)];
+  const up = [-Math.sin(el) * Math.cos(az), -Math.sin(el) * Math.sin(az), Math.cos(el)];
+  const right = [-Math.sin(az), Math.cos(az), 0];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const size = Math.min(w, h - 44) / 4.2, cx = w / 2, cy = (h - 30) / 2;
+  const project = (p) => [cx + dot(p, right) * size, cy - dot(p, up) * size, dot(p, view)];
+  const toLevel = (p) => project(rotate(s.q, p));
+  const half = [1, 0.7, 0.28];
+  // Each face: its axis, its side, and the two axes that span it.
+  const faces = [[0, 1, 1, 2], [0, -1, 1, 2], [1, 1, 0, 2], [1, -1, 0, 2], [2, 1, 0, 1], [2, -1, 0, 1]].map(([axis, side, a, b]) => {
+    const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, j]) => {
+      const p = [0, 0, 0]; p[axis] = side * half[axis]; p[a] = i * half[a]; p[b] = j * half[b];
+      return toLevel(p);
+    });
+    return { axis, side, corners, depth: corners.reduce((sum, c) => sum + c[2], 0) / 4 };
+  }).sort((p, q) => p.depth - q.depth);
+  ctx.lineWidth = 1.2; ctx.strokeStyle = muted;
+  for (const face of faces) {
+    ctx.beginPath(); face.corners.forEach((c, i) => (i ? ctx.lineTo(c[0], c[1]) : ctx.moveTo(c[0], c[1]))); ctx.closePath();
+    ctx.globalAlpha = face.side > 0 ? 0.55 : 0.25; ctx.fillStyle = AXIS_COLORS[face.axis]; ctx.fill();
+    ctx.globalAlpha = 1; ctx.stroke();
+  }
+  const arrow = (from, to, color, width) => {
+    const dx = to[0] - from[0], dy = to[1] - from[1], len = Math.hypot(dx, dy) || 1, ux = dx / len, uy = dy / len;
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(to[0], to[1]); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(to[0], to[1]); ctx.lineTo(to[0] - 9 * ux - 4 * uy, to[1] - 9 * uy + 4 * ux); ctx.lineTo(to[0] - 9 * ux + 4 * uy, to[1] - 9 * uy - 4 * ux); ctx.closePath(); ctx.fill();
+  };
+  ctx.font = "bold 13px system-ui, sans-serif"; ctx.lineJoin = "round";
+  const origin = toLevel([0, 0, 0]);
+  ["X", "Y", "Z"].forEach((name, i) => {
+    const tip = [0, 0, 0]; tip[i] = Math.max(half[i] + 0.65, 1.55);
+    const end = toLevel(tip), label = [end[0] + (end[0] - origin[0]) * 0.1, end[1] + (end[1] - origin[1]) * 0.1];
+    arrow(origin, end, AXIS_COLORS[i], 2.5);
+    ctx.lineWidth = 3; ctx.strokeStyle = panel; ctx.strokeText(name, label[0], label[1]);
+    ctx.fillStyle = AXIS_COLORS[i]; ctx.fillText(name, label[0], label[1]);
+  });
+  const gx = Math.min(w - 24, cx + size * 2.1);
+  arrow([gx, cy - 34], [gx, cy + 34], muted, 2);
+  ctx.fillStyle = muted; ctx.font = "13px system-ui, sans-serif"; ctx.fillText("g", gx + 12, cy);
+  ctx.fillStyle = text; ctx.font = "15px system-ui, sans-serif";
+  ctx.fillText(`Up ${s.up}  tilt ${f(s.tilt, 1)}°`, w / 2, h - 26);
+  ctx.fillStyle = muted; ctx.font = "11px system-ui, sans-serif";
+  ctx.fillText("Heading is relative and drifts", w / 2, h - 9);
+}
+
+const finite = (v) => v !== null && v !== undefined && Number.isFinite(v);
+
+// One time-series row of a chart whose right edge is the newest bin. In a
+// series, `band` returns [low, high] of a bin.
+function drawStrip(ctx, box, now, row) {
+  const { x, y, w, h } = box;
+  let low = row.zero ? 0 : Infinity, high = row.zero ? 0 : -Infinity;
+  const include = (v) => { if (finite(v)) { low = Math.min(low, v); high = Math.max(high, v); } };
+  for (const bin of imuBins) for (const s of row.series) {
+    const r = s.band(bin); include(r[0]); include(r[1]);
+  }
+  for (const ref of row.refs || []) include(ref.value);
+  if (!(low <= high)) { low = 0; high = 1; }
+  const minSpan = row.minSpan || 1;
+  if (high - low < minSpan) { const mid = (low + high) / 2; low = row.zero && low >= 0 ? 0 : mid - minSpan / 2; high = low + minSpan; }
+  const pad = (high - low) * 0.06; high += pad; if (!row.zero || low < 0) low -= pad;
+  const toX = (t) => x + w * (1 - (now - t) / IMU_WINDOW), toY = (v) => y + h - (v - low) / (high - low) * h;
+  const barW = Math.max(1, w * IMU_BIN / IMU_WINDOW + 0.5);
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.fillStyle = css("--still");
+  for (const bin of imuBins) if (bin.still) ctx.fillRect(toX(bin.t) - barW, y, barW, h);
+  ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1; ctx.beginPath();
+  const step = niceStep(high - low, Math.max(2, h / 34)), labels = [];
+  for (let v = Math.ceil(low / step) * step; v <= high; v += step) {
+    const py = Math.round(toY(v)) + 0.5; ctx.moveTo(x, py); ctx.lineTo(x + w, py); labels.push([v, py]);
+  }
+  ctx.stroke();
+  for (const ref of row.refs || []) {
+    if (!finite(ref.value)) continue;
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = ref.color; ctx.beginPath();
+    const py = Math.round(toY(ref.value)) + 0.5; ctx.moveTo(x, py); ctx.lineTo(x + w, py); ctx.stroke(); ctx.setLineDash([]);
+  }
+  for (const s of row.series) {
+    ctx.globalAlpha = 0.8; ctx.fillStyle = s.color;
+    for (const bin of imuBins) {
+      const r = s.band(bin);
+      if (!finite(r[0]) || !finite(r[1])) continue;
+      const top = toY(r[1]);
+      ctx.fillRect(toX(bin.t) - barW, top, barW, Math.max(1.5, toY(r[0]) - top));
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+  ctx.strokeStyle = css("--line"); ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  ctx.font = "11px system-ui, sans-serif"; ctx.textBaseline = "middle"; ctx.textAlign = "right"; ctx.fillStyle = css("--muted");
+  for (const [v, py] of labels) ctx.fillText(String(Math.round(v * 1e4) / 1e4), x - 4, py);
+  ctx.font = "12px system-ui, sans-serif"; ctx.textBaseline = "top"; ctx.textAlign = "left";
+  let lx = x + 7;
+  const legend = (name, color) => {
+    ctx.lineWidth = 3; ctx.strokeStyle = css("--panel"); ctx.strokeText(name, lx, y + 4);
+    ctx.fillStyle = color; ctx.fillText(name, lx, y + 4); lx += ctx.measureText(name).width + 12;
+  };
+  legend(row.title, css("--text"));
+  for (const s of row.series) if (s.name) legend(s.name, s.color);
+}
+
+function drawTimeAxis(ctx, x, w, y) {
+  ctx.fillStyle = css("--muted"); ctx.font = "11px system-ui, sans-serif"; ctx.textBaseline = "top"; ctx.textAlign = "center";
+  const step = w > 500 ? 20 : 40;
+  for (let age = 0; age < IMU_WINDOW; age += step) ctx.fillText(age ? `−${age} s` : "now", x + w * (1 - age / IMU_WINDOW) - (age ? 0 : 10), y);
+}
+
+function layoutRows(ctx, rows, w, h, now) {
+  const left = 52, right = 10, top = 6, bottom = 18, gap = 5;
+  const rowH = (h - top - bottom - gap * (rows.length - 1)) / rows.length, plotW = w - left - right;
+  rows.forEach((row, i) => drawStrip(ctx, { x: left, y: top + i * (rowH + gap), w: plotW, h: rowH }, now, row));
+  drawTimeAxis(ctx, left, plotW, h - bottom + 3);
+}
+
+function drawImuTiming() {
+  const { ctx, w, h } = fit($("imu-timing"));
+  if (!imuBins.length) return;
+  let floor = Infinity;
+  for (const bin of imuBins) if (finite(bin.lat[0])) floor = Math.min(floor, bin.lat[0]);
+  const period = imuStatus ? imuStatus.period : null;
+  layoutRows(ctx, [
+    { title: "Stamp interval (ms)", zero: true, minSpan: 1, refs: [{ value: period, color: css("--muted") }], series: [{ color: css("--accent"), band: (b) => b.dt }] },
+    { title: "Arrival − stamp, above its minimum (ms)", zero: true, minSpan: 1, series: [{ color: "#e08a00", band: (b) => (finite(b.lat[0]) ? [b.lat[0] - floor, b.lat[1] - floor] : [null, null]) }] },
+  ], w, h, imuBins[imuBins.length - 1].t);
+}
+
+function drawImuMotion() {
+  const { ctx, w, h } = fit($("imu-motion"));
+  if (!imuBins.length) return;
+  const axisSeries = (key) => ["X", "Y", "Z"].map((name, i) => ({ name, color: AXIS_COLORS[i], band: (b) => b[key][i] }));
+  layoutRows(ctx, [
+    { title: "Acceleration (m/s²)", minSpan: 1, series: axisSeries("a") },
+    { title: "Angular rate (°/s)", minSpan: 1, series: axisSeries("g") },
+  ], w, h, imuBins[imuBins.length - 1].t);
+}
+
+function draw() {
+  dirty = false;
+  if (page === "imu") { updateImuStatus(); drawImuBox(); drawImuTiming(); drawImuMotion(); }
+  else { updateStatus(); drawSky(); drawPos(); drawSnr(); }
+  document.body.dataset.state = "ready";
+}
+function schedule() {
+  if (dirty) return;
+  dirty = true;
+  requestAnimationFrame(draw);
+}
+function setMode(mode) {
+  view.mode = mode;
+  document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === mode));
+  schedule();
+}
+function zoom(factor) { if (view.mode === "fit") setMode("fixed"); view.span *= factor; schedule(); }
+
+document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.view)));
+$("zoomin").addEventListener("click", () => zoom(1 / 1.5));
+$("zoomout").addEventListener("click", () => zoom(1.5));
+$("clear").addEventListener("click", () => { tracks = [[], []]; schedule(); });
+const posCanvas = $("pos");
+posCanvas.addEventListener("wheel", (e) => { e.preventDefault(); zoom(e.deltaY > 0 ? 1.2 : 1 / 1.2); }, { passive: false });
+let drag = null;
+posCanvas.addEventListener("mousedown", (e) => { drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy }; });
+window.addEventListener("mouseup", () => { drag = null; });
+window.addEventListener("mousemove", (e) => {
+  if (!drag) return;
+  if (view.mode !== "fixed") setMode("fixed");
+  const r = posCanvas.getBoundingClientRect(), scale = Math.min(r.width, r.height) / view.span;
+  view.cx = drag.cx - (e.clientX - drag.x) / scale;
+  view.cy = drag.cy + (e.clientY - drag.y) / scale;
+  schedule();
+});
+const resized = new ResizeObserver(schedule);
+resized.observe($("grid")); resized.observe($("imu-grid"));
+
+function showPage(name) {
+  page = name === "imu" ? "imu" : "gnss";
+  $("grid").hidden = page !== "gnss"; $("imu-grid").hidden = page !== "imu";
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === page));
+  document.querySelectorAll("#bar label[data-page]").forEach((l) => { l.hidden = l.dataset.page !== page; });
+  schedule();
+}
+document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => {
+  history.replaceState(null, "", b.dataset.tab === "imu" ? "#imu" : location.pathname);
+  showPage(b.dataset.tab);
+}));
+
+function addImuBin(bin) {
+  if (!bin || bin.seq <= imuLastSeq) return;
+  imuLastSeq = bin.seq;
+  imuBins.push(bin);
+  while (imuBins.length && bin.t - imuBins[0].t > IMU_WINDOW) imuBins.shift();
+}
+
+function setLink(state, label) { const n = $("link"); n.className = state; setText("link", label); }
+const events = new EventSource("/events");
+function fillSelect(id, options, value, allowNone) {
+  const select = $(id);
+  const items = [...options];
+  if (value && !items.includes(value)) items.unshift(value);
+  const nodes = items.map((name) => new Option(name, name));
+  if (allowNone || !items.length) nodes.unshift(new Option(allowNone ? "none" : "no topics", ""));
+  select.replaceChildren(...nodes);
+  select.value = value;
+}
+function showSelection(s) {
+  $("sel-obs").value = s.obs; $("sel-sol").value = s.sol; $("sel-sol2").value = s.sol2; $("sel-imu").value = s.imu;
+  names = { sol: s.sol, sol2: s.sol2 };
+}
+for (const select of document.querySelectorAll("#bar select")) {
+  select.addEventListener("change", () => {
+    fetch("/select", { method: "POST", headers: { "X-Gnss-Visualizer": "select" }, body: `${select.dataset.slot}\n${select.value}` });
+  });
+}
+events.addEventListener("topics", (e) => {
+  const m = JSON.parse(e.data);
+  fillSelect("sel-obs", m.observations, m.selected.obs, false);
+  fillSelect("sel-sol", m.solutions, m.selected.sol, false);
+  fillSelect("sel-sol2", m.solutions, m.selected.sol2, true);
+  fillSelect("sel-imu", m.imus, m.selected.imu, false);
+  names = { sol: m.selected.sol, sol2: m.selected.sol2 };
+  for (const select of document.querySelectorAll("#bar select")) select.disabled = !m.can_select;
+  const none = !m.observations.length && !m.solutions.length;
+  setText("hint", !m.can_select ? "View only" : none ? "No GNSS topics yet. Reload this page after they start." : "");
+});
+events.addEventListener("selection", (e) => showSelection(JSON.parse(e.data)));
+events.addEventListener("init", (e) => {
+  const m = JSON.parse(e.data);
+  tracks = m.tracks; maxHistory = m.max_history;
+  schedule();
+});
+events.addEventListener("imu_init", (e) => {
+  imuBins = JSON.parse(e.data).bins;
+  if (imuBins.length) imuLastSeq = imuBins[imuBins.length - 1].seq;
+  schedule();
+});
+events.addEventListener("update", (e) => {
+  latest = JSON.parse(e.data);
+  lastMessage = performance.now();
+  addImuBin(latest.imu.bin);
+  imuStatus = latest.imu.status;
+  latest.points.forEach((points, slot) => {
+    const track = tracks[slot];
+    for (const p of points) track.push(p);
+    if (maxHistory > 0 && track.length > maxHistory) track.splice(0, track.length - maxHistory);
+  });
+  schedule();
+});
+events.onerror = () => setLink("lost", "disconnected");
+setInterval(() => {
+  if (events.readyState !== EventSource.OPEN) return;
+  if (performance.now() - lastMessage > 2000) setLink("stale", "no data");
+  else setLink("live", "live");
+}, 500);
+setMode("fit");
+showPage(location.hash === "#imu" ? "imu" : "gnss");
+window.addEventListener("hashchange", () => showPage(location.hash === "#imu" ? "imu" : "gnss"));
+}());
+</script>
+</body>
+</html>
