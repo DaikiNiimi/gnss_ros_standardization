@@ -54,7 +54,7 @@ One message per epoch; one `GnssObservation` per satellite and signal.
 # eph_qos.yaml (ros2 bag play --qos-profile-overrides-path eph_qos.yaml)
 /gnss/ephemeris:
   history: keep_last
-  depth: 1
+  depth: 256
   reliability: reliable
   durability: transient_local
 ```

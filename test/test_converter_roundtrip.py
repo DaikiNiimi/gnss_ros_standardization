@@ -20,7 +20,7 @@ args, _ = parser.parse_known_args()
 # install was sourced for Python message imports.
 os.environ['LD_LIBRARY_PATH']=str(pathlib.Path(args.bin_dir).resolve())+os.pathsep+os.environ.get('LD_LIBRARY_PATH','')
 sys.path.insert(0, str(pathlib.Path(args.bin_dir).resolve()/"rosidl_generator_py"))
-from gnss_ros_standardization.msg import GnssSolution, GnssObservations, GnssObservation, GnssEphemerides, GnssEphemeris, GlonassEphemeris
+from gnss_ros_standardization.msg import GnssSolution, GnssObservations, GnssObservation, GnssEphemerides, GnssEphemeris, GlonassEphemeris, GnssBaseStation
 assert GnssEphemeris.get_fields_and_field_types()["iode"] == "uint16", "stale message generation"
 
 def topic_metadata(**fields):
@@ -119,6 +119,52 @@ class ConverterRoundtrip(unittest.TestCase):
             self.assertNotIn('1980',output)
             self.assertEqual(sum(l.startswith('>') for l in output.splitlines()),2)
             self.assertTrue(all('2024' in l for l in output.splitlines() if 'TIME OF' in l))
+
+    def test_base_station_records_fill_header_and_split_files_per_station(self):
+        def station(sid,tow,arp=None,height=float('nan'),antenna=''):
+            r=GnssBaseStation(station_id=sid,valid_from_week=2300,valid_from_tow=float(tow),
+                              position_valid=arp is not None,antenna_height=height,
+                              antenna_descriptor=antenna,receiver_type='TRIMBLE NETR9' if antenna else '')
+            if arp: r.arp_ecef.x,r.arp_ecef.y,r.arp_ecef.z=arp
+            return r
+        a=(-3961904.9,3348993.8,3698211.7);b=(-3962904.9,3347993.8,3698711.7)
+        # As rtcm_decoder_node publishes them: 77 pending, then complete.
+        records=[(0,station(42,100,a,1.5)),(2,station(77,102)),(4,station(77,102,b,antenna='TRM59800.00     NONE'))]
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);bag=root/'input'
+            writer=rosbag2_py.SequentialWriter()
+            writer.open(rosbag2_py.StorageOptions(uri=str(bag),storage_id='sqlite3'),rosbag2_py.ConverterOptions('cdr','cdr'))
+            for name,kind in [('/base/gnss/observation','GnssObservations'),('/base/gnss/station','GnssBaseStation')]:
+                writer.create_topic(topic_metadata(name=name,type='gnss_ros_standardization/msg/'+kind,serialization_format='cdr'))
+            stamp=1707004882000000000
+            for i,tow in enumerate(range(100,106)):
+                for slot,record in records:
+                    if slot==i: writer.write('/base/gnss/station',serialize_message(record),stamp+2*i)
+                m=GnssObservations(week=2300,tow=float(tow),observations=[GnssObservation(
+                    satid='G01',system='G',prn=1,code_str='1C',code=1,p=21000000.,l=float('nan'),d=0.,snr=40.)])
+                writer.write('/base/gnss/observation',serialize_message(m),stamp+2*i+1)
+            del writer
+            self.converter('rosbag_to_rinex','--bag',bag,'--obs',root/'base.obs','--topic-obs','/base/gnss/observation')
+            self.assertFalse((root/'base.obs').exists())
+            def header(path,label):
+                return next(l for l in path.read_text().splitlines() if l[60:].strip()==label)
+            first,second=root/'base_1.obs',root/'base_2.obs'
+            self.assertEqual([sum(l.startswith('>') for l in f.read_text().splitlines()) for f in (first,second)],[2,4])
+            self.assertEqual(header(first,'MARKER NAME')[:60].strip(),'0042')
+            self.assertEqual(header(second,'MARKER NAME')[:60].strip(),'0077')
+            # Marker = ARP lowered by the 1006 antenna height; DELTA H restores the ARP.
+            delta=[float(v) for v in header(first,'ANTENNA: DELTA H/E/N')[:42].split()]
+            self.assertAlmostEqual(delta[0],1.5)
+            marker=[float(v) for v in header(first,'APPROX POSITION XYZ')[:42].split()]
+            self.assertAlmostEqual(math.dist(marker,a),1.5,places=3)
+            self.assertLess(math.hypot(*marker),math.hypot(*a))
+            self.assertEqual([float(v) for v in header(second,'APPROX POSITION XYZ')[:42].split()],list(b))
+            self.assertIn('TRM59800.00',header(second,'ANT # / TYPE'))
+            self.assertIn('TRIMBLE NETR9',header(second,'REC # / TYPE / VERS'))
+            self.assertIn('2024',header(second,'TIME OF FIRST OBS'))
+            # An explicit station topic must exist in the bag.
+            self.converter('rosbag_to_rinex','--bag',bag,'--obs',root/'plain.obs','--topic-obs',
+                           '/base/gnss/observation','--topic-station','/missing',success=False)
 
     def test_observation_epoch_merge_order_and_transaction(self):
         def epoch(tow,sat='G01',p=21000000.):
@@ -266,11 +312,25 @@ class ConverterRoundtrip(unittest.TestCase):
                            '--out',root/'bag','--storage','sqlite3')
             reader=rosbag2_py.SequentialReader()
             reader.open(rosbag2_py.StorageOptions(uri=str(root/'bag'),storage_id='sqlite3'),rosbag2_py.ConverterOptions('',''))
-            actual=[]
+            actual=[];solutions=[]
             while reader.has_next():
                 topic,data,_=reader.read_next()
                 if topic.endswith('_odom'):actual.append(deserialize_message(data,Odometry))
+                elif topic=='/gnss/reference/solution':solutions.append(deserialize_message(data,GnssSolution))
             self.assertEqual(len(actual),2)
+            self.assertEqual(len(solutions),2)
+            for i,m in enumerate(solutions):
+                self.assertAlmostEqual(m.pos_enu.x,i*10.)
+                self.assertAlmostEqual(m.pos_enu.y,0.)
+                self.assertAlmostEqual(m.pos_enu.z,0.)
+                self.assertEqual((m.pos_enu_org_ecef.x,m.pos_enu_org_ecef.y,m.pos_enu_org_ecef.z),(6378137.,0.,0.))
+                self.assertTrue(math.isnan(m.age_diff))
+                for covariance in (m.pos_cov_ecef,m.vel_cov_ecef,m.pos_enu_cov,m.vel_enu_cov):
+                    self.assertTrue(all(math.isnan(v) for v in covariance))
+            # Unknown values must stay readable in the RTKLIB text format.
+            pos=root/'reference.pos'
+            self.converter('rosbag_to_pos','--bag',root/'bag','--topic','/gnss/reference/solution','--out',pos)
+            self.assertNotIn('nan',pos.read_text().lower().split('ratio')[-1])
             for i,m in enumerate(actual):
                 self.assertEqual((m.header.frame_id,m.child_frame_id),('map','base_link'))
                 self.assertAlmostEqual(m.pose.pose.position.x,i*10.)

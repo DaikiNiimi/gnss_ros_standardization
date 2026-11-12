@@ -2,7 +2,7 @@
 //   Read side  (bag → RTKLIB):   deserializeRos, normalizeBagUri, deriveOutputPath
 //                                — used by rosbag_to_rinex.cpp, rosbag_to_pos.cpp
 //   Write side (RTKLIB → bag):   resolveStorageId, toRosTimeGpst,
-//                                set_qos_profile, kDefaultQosYaml
+//                                set_qos_profile, *ConverterQosYaml
 //                                — used by rinex_to_rosbag.cpp, pos_to_rosbag.cpp
 
 #pragma once
@@ -171,18 +171,34 @@ inline void set_qos_profile(TopicMetadataT& tm, const std::string& yaml_profile)
   }
 }
 
-// Default QoS YAML used by all converter writers: depth=1, RELIABLE, VOLATILE.
+// The depth is the publisher history `ros2 bag play` offers, sized so that a
+// stalled subscriber does not lose samples.
+inline constexpr int kConverterQosDepth = 2000;
+inline constexpr int kConverterImuQosDepth = 20000;
+inline constexpr int kConverterEphemerisQosDepth = 256;
+
+// KEEP_LAST, RELIABLE profile YAML. durability: 1 = TRANSIENT_LOCAL, 2 = VOLATILE.
+inline std::string converterQosYaml(int depth, int durability) {
+  return "- history: 1\n"
+         "  depth: " + std::to_string(depth) + "\n"
+         "  reliability: 1\n"
+         "  durability: " + std::to_string(durability) + "\n"
+         "  deadline:\n    sec: 0\n    nsec: 0\n"
+         "  lifespan:\n    sec: 0\n    nsec: 0\n"
+         "  liveliness: 0\n"
+         "  liveliness_lease_duration:\n    sec: 0\n    nsec: 0\n"
+         "  avoid_ros_namespace_conventions: false";
+}
+
+// Observation, solution and reference topics: RELIABLE, VOLATILE.
 inline const std::string& defaultConverterQosYaml() {
-  static const std::string kProfile =
-      "- history: 1\n"
-      "  depth: 1\n"
-      "  reliability: 1\n"
-      "  durability: 2\n"
-      "  deadline:\n    sec: 0\n    nsec: 0\n"
-      "  lifespan:\n    sec: 0\n    nsec: 0\n"
-      "  liveliness: 0\n"
-      "  liveliness_lease_duration:\n    sec: 0\n    nsec: 0\n"
-      "  avoid_ros_namespace_conventions: false";
+  static const std::string kProfile = converterQosYaml(kConverterQosDepth, 2);
+  return kProfile;
+}
+
+// IMU topic: RELIABLE, VOLATILE, deeper history for the higher message rate.
+inline const std::string& imuConverterQosYaml() {
+  static const std::string kProfile = converterQosYaml(kConverterImuQosDepth, 2);
   return kProfile;
 }
 
@@ -195,16 +211,7 @@ inline const std::string& defaultConverterQosYaml() {
 // only one satellite and starve for double-differences. 256 latches a full multi-GNSS
 // constellation so any late/racing subscriber receives the complete ephemeris set.
 inline const std::string& transientLocalConverterQosYaml() {
-  static const std::string kProfile =
-      "- history: 1\n"
-      "  depth: 256\n"
-      "  reliability: 1\n"
-      "  durability: 1\n"
-      "  deadline:\n    sec: 0\n    nsec: 0\n"
-      "  lifespan:\n    sec: 0\n    nsec: 0\n"
-      "  liveliness: 0\n"
-      "  liveliness_lease_duration:\n    sec: 0\n    nsec: 0\n"
-      "  avoid_ros_namespace_conventions: false";
+  static const std::string kProfile = converterQosYaml(kConverterEphemerisQosDepth, 1);
   return kProfile;
 }
 

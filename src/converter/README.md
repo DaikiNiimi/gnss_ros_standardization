@@ -8,7 +8,9 @@
 | `rosbag_to_pos` | rosbag (`GnssSolution`) → RTKLIB `.pos` |
 
 Bags are written as `mcap` or `sqlite3`, chosen by `--storage` or by the `--out`
-extension (`.mcap`, `.db3`). Readers detect the storage from the bag.
+extension (`.mcap`, `.db3`). Readers detect the storage from the bag. Topics are
+recorded reliable with history depth 2000 (IMU 20000; ephemeris 256, transient
+local), which `ros2 bag play` offers on playback.
 
 ## `rinex_to_rosbag`
 
@@ -49,6 +51,7 @@ ros2 run gnss_ros_standardization rosbag_to_rinex \
 | `--bag PATH` | required | bag directory or file |
 | `--obs PATH`, `--nav PATH` | — | output RINEX files |
 | `--topic-obs`, `--topic-nav` | `/gnss/observation`, `/gnss/ephemeris` | input topics |
+| `--topic-station` | `<obs topic>/../station` if present | RTCM base station records (`GnssBaseStation`) |
 | `--rnx-version X.YY` | `3.05` | RINEX 3.00–3.05 |
 | `--nav-systems` | `GREJCIS` | constellations written to NAV |
 | `--nav-all-transmissions` | off | keep every transmission of the same record |
@@ -58,6 +61,18 @@ ros2 run gnss_ros_standardization rosbag_to_rinex \
 
 A conversion that cannot be written without losing a value stops with an error and
 leaves existing output files unchanged.
+
+An RTCM base recorded by the pipelines converts with its station records:
+
+```bash
+ros2 run gnss_ros_standardization rosbag_to_rinex \
+  --bag run.mcap --obs base.obs --topic-obs /base/gnss/observation
+```
+
+The header carries the station ID (`MARKER NAME`), the marker position and antenna
+height from RTCM 1005/1006, and the antenna and receiver from 1007/1008/1033. When
+the base station changes during the recording, each station is written to its own
+file: `base_1.obs`, `base_2.obs`, ...
 
 ## `rosbag_to_pos`
 

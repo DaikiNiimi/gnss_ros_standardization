@@ -344,6 +344,26 @@ static long writeReferenceCsv(rosbag2_cpp::Writer& writer,
     }
     const float nan = std::numeric_limits<float>::quiet_NaN();
     sol.gdop = sol.pdop = sol.hdop = sol.vdop = nan;
+    // The reference file gives no differential age or uncertainty. A zero
+    // covariance would claim an exact position.
+    sol.age_diff = nan;
+    for (auto* covariance : {&sol.pos_cov_ecef, &sol.vel_cov_ecef, &sol.pos_enu_cov, &sol.vel_enu_cov})
+      covariance->fill(std::numeric_limits<double>::quiet_NaN());
+    // Anchor the local ENU at the first reference position. The solution's
+    // pos_enu and the Odometry map frame share this origin.
+    if (!have_origin) {
+      origin_llh[0] = lat*kDeg2Rad; origin_llh[1] = lon*kDeg2Rad; origin_llh[2] = hgt;
+      origin_ecef[0] = ex; origin_ecef[1] = ey; origin_ecef[2] = ez;
+      have_origin = true;
+    }
+    const double delta[3]{ex-origin_ecef[0],ey-origin_ecef[1],ez-origin_ecef[2]};
+    double position[3]; ecef2enu(origin_llh,delta,position);
+    sol.pos_enu.x = position[0];
+    sol.pos_enu.y = position[1];
+    sol.pos_enu.z = position[2];
+    sol.pos_enu_org_ecef.x = origin_ecef[0];
+    sol.pos_enu_org_ecef.y = origin_ecef[1];
+    sol.pos_enu_org_ecef.z = origin_ecef[2];
     writer.write(sol, topic, stamp);
 
     nav_msgs::msg::Odometry odom;
@@ -364,15 +384,8 @@ static long writeReferenceCsv(rosbag2_cpp::Writer& writer,
     odom.pose.pose.orientation.y = cr * sp * cy + sr * cp * sy;
     odom.pose.pose.orientation.z = cr * cp * sy - sr * sp * cy;
     // Odometry pose is expressed in map; twist is expressed in child_frame_id.
-    // Anchor map at the first reference position. A zero pose for every sample
-    // and ENU velocity labelled base_link are both misleading to consumers.
-    if (!have_origin) {
-      origin_llh[0] = lat*kDeg2Rad; origin_llh[1] = lon*kDeg2Rad; origin_llh[2] = hgt;
-      origin_ecef[0] = ex; origin_ecef[1] = ey; origin_ecef[2] = ez;
-      have_origin = true;
-    }
-    const double delta[3]{ex-origin_ecef[0],ey-origin_ecef[1],ez-origin_ecef[2]};
-    double position[3]; ecef2enu(origin_llh,delta,position);
+    // A zero pose for every sample and ENU velocity labelled base_link are both
+    // misleading to consumers.
     odom.pose.pose.position.x = position[0];
     odom.pose.pose.position.y = position[1];
     odom.pose.pose.position.z = position[2];
@@ -682,7 +695,7 @@ static int run(int argc, char** argv) {
     }
 
     if (!args.imu_path.empty()) {
-      gnss_converter_io::set_qos_profile(tm, gnss_converter_io::defaultConverterQosYaml());
+      gnss_converter_io::set_qos_profile(tm, gnss_converter_io::imuConverterQosYaml());
       tm.name = args.topic_imu;
       tm.type = "sensor_msgs/msg/Imu";
       writer.create_topic(tm);

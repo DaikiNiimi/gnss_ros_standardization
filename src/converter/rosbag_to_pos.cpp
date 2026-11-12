@@ -2,7 +2,7 @@
 // Convert a ROS 2 bag containing GnssSolution messages to an RTKLIB .pos file.
 //
 // Output format: standard RTKLIB lat/lon/height .pos with GPST date column.
-// Q codes: 1=fix, 2=float, 3=sbas, 4=dgps, 5=single, 6=ppp.
+// Q codes: 1=fix, 2=float, 3=sbas, 4=dgps, 5=single, 6=ppp, 7=dr.
 //
 // Design: single-pass streaming. Each GnssSolution message becomes one .pos
 // line. Rows where status maps to Q=0 (unknown), or where the time stamp is
@@ -64,6 +64,7 @@ static int statusToQ(uint8_t status) {
 
 // RTKLIB convention: signed sqrt of covariance — sgn(c)*sqrt(|c|).
 static double signedSqrt(double c) {
+  if (!std::isfinite(c)) return 0.0;  // unknown, as RTKLIB writes it
   if (c >= 0.0) return std::sqrt(c);
   return -std::sqrt(-c);
 }
@@ -91,7 +92,7 @@ static void writeHeader(FILE* fp, const std::string& prog, bool with_velocity) {
   std::fprintf(fp, "%% pos mode  : (from receiver / GnssSolution.status)\n");
   std::fprintf(fp, "%%\n");
   std::fprintf(fp, "%% (lat/lon/height=WGS84/ellipsoidal,"
-                   "Q=1:fix,2:float,3:sbas,4:dgps,5:single,6:ppp,"
+                   "Q=1:fix,2:float,3:sbas,4:dgps,5:single,6:ppp,7:dr,"
                    "ns=# of satellites)\n");
   std::fprintf(fp, "%%  %-23s  %14s %14s %10s %3s %3s "
                    "%8s %8s %8s %8s %8s %8s %6s %6s",
@@ -144,7 +145,8 @@ static bool writeEpoch(FILE* fp, const GnssSolution& m, bool with_velocity) {
     m.latitude, m.longitude, m.altitude,
     Q, m.num_sats,
     sdn, sde, sdu, sdne, sdeu, sdun,
-    (double)m.age_diff, (double)m.ratio);
+    std::isfinite(m.age_diff) ? (double)m.age_diff : 0.0,
+    std::isfinite(m.ratio) ? (double)m.ratio : 0.0);
 
   if (with_velocity) {
     // Some decoders emit quiet_NaN for vel_enu when origin/velocity is

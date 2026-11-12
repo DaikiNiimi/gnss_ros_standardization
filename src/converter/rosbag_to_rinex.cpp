@@ -42,6 +42,7 @@
 #include <cmath>
 #include <queue>
 #include "gnss_ros_standardization/gnss_utils.hpp"
+#include "gnss_ros_standardization/msg/gnss_base_station.hpp"
 #include <cstdint>
 #include <filesystem>
 
@@ -56,6 +57,7 @@ using gnss_ros_standardization::msg::GnssObservations;
 using gnss_ros_standardization::msg::GnssEphemeris;
 using gnss_ros_standardization::msg::GlonassEphemeris;
 using gnss_ros_standardization::msg::GnssEphemerides;
+using gnss_ros_standardization::msg::GnssBaseStation;
 
 
 /*============================== Utilities ==============================*/
@@ -115,6 +117,7 @@ struct Options {
   std::string topic_obs = "/gnss/observation";
   std::string topic_nav = "/gnss/ephemeris";
   bool topic_nav_explicit = false;
+  std::string topic_station = "";  // empty: <obs topic>/../station when the bag has it
   std::string out_obs_path = "";
   std::string out_nav_path = "";
   double rinex_version = 3.05;
@@ -303,6 +306,11 @@ struct HeaderIonosphere {
 class Scanner {
 public:
   explicit Scanner(const Options& opt): opt_(opt) {}
+  /// Station configurations (GnssBaseStation), latest copy of each, ordered
+  /// by valid_from; and the observation epoch times.
+  std::vector<GnssBaseStation> stations;
+  std::vector<gtime_t> epochs;
+
   std::tuple<ObsTypeSet, TimeSpan, GloFcnInfo, HeaderIonosphere> run() {
     HeaderIonosphere ion;
     ObsTypeSet types;
@@ -311,17 +319,31 @@ public:
     BagReader reader(opt_.bag_uri);
     rclcpp::Serialization<GnssObservations> ser_obs;
     rclcpp::Serialization<GnssEphemerides> ser_nav;
+    rclcpp::Serialization<GnssBaseStation> ser_station;
 
     while (reader.has_next()) {
       auto msg = reader.read_next();
       if (!msg) break;
 
-      if (msg->topic_name == opt_.topic_obs) {
+      if (!opt_.topic_station.empty() && msg->topic_name == opt_.topic_station) {
+        GnssBaseStation record;
+        if (!deserializeRos(*msg, ser_station, record) || record.valid_from_week == 0) continue;
+        const auto key = [](const GnssBaseStation& r) {
+          return std::make_pair(r.valid_from_week * 604800.0 + r.valid_from_tow, r.station_id);
+        };
+        auto it = std::find_if(stations.begin(), stations.end(),
+                               [&](const auto& r) { return key(r) == key(record); });
+        if (it != stations.end()) *it = record;
+        else stations.insert(std::upper_bound(stations.begin(), stations.end(), record,
+                             [&](const auto& a, const auto& b) { return key(a) < key(b); }), record);
+      }
+      else if (msg->topic_name == opt_.topic_obs) {
         GnssObservations obs;
         if (!deserializeRos(*msg, ser_obs, obs)) continue;
 
         if (obs.week == 0 || !std::isfinite(obs.tow) || obs.tow < 0 || obs.tow >= 604800) continue;
         gtime_t t = gpst2time((int)obs.week, obs.tow);
+        epochs.push_back(t);
         if (!span.init) { span.init=true; span.first=t; span.last=t; }
         else {
           if (timediff(t, span.first)<0) span.first=t;
@@ -527,10 +549,11 @@ class ObsWriter {
   public:
     ObsWriter(const Options &opt, FILE *fp, 
               const ObsTypeSet &types, const TimeSpan* span,
-              const GloFcnInfo* glo_fcn_info)
+              const GloFcnInfo* glo_fcn_info, const GnssBaseStation* station = nullptr)
       : opt_(opt), fp_(fp),
         rnx_(makeRnxOpt(opt.rinex_version, maskFromSystemString(opt.nav_systems),
                            opt.program_name, opt.run_by)) {
+      if (station) applyStation(*station);
   
       fillRnxTobs(rnx_, types);
   
@@ -620,11 +643,36 @@ class ObsWriter {
       GnssObservations msg;
     };
 
+    // RTCM announces the antenna reference point and its height above the
+    // marker; RINEX wants the marker and the antenna height (DELTA H).
+    void applyStation(const GnssBaseStation& s) {
+      std::snprintf(rnx_.marker, sizeof(rnx_.marker), "%04u", static_cast<unsigned>(s.station_id));
+      std::snprintf(rnx_.rec[0], sizeof(rnx_.rec[0]), "%s", s.receiver_serial.c_str());
+      std::snprintf(rnx_.rec[1], sizeof(rnx_.rec[1]), "%s", s.receiver_type.c_str());
+      std::snprintf(rnx_.rec[2], sizeof(rnx_.rec[2]), "%s", s.receiver_firmware.c_str());
+      std::snprintf(rnx_.ant[0], sizeof(rnx_.ant[0]), "%s", s.antenna_serial.c_str());
+      std::snprintf(rnx_.ant[1], sizeof(rnx_.ant[1]), "%s", s.antenna_descriptor.c_str());
+      if (s.position_valid) {
+        const double arp[3] = {s.arp_ecef.x, s.arp_ecef.y, s.arp_ecef.z};
+        std::copy(arp, arp + 3, rnx_.apppos);
+        if (std::isfinite(s.antenna_height) && s.antenna_height != 0.0) {
+          double llh[3], down[3];
+          const double enu[3] = {0.0, 0.0, -s.antenna_height};
+          ecef2pos(arp, llh);
+          enu2ecef(llh, enu, down);
+          for (int i = 0; i < 3; ++i) rnx_.apppos[i] += down[i];
+          rnx_.antdel[0] = s.antenna_height;
+        }
+      }
+      for (int i = 0; i < 4; ++i)
+        rnx_.glo_cp_bias[i] = std::isfinite(s.glonass_code_phase_bias[i]) ? s.glonass_code_phase_bias[i] : 0.0;
+    }
+
     void writeOne(const GnssObservations &m, gtime_t t) {
       if (have_written_ && timediff(t,last_written_) <= 0)
         throw std::runtime_error("Observation epoch out of order beyond reorder window (3 s); input is not monotonic");
       // Write directly from ROS values: obsd_t uses zero as missing and only
-      // six slots, neither of which expresses the ROS observation contract.
+      // NFREQ+NEXOBS slots, neither of which expresses the ROS observation contract.
       using Observation = gnss_ros_standardization::msg::GnssObservation;
       std::map<int, std::map<std::string, const Observation*>> satellites;
       for (const auto& o : m.observations) {
@@ -702,7 +750,7 @@ public:
     std::fprintf(out,
       "Usage: rosbag_to_rinex --bag <bag_dir_or_db3> "
       "[--obs OBS_PATH --nav NAV_PATH "
-      "--topic-obs TOPIC --topic-nav TOPIC "
+      "--topic-obs TOPIC --topic-nav TOPIC --topic-station TOPIC "
       "--rnx-version X.YY --nav-systems GREJCIS "
       "--nav-all-transmissions --no-flush --legacy-glonass-time --pgm NAME --runby NAME] "
       "[--help] [--version]\n");
@@ -748,6 +796,24 @@ public:
         throw std::runtime_error("Wrong input topic type: " + topic);
     };
     if (!opt.out_obs_path.empty()) require_topic(opt.topic_obs, "GnssObservations");
+    // Station records (rtcm_decoder_node) sit next to the observation topic:
+    // /base/gnss/observation -> /base/gnss/station.
+    if (!opt.out_obs_path.empty()) {
+      if (!opt.topic_station.empty()) {
+        require_topic(opt.topic_station, "GnssBaseStation");
+      } else {
+        const std::string suffix = "/observation";
+        const auto& obs_topic = opt.topic_obs;
+        if (obs_topic.size() > suffix.size() &&
+            obs_topic.compare(obs_topic.size() - suffix.size(), suffix.size(), suffix) == 0) {
+          const auto candidate = obs_topic.substr(0, obs_topic.size() - suffix.size()) + "/station";
+          if (std::any_of(topics.begin(), topics.end(), [&](const auto& t) {
+                return t.name == candidate && t.type == "gnss_ros_standardization/msg/GnssBaseStation";
+              }))
+            opt.topic_station = candidate;
+        }
+      }
+    }
     if (!opt.out_nav_path.empty()) {
       const bool present = std::any_of(topics.begin(), topics.end(),
           [&](const auto& t) { return t.name == opt.topic_nav; });
@@ -758,16 +824,48 @@ public:
 
     Scanner scanner(opt);
     auto [types, span, glo, ion] = scanner.run();
+    const auto& stations = scanner.stations;
 
     OutputTransaction outputs;
     FILE *fp_obs = nullptr;
     FILE *fp_nav = nullptr;
-    std::unique_ptr<ObsWriter> obs_writer;
+    std::vector<std::unique_ptr<ObsWriter>> obs_writers;  // one per station configuration
     std::unique_ptr<NavWriter> nav_writer;
+    // Index of the station configuration an epoch belongs to: the latest
+    // valid_from <= t (epochs before the first record go with the first).
+    auto segment = [&](gtime_t t) -> std::size_t {
+      std::size_t index = 0;
+      for (std::size_t i = 1; i < stations.size(); ++i)
+        if (timediff(t, gpst2time(stations[i].valid_from_week, stations[i].valid_from_tow)) >= 0) index = i;
+      return index;
+    };
 
     if (!opt.out_obs_path.empty()) {
-      fp_obs = outputs.open(opt.out_obs_path);
-      obs_writer = std::make_unique<ObsWriter>(opt, fp_obs, types, &span, &glo);
+      if (stations.size() <= 1) {
+        fp_obs = outputs.open(opt.out_obs_path);
+        obs_writers.push_back(std::make_unique<ObsWriter>(opt, fp_obs, types, &span, &glo,
+                                                          stations.empty() ? nullptr : &stations[0]));
+      } else {
+        // One base per RINEX file: a station change starts a new file,
+        // <obs>_1.<ext>, <obs>_2.<ext>, ...
+        std::vector<TimeSpan> spans(stations.size());
+        for (const auto& t : scanner.epochs) {
+          auto& s = spans[segment(t)];
+          if (!s.init) { s.init = true; s.first = s.last = t; }
+          else { if (timediff(t, s.first) < 0) s.first = t; if (timediff(t, s.last) > 0) s.last = t; }
+        }
+        const std::filesystem::path base_path(opt.out_obs_path);
+        for (std::size_t i = 0; i < stations.size(); ++i) {
+          auto path = base_path;
+          path.replace_filename(base_path.stem().string() + "_" + std::to_string(i + 1) +
+                                base_path.extension().string());
+          std::fprintf(stderr, "Info: station %u from week %u tow %.3f -> %s\n",
+                       static_cast<unsigned>(stations[i].station_id), stations[i].valid_from_week,
+                       stations[i].valid_from_tow, path.string().c_str());
+          obs_writers.push_back(std::make_unique<ObsWriter>(opt, outputs.open(path.string()), types,
+                                                            &spans[i], &glo, &stations[i]));
+        }
+      }
     }
 
     if (!opt.out_nav_path.empty()) {
@@ -781,15 +879,17 @@ public:
     while (reader.has_next()) {
       auto msg = reader.read_next(); if (!msg) throw std::runtime_error("Bag returned an empty record before EOF");
 
-      if (obs_writer && msg->topic_name == opt.topic_obs) {
-        GnssObservations o; deserializeRos(*msg, ser_obs, o); obs_writer->writeEpoch(o);
+      if (!obs_writers.empty() && msg->topic_name == opt.topic_obs) {
+        GnssObservations o; deserializeRos(*msg, ser_obs, o);
+        const bool dated = o.week != 0 && std::isfinite(o.tow) && o.tow >= 0 && o.tow < 604800;
+        obs_writers[dated ? segment(gpst2time(o.week, o.tow)) : 0]->writeEpoch(o);
       } else if (nav_writer && msg->topic_name == opt.topic_nav) {
         GnssEphemerides n; deserializeRos(*msg, ser_nav, n); nav_writer->onEphemerides(n);
       }
     }
 
-    if (obs_writer) obs_writer->finish();
-    obs_writer.reset(); nav_writer.reset();
+    for (auto& writer : obs_writers) writer->finish();
+    obs_writers.clear(); nav_writer.reset();
     outputs.commit();
     rclcpp::shutdown();
     return 0;
@@ -807,6 +907,7 @@ private:
       else if (a=="--nav") o.out_nav_path = next();
       else if (a=="--topic-obs") o.topic_obs = next();
       else if (a=="--topic-nav") { o.topic_nav = next(); o.topic_nav_explicit = true; }
+      else if (a=="--topic-station") o.topic_station = next();
       else if (a=="--rnx-version") {
         const auto text = next();
         size_t consumed = 0;
