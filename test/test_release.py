@@ -234,9 +234,9 @@ class ReleaseStartup(unittest.TestCase):
             checked+=1
         self.assertGreaterEqual(checked,9)
 
-    def test_ubx_driver_rejects_unknown_generation_and_dynamic_model(self):
+    def test_ubx_driver_rejects_unknown_port_and_dynamic_model(self):
         if not (BIN/'ubx_driver_node').exists(): self.skipTest('ubx_driver_node not built')
-        self.reject('ubx_driver_node',['configure_on_startup:=false','generation:=G8'],'generation must be G9 or G10')
+        self.reject('ubx_driver_node',['receiver_port:=COM1'],'receiver_port must be')
         self.reject('ubx_driver_node',['configure_on_startup:=false','dynamic_model:=car'],'dynamic_model must be one of')
 
     def test_release_C1_base_required(self):

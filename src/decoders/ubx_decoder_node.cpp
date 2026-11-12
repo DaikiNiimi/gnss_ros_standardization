@@ -69,6 +69,7 @@ class UbxDecoderNode : public rclcpp::Node {
 
   decoder_common::EpochFlushPolicy epoch_flush_;
   wire::ReceiverHealth receiver_health_;
+  decoder_common::PublishRateLog obs_rate_log_;
   void initializeParameters() {
     receiver_health_.configure(5.0);
     receiver_health_.limits(MAXOBS, NFREQ, NEXOBS, MAXPRNCMP);
@@ -77,6 +78,7 @@ class UbxDecoderNode : public rclcpp::Node {
     if (!std::isfinite(tick_s) || tick_s <= 0.0 || tick_s >= 1.0)
       throw std::invalid_argument("imu.sttag_tick_s must be finite and in (0, 1)");
     imu_clock_ = ins::SensorTickClock(ins::SensorTickClock::Config{tick_s, 1ull << 32});
+    stream_pacing_.configure(tick_s);
     RCLCPP_INFO(get_logger(), "ESF-RAW uses estimated time: tick=%.9g s, GNSS anchor expiry=2 s", tick_s);
 
     declare_parameter<std::string>("stream_path", "serial:///dev/ttyACM0:115200");
@@ -199,10 +201,11 @@ class UbxDecoderNode : public rclcpp::Node {
     eph_store_.clear(); publishSnapshot();
     source_=SolutionSource::UNDETERMINED; grace_started_=false; saw_binary_during_grace_=false;
     imu_clock_.reset(); gnss_anchor_.reset(); imu_offset_clock_.reset();
+    replay_arrival_ns_=-1; last_observation_ns_=-1;
     last_raw_imu_ns_=-1; has_gnss_anchor_=false; imu_gps_warned_=false;
     gnss_anchor_offset_s_=0; gnss_anchor_arrival_ns_=0;
     has_nav_clock_=false; last_nav_clock_={}; pvt_time_valid_=false; nav_time_ref_.reset(); observation_time_ref_.reset();
-    imu_clock_drift_reported_=false;
+    imu_rate_reported_=ins::SensorTickClock::RateState::Pending;
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Receiver session reset: %s; waiting for fresh time/navigation references",
                 disconnected ? "connection lost" : "measurement rewind or clock reset");
   }
@@ -227,7 +230,7 @@ class UbxDecoderNode : public rclcpp::Node {
     }
     if (wire_framer_.rejected() != wire_last_rejected_) {
       wire_last_rejected_ = wire_framer_.rejected();
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      RCLCPP_DEBUG(get_logger(),
           "Rejected binary frame/header count: %llu",
           static_cast<unsigned long long>(wire_last_rejected_));
     }
@@ -252,7 +255,11 @@ class UbxDecoderNode : public rclcpp::Node {
         resetReceiverSession(false);
         receiver_timeline_.frame(wire::Protocol::Ubx,f);
       }
-      for (uint8_t byte : f.bytes) {
+      // Known-undecodable navigation subframes are counted, not reported as
+      // malformed input (RTKLIB would return an error for every one).
+      const bool undecoded = ubx::isUndecodedSfrbx(f.cls, static_cast<uint8_t>(f.id), f.payload);
+      if (undecoded) GNSS_RX_EVENT(GNSS_RX_NAV_UNSUPPORTED, 1);
+      if (!undecoded) for (uint8_t byte : f.bytes) {
         const int status = input_ubx(&raw_, byte);
         // A successfully decoded RAW/RAWX dates the receiver even with zero
         // observations. Do not refresh from unrelated, weekless messages.
@@ -272,6 +279,7 @@ class UbxDecoderNode : public rclcpp::Node {
   }
 
   void handleUbxFrame() {
+    if (ubx_cls_ == ubx::CLASS_INF) receiver_text_.inf(get_logger(), ubx_id_, ubx_payload_);
     if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_RAW) handleEsfRaw();
     if (ubx_cls_ == ubx::CLASS_ESF && ubx_id_ == ubx::ID_ESF_INS) handleEsfIns();
     if (ubx_cls_ == ubx::CLASS_NAV && ubx_id_ == ubx::ID_NAV_PVT)     handleNavPvt();
@@ -659,11 +667,11 @@ class UbxDecoderNode : public rclcpp::Node {
   // put the IMU on GPS time is the documented practice of enabling ESF-RAW
   // alongside NAV-PVT / NAV-CLOCK and ESTIMATING the offset from them.
   //
-  // The estimate is the same one GnssEpochAligner already makes and is tested
-  // on: the sliding-window minimum of (host arrival - GPS time of the epoch),
-  // which is the host/GPS clock difference plus the receiver's minimum output
-  // latency. Subtracting it from the sTtag timeline lands the IMU on UTC(GPST),
-  // the same base the GNSS topics use when use_gps_timestamp is set.
+  // The estimate (ins::GnssTimeAnchor) is a robust floor of (host arrival - GPS
+  // time of the epoch), which is the host/GPS clock difference plus the
+  // receiver's minimum output latency. Subtracting it from the sTtag timeline
+  // lands the IMU on UTC(GPST), the same base the GNSS topics use when
+  // use_gps_timestamp is set.
   //
   // What this does NOT remove is that minimum latency difference: GNSS epochs
   // and IMU samples do not leave the receiver with the same delay, and u-blox
@@ -673,7 +681,8 @@ class UbxDecoderNode : public rclcpp::Node {
   // is tAcc, a quality gate on the epoch's time. Expect an O(10-100 ms)
   // systematic offset in ABSOLUTE terms; what a fusion node consumes - the
   // IMU/GNSS relative alignment - is what this fixes.
-  void feedGnssAnchor(int week, double tow, const rclcpp::Time& arrival) {
+  void feedGnssAnchor(int week, double tow, const rclcpp::Time& arrival,
+                      ins::GnssTimeAnchor::Source source) {
     if (week <= 0 || !std::isfinite(tow) || tow < 0.0 || tow >= 604800.0) { GNSS_RX_EVENT(GNSS_RX_TIME,1); return; }
     if (!gnss_utils::isRosTimeRepresentable(gpst2time(week,tow))) { GNSS_RX_EVENT(GNSS_RX_TIME,1); return; }
     // NAV-CLOCK tAcc gate: the Integration manual warns that iTOW values may
@@ -681,11 +690,20 @@ class UbxDecoderNode : public rclcpp::Node {
     // uncertain. 1 ms is generous - a receiver with time has tAcc in the tens
     // of nanoseconds - so this only excludes genuinely bad time.
     if (has_nav_clock_ && last_nav_clock_.time_acc_s > 1e-3) { GNSS_RX_EVENT(GNSS_RX_TIME,1); return; }
-    const rclcpp::Time aligned =
-        gnss_anchor_.align(static_cast<uint32_t>(week), tow, arrival);
     const int64_t meas_ns =
         gnss_utils::gpstToUtcRosTime(gpst2time(week, tow)).nanoseconds();
-    const double offset_s = (aligned.nanoseconds() - meas_ns) / 1e9;
+    if (source == ins::GnssTimeAnchor::Source::Observation) {
+      // On a replay, IMU samples read after this epoch are taken as arriving at
+      // the next one: their position in the stream is all that is known.
+      const int64_t interval_ns = meas_ns - last_observation_ns_;
+      if (last_observation_ns_ >= 0 && interval_ns > 0 && interval_ns < 2000000000LL)
+        observation_interval_ns_ = interval_ns;
+      last_observation_ns_ = meas_ns;
+      replay_arrival_ns_ = meas_ns + observation_interval_ns_;
+    }
+    gnss_anchor_.update(source, arrival.nanoseconds(), meas_ns);
+    if (!gnss_anchor_.valid()) return;
+    const double offset_s = gnss_anchor_.offset();
     if (has_gnss_anchor_ && std::fabs(offset_s - gnss_anchor_offset_s_) > 1.0) {
       imu_offset_clock_.reset(); last_raw_imu_ns_ = -1;
       RCLCPP_WARN(get_logger(), "GNSS anchor discontinuity: resetting estimated IMU time");
@@ -711,38 +729,10 @@ class UbxDecoderNode : public rclcpp::Node {
   // invisible failure into a log line. Report once when the window first
   // fills, then only while it stays implausible.
   void reportImuClockDrift() {
-    if (!imu_clock_.windowFilled()) return;
-    const double ppm = imu_clock_.driftRate() * 1e6;
-
-    // A "drift" of whole percent is not a clock error at all: it means the
-    // stream is not real-time paced, which is normal when replaying a
-    // recorded log through file:// (minutes of receiver time handed over in
-    // seconds). The tick constant cannot be judged against a clock that is
-    // not running at wall speed, so say so rather than cry wolf.
-    constexpr double kNotRealTimePpm = 50000.0;  // 5 %
-    if (std::fabs(ppm) > kNotRealTimePpm) {
-      if (!imu_clock_drift_reported_) {
-        imu_clock_drift_reported_ = true;
-        RCLCPP_INFO(get_logger(),
-          "ESF-RAW stream is not real-time paced (%.0f %% off wall speed) — "
-          "offline replay assumed; the sTtag tick diagnostic is skipped.",
-          ppm / 1e4);
-      }
-      return;
-    }
-
-    if (!imu_clock_drift_reported_) {
-      imu_clock_drift_reported_ = true;
-      RCLCPP_INFO(get_logger(),
-        "ESF-RAW sTtag clock: %.1f ppm vs the host clock", ppm);
-    }
-    if (std::fabs(ppm) > 100.0) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 30000,
-        "ESF-RAW sTtag clock drifting at %.0f ppm vs the host — "
-        "imu.sttag_tick_s may be wrong for this receiver/firmware; measured tick %.12g s.",
-        ppm, get_parameter("imu.sttag_tick_s").as_double() * (1.0 + imu_clock_.driftRate()));
-    }
+    const std::string line = ins::tickRateReport(imu_clock_, imu_rate_reported_);
+    if (!line.empty()) RCLCPP_INFO(get_logger(), "%s", line.c_str());
   }
+
 
   // UBX-ESF-RAW: batched IMU samples, one Imu published per sTtag sample set
   // (see ubx::esf_raw::parseEsfRawSamples). ESF-RAW carries no GNSS time —
@@ -767,11 +757,24 @@ class UbxDecoderNode : public rclcpp::Node {
     if (samples.empty()) return;
 
     const rclcpp::Time arrival = now();
+    // A replayed log arrives at reading speed, so host time says nothing about
+    // when a sample was taken: the IMU timeline then follows the GNSS epochs
+    // reached in the log. The anchor offset does not apply to that timeline.
+    if (use_gps_timestamp_ && !imu_replay_ &&
+        stream_pacing_.update(samples.back().sttag, arrival.nanoseconds() * 1e-9) ==
+            ins::StreamPacing::State::Replay) {
+      imu_replay_ = true;
+      imu_clock_.reset();
+      RCLCPP_INFO(get_logger(), "ESF-RAW input is not paced by real time: IMU time follows the GNSS epochs in the log");
+    }
+    if (imu_replay_ && replay_arrival_ns_ < 0) { receiver_health_.timeWithheld(); return; }
+    const rclcpp::Time clock_arrival =
+        imu_replay_ ? rclcpp::Time(replay_arrival_ns_, arrival.get_clock_type()) : arrival;
     std::string clock_warn;
     const auto stamps = ins::stampBatch(
         imu_clock_, samples, [](const ubx::esf_raw::Sample& s) {
           return static_cast<uint64_t>(s.sttag);
-        }, arrival, &clock_warn);
+        }, clock_arrival, &clock_warn);
     if (!clock_warn.empty() && clock_warn.find("clamped") == std::string::npos) {
       imu_offset_clock_.reset(); last_raw_imu_ns_ = -1;
     }
@@ -788,7 +791,7 @@ class UbxDecoderNode : public rclcpp::Node {
       imu_gps_warned_ = true;
       RCLCPP_WARN(get_logger(),
         "use_gps_timestamp is set but no GNSS epoch has anchored the ESF-RAW "
-        "timeline yet — enable UBX-NAV-PVT, UBX-NAV-CLOCK or RXM-RAWX so the "
+        "timeline yet — enable RXM-RAWX or UBX-NAV-PVT so the "
         "IMU can be put on GPS time.");
     }
 
@@ -796,10 +799,11 @@ class UbxDecoderNode : public rclcpp::Node {
       const auto& s = samples[i];
       sensor_msgs::msg::Imu imu;
       const auto measurement_stamp = time_base_.stampPrecomputed(
-          use_gps_timestamp_, has_gnss_anchor_ &&
+          use_gps_timestamp_, imu_replay_ || (has_gnss_anchor_ &&
           arrival.nanoseconds() >= gnss_anchor_arrival_ns_ &&
           arrival.nanoseconds() - gnss_anchor_arrival_ns_ <= 2000000000LL &&
-          std::chrono::steady_clock::now()-gnss_anchor_steady_ <= std::chrono::seconds(2), has_gnss_anchor_ ? imuHostToGps(stamps[i]) : stamps[i], stamps[i],
+          std::chrono::steady_clock::now()-gnss_anchor_steady_ <= std::chrono::seconds(2)),
+          has_gnss_anchor_ && !imu_replay_ ? imuHostToGps(stamps[i]) : stamps[i], stamps[i],
           get_logger(), *get_clock());
     if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
       if (measurement_stamp->nanoseconds() <= last_raw_imu_ns_) { GNSS_RX_EVENT(GNSS_RX_TIME,1); continue; }
@@ -884,7 +888,9 @@ class UbxDecoderNode : public rclcpp::Node {
 
   // Message Handling
 
+  decoder_common::ReceiverTextLog receiver_text_;
   void handleNmeaSentence(const std::string& sentence) {
+    receiver_text_.nmea(get_logger(), sentence);
     startGraceIfNeeded();
     if (!nmea_parser_.parseSentence(sentence, nmea_solution_)) return;
     commitSourceLockIfDue();
@@ -937,7 +943,7 @@ class UbxDecoderNode : public rclcpp::Node {
     const rclcpp::Time sol_arrival = now();
     if (source_ == SolutionSource::BINARY && week_for_stamp > 0 &&
         pvt_time_valid_) {
-      feedGnssAnchor(week_for_stamp, sol.time_tow, sol_arrival);
+      feedGnssAnchor(week_for_stamp, sol.time_tow, sol_arrival, ins::GnssTimeAnchor::Source::Solution);
     }
 
     const auto measurement_stamp = time_base_.stamp(
@@ -976,7 +982,7 @@ class UbxDecoderNode : public rclcpp::Node {
     // they need no extra time-validity gate; now() is the host arrival the
     // offset estimate is built from, taken before any stamping.
     const rclcpp::Time obs_arrival = now();
-    feedGnssAnchor(week, tow, obs_arrival);
+    feedGnssAnchor(week, tow, obs_arrival, ins::GnssTimeAnchor::Source::Observation);
 
     msg::GnssObservations msg;
     const auto measurement_stamp = time_base_.stamp(
@@ -998,11 +1004,11 @@ class UbxDecoderNode : public rclcpp::Node {
     obs_pub_->publish(msg);
     receiver_health_.published(msg.week, msg.tow, msg.observations.size());
 
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+    if (obs_rate_log_.due()) RCLCPP_INFO(get_logger(),
+      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d) rate=%s",
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
-      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
+      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown, obs_rate_log_.rate());
   }
 
   // Ephemeris Publishing
@@ -1052,14 +1058,15 @@ class UbxDecoderNode : public rclcpp::Node {
   // is what catches a wrong constant.
   ins::SensorTickClock imu_clock_{ins::SensorTickClock::Config{
       ubx::esf_raw::STTAG_TICK_S, 1ull << 32}};
-  bool imu_clock_drift_reported_{false};
+  ins::SensorTickClock::RateState imu_rate_reported_{ins::SensorTickClock::RateState::Pending};
 
-  // GNSS time anchor for the ESF-RAW timeline (see feedGnssAnchor). The
-  // estimator is GnssEpochAligner in TowAutoOffset mode, reused rather than
-  // reimplemented because it is the tested one.
-  gnss_utils::GnssEpochAligner gnss_anchor_{
-      gnss_utils::GnssEpochAligner::Config{
-          gnss_utils::GnssEpochAligner::Source::TowAutoOffset, 60.0}};
+  // GNSS time anchor for the ESF-RAW timeline (see feedGnssAnchor).
+  ins::GnssTimeAnchor gnss_anchor_;
+  ins::StreamPacing stream_pacing_;
+  bool imu_replay_{false};
+  int64_t replay_arrival_ns_{-1};
+  int64_t last_observation_ns_{-1};
+  int64_t observation_interval_ns_{100000000};
   double gnss_anchor_offset_s_{0.0};
   bool   has_gnss_anchor_{false};
   int64_t gnss_anchor_arrival_ns_{0};

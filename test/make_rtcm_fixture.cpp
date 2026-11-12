@@ -7,8 +7,43 @@
 extern "C" {
 #include "rtklib.h"
 }
+namespace {
+bool emit(rtcm_t &rtcm, FILE *out, int type, int sync = 0) {
+  return gen_rtcm3(&rtcm, type, 0, sync) &&
+         std::fwrite(rtcm.buff, 1, rtcm.nbyte, out) == static_cast<size_t>(rtcm.nbyte);
+}
+bool epoch(rtcm_t &rtcm, FILE *out, double tow) {
+  rtcm.time = gpst2time(2300, tow);
+  rtcm.obs.n = 1;
+  auto &obs = rtcm.obs.data[0];
+  obs.time = rtcm.time; obs.sat = satno(SYS_GPS, 1); obs.code[0] = CODE_L1C;
+  obs.P[0] = 21000000.125; obs.L[0] = obs.P[0] / (CLIGHT / FREQL1); obs.SNR[0] = 45.0f;
+  return emit(rtcm, out, 1077);
+}
+// Station A (1006 first) for two epochs, then station B: two epochs before its
+// 1005 arrives, one after, then its 1033, then a last epoch.
+int stations(rtcm_t &rtcm, FILE *out) {
+  rtcm.staid = 42;
+  rtcm.sta.pos[0] = -3961904.9; rtcm.sta.pos[1] = 3348993.8; rtcm.sta.pos[2] = 3698211.7;
+  rtcm.sta.hgt = 1.5;
+  if (!emit(rtcm, out, 1006) || !epoch(rtcm, out, 100.) || !epoch(rtcm, out, 101.)) return 1;
+  rtcm.staid = 77;
+  if (!epoch(rtcm, out, 102.) || !epoch(rtcm, out, 103.)) return 1;
+  rtcm.sta.pos[0] = -3962904.9; rtcm.sta.pos[1] = 3347993.8; rtcm.sta.pos[2] = 3698711.7;
+  if (!emit(rtcm, out, 1005) || !epoch(rtcm, out, 104.)) return 1;
+  std::strcpy(rtcm.sta.antdes, "TRM59800.00     NONE"); rtcm.sta.antsetup = 3;
+  std::strcpy(rtcm.sta.antsno, "A1"); std::strcpy(rtcm.sta.rectype, "TRIMBLE NETR9");
+  std::strcpy(rtcm.sta.recver, "5.45"); std::strcpy(rtcm.sta.recsno, "R1");
+  // The periodic repeats must not produce further records.
+  if (!emit(rtcm, out, 1033) || !emit(rtcm, out, 1005) || !emit(rtcm, out, 1033) ||
+      !epoch(rtcm, out, 105.)) return 1;
+  free_rtcm(&rtcm);
+  return std::fclose(out) == 0 ? 0 : 1;
+}
+}  // namespace
 int main(int argc, char **argv) {
-  if (argc != 2 && (argc != 3 || (std::strcmp(argv[2], "navigation") && std::strcmp(argv[2], "glonass"))))
+  if (argc != 2 && (argc != 3 || (std::strcmp(argv[2], "navigation") && std::strcmp(argv[2], "glonass") &&
+                                  std::strcmp(argv[2], "stations"))))
     return 2;
   FILE *out = std::fopen(argv[1], "wb");
   if (!out)
@@ -18,6 +53,7 @@ int main(int argc, char **argv) {
     return 1;
   rtcm.time = gpst2time(2300, 100.0);
   rtcm.staid = 42;
+  if (argc == 3 && !std::strcmp(argv[2], "stations")) return stations(rtcm, out);
   if (argc == 3 && !std::strcmp(argv[2], "glonass")) {
     rtcm.obs.n = 1;
     auto& obs = rtcm.obs.data[0]; obs.sat = satno(SYS_GLO, 1);
@@ -32,7 +68,7 @@ int main(int argc, char **argv) {
     free_rtcm(&rtcm);
     return std::fclose(out) == 0 ? 0 : 1;
   }
-  if (argc == 3) {
+  if (argc == 3) {  // navigation
     for (int sys : {SYS_GPS, SYS_GAL}) {
       rtcm.ephsat = satno(sys, 1);
       auto& e = rtcm.nav.eph[rtcm.ephsat - 1];

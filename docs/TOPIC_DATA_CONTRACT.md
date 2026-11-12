@@ -1,6 +1,6 @@
 # Topic data contract
 
-Rules shared by every node that publishes or reads the six message types.
+Rules shared by every node that publishes or reads the seven message types.
 
 ## Time and frame
 
@@ -92,6 +92,23 @@ An unknown velocity is NaN together with its covariance.
 SPP and RTK report the RTKLIB solution time (the receiver epoch corrected by the
 estimated receiver clock bias, within about 1 ms of the observation epoch); EKF and
 FGO report the observation epoch.
+
+## Base station (`GnssBaseStation`)
+
+Published by `rtcm_decoder_node` on `topics.station` (`/gnss/station`; the pipelines
+use `/base/gnss/station`).
+
+- One record per station configuration. A new record starts when the station ID
+  in the observations changes, or when 1005/1006 announce a different position for
+  the same ID. It is published before the first observation epoch of that
+  configuration, whose GPST is `valid_from_week` / `valid_from_tow`.
+- An observation epoch at GPST t belongs to the record with the latest
+  `valid_from` <= t. Observations are never withheld while a position is unknown:
+  the record then has `position_valid: false`, and is republished with the same
+  `valid_from` when 1005/1006 arrive, and again when 1007/1008/1033/1230 add to it.
+- `arp_ecef` is the antenna reference point the observations refer to (RTCM
+  DF025–DF027). `antenna_height` is the ARP height above the marker, for reference.
+- QoS: reliable, transient local, depth 8.
 
 ## IMU (`sensor_msgs/Imu`)
 

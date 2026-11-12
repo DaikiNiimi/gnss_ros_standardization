@@ -105,7 +105,10 @@ class NovatelDriverNode : public rclcpp::Node {
 
     if (config_.configure_on_startup) {
       configureReceiver();
+    } else {
+      requestStoredNavigation();
     }
+    receiver_health_.restartPeriod();  // judge input from the end of the startup commands
 
     openRtcmRelay();
     if (config_.configure_on_startup && (config_.enable_range || config_.enable_rangecmp)) receiver_health_.expectObservations(config_.publish_rate);
@@ -127,6 +130,7 @@ class NovatelDriverNode : public rclcpp::Node {
 
   decoder_common::EpochFlushPolicy epoch_flush_;
   wire::ReceiverHealth receiver_health_;
+  decoder_common::PublishRateLog obs_rate_log_;
   void initializeParameters() {
     receiver_health_.configure(5.0);
     receiver_health_.limits(MAXOBS, NFREQ, NEXOBS, MAXPRNCMP);
@@ -352,6 +356,45 @@ class NovatelDriverNode : public rclcpp::Node {
         });
   }
 
+  // Ephemeris and ionosphere logs selected by the messages.* flags.
+  // GALEPHEMERISB (ID 1122) carries both I/NAV and F/NAV; GALINAVEPHEMERISB
+  // (ID 1309) is not supported by RTKLIB.
+  std::vector<const char*> navigationLogs() const {
+    std::vector<const char*> logs;
+    if (config_.enable_gps_ephem)   logs.push_back(novatel::LOG_RAWEPHEM);
+    if (config_.enable_glo_ephem)   logs.push_back(novatel::LOG_GLOEPHEMERIS);
+    if (config_.enable_gal_ephem)   logs.push_back(novatel::LOG_GALEPHEMERIS);
+    if (config_.enable_bds_ephem)   logs.push_back(novatel::LOG_BDSEPHEMERIS);
+    if (config_.enable_qzs_ephem)   logs.push_back(novatel::LOG_QZSSRAWEPHEM);
+    if (config_.enable_navic_ephem) logs.push_back(novatel::LOG_NAVICEPHEMERIS);
+    if (config_.enable_ionutc) {
+      logs.push_back(novatel::LOG_IONUTC);
+      logs.push_back(novatel::LOG_GALIONO);
+      logs.push_back(novatel::LOG_QZSSIONUTC);
+    }
+    return logs;
+  }
+
+  // configure_on_startup false: receiver settings are not changed, but the
+  // stored navigation data is requested once (LOG ... ONCE installs nothing).
+  // Failures are not fatal; without any reply the remaining requests are skipped.
+  void requestStoredNavigation() {
+    if (!decoder_common::twoWayStream(stream_)) return;
+    for (const char* log : navigationLogs()) {
+      const std::string cmd = "LOG " + config_.receiver_port + " " + log + " ONCE";
+      const int result = decoder_common::commandAscii(stream_, wire::Protocol::Novatel, cmd,
+          [this](uint8_t byte) { parseOem4Byte(byte); });
+      if (result > 0) continue;
+      if (result == -1) {
+        RCLCPP_WARN(get_logger(), "Stored navigation request rejected: %s", cmd.c_str());
+        continue;
+      }
+      RCLCPP_WARN(get_logger(), "Stored navigation request got no reply (%s); remaining requests "
+                  "skipped, navigation data arrives as the receiver outputs it", cmd.c_str());
+      return;
+    }
+  }
+
   void configureReceiverOem4(const std::string& port_pfx, const std::string& ontime, const std::string& onchanged) {
     // NMEA sentences first — issued while the port is still quiet (caller
     // has just sent UNLOGALL). Sending NMEA after high-rate binary `LOG`s
@@ -377,37 +420,8 @@ class NovatelDriverNode : public rclcpp::Node {
 
     if (config_.enable_bestxyz)  sendCommand("LOG " + port_pfx + novatel::LOG_BESTXYZB + ontime);
 
-    if (config_.enable_gps_ephem) {
-      sendCommand("LOG " + port_pfx + novatel::LOG_RAWEPHEM + onchanged);
-    }
-
-    if (config_.enable_glo_ephem) {
-      sendCommand("LOG " + port_pfx + novatel::LOG_GLOEPHEMERIS + onchanged);
-    }
-
-    if (config_.enable_gal_ephem) {
-      sendCommand("LOG " + port_pfx + novatel::LOG_GALEPHEMERIS + onchanged);
-      // Note: GALINAVEPHEMERISB (ID 1309) is not supported by RTKLIB.
-      // GALEPHEMERISB (ID 1122) already contains both I/NAV and F/NAV data.
-    }
-
-    if (config_.enable_bds_ephem) {
-      sendCommand("LOG " + port_pfx + novatel::LOG_BDSEPHEMERIS + onchanged);
-    }
-
-    if (config_.enable_qzs_ephem) {
-      sendCommand("LOG " + port_pfx + novatel::LOG_QZSSRAWEPHEM + onchanged);
-    }
-
-    if (config_.enable_navic_ephem) {
-      sendCommand("LOG " + port_pfx + novatel::LOG_NAVICEPHEMERIS + onchanged);
-    }
-
-    if (config_.enable_ionutc) {
-      sendCommand("LOG " + port_pfx + novatel::LOG_IONUTC + onchanged);
-      sendCommand("LOG " + port_pfx + novatel::LOG_GALIONO + onchanged);
-      sendCommand("LOG " + port_pfx + novatel::LOG_QZSSIONUTC + onchanged);
-    }
+    // ONCHANGED outputs the current content at once, then on every change.
+    for (const char* log : navigationLogs()) sendCommand("LOG " + port_pfx + log + onchanged);
 
     // IMU outputs (require IMU-connected receiver; CORRIMUDATA additionally requires SPAN)
     if (config_.enable_rawimusx)    sendCommand(std::string("LOG ")   + port_pfx + novatel::LOG_RAWIMUSXB    + " ONNEW");
@@ -422,7 +436,7 @@ class NovatelDriverNode : public rclcpp::Node {
     if (!config_.receiver_port.empty()) {
       sendCommand(std::string(novatel::CMD_UNLOGALL) + " " + config_.receiver_port);
     }
-    std::this_thread::sleep_for(500ms);
+    decoder_common::pumpStreamFor(stream_, 500ms, [this](uint8_t byte) { parseOem4Byte(byte); });
 
     // Note: the correction port is put into RTCMV3 mode in openRtcmRelay(), by
     // sending INTERFACEMODE over that port itself (not here on the main port).
@@ -488,7 +502,7 @@ class NovatelDriverNode : public rclcpp::Node {
     }
     if (wire_framer_.rejected() != wire_last_rejected_) {
       wire_last_rejected_ = wire_framer_.rejected();
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      RCLCPP_DEBUG(get_logger(),
           "Rejected binary frame/header count: %llu",
           static_cast<unsigned long long>(wire_last_rejected_));
     }
@@ -1001,11 +1015,11 @@ class NovatelDriverNode : public rclcpp::Node {
     obs_pub_->publish(msg);
     receiver_health_.published(msg.week, msg.tow, msg.observations.size());
 
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+    if (obs_rate_log_.due()) RCLCPP_INFO(get_logger(),
+      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d) rate=%s",
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
-      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
+      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown, obs_rate_log_.rate());
   }
 
   // Ephemeris Publishing

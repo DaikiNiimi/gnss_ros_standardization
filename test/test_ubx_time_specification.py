@@ -66,5 +66,31 @@ class UbxTimeSpecification(unittest.TestCase):
                     stamp=m.header.stamp.sec+m.header.stamp.nanosec*1e-9
                     self.assertAlmostEqual(stamp,315964800+2300*604800+m.tow-18,delta=1e-6)
 
+    def test_replayed_log_keeps_imu_on_gnss_time(self):
+        # 60 s of log at 100 Hz IMU / 10 Hz RAWX, delivered as fast as it is read:
+        # file:// directly, and over a socket as launch's playback does. The tick
+        # is 0.8 % off the nominal value, as on a real ZED-F9R. The sample index
+        # travels in the accel x value so a lost message cannot shift the check.
+        data=b''
+        for n in range(6000):
+            data+=raw_esf(5000+n*258,(n,0,0,0,0,0))
+            if n%10==9:data+=rawx(100.+(n+1)*0.01)
+        for mode,file_input in (('file',True),('socket',False)):
+            for node in ('decoder','driver'):
+                with self.subTest(mode=mode,node=node):
+                    params=['-p','use_gps_timestamp:=true','-p','topics.observation:=/review/obs']
+                    if node=='driver':params+=['-p','messages.esf_raw:=true']
+                    result=wire.run('spec_ubx_replay_'+mode+'_'+node,'ubx_'+node+'_node',[data],params,
+                                    file_input=file_input,chunk_delay=0)
+                    self.assertGreater(len(result['raw']),50)
+                    worst=0.0
+                    for m in result['raw']:
+                        n=round(m.linear_acceleration.x*1024)
+                        if n<3000:continue
+                        stamp=m.header.stamp.sec+m.header.stamp.nanosec*1e-9
+                        expected=315964800+2300*604800+100.+n*0.01-18
+                        worst=max(worst,abs(stamp-expected))
+                    self.assertLess(worst,0.05)
+
 
 if __name__=='__main__':unittest.main(argv=[__file__]+wire.unittest_args)

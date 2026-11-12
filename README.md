@@ -83,6 +83,7 @@ The script builds GTSAM (borglab/gtsam `develop`, commit
 | `BUILD_SPP_NODE`, `BUILD_RTK_NODE`, `BUILD_EKF_NODE` | `ON` | SPP, RTK, EKF |
 | `BUILD_FGO_NODES` | `OFF` | `gnss_fgo`, `gnss_imu_fgo` |
 | `ENABLE_GLO`, `ENABLE_GAL`, `ENABLE_BDS`, `ENABLE_QZS`, `ENABLE_SBS`, `ENABLE_IRN` | `ON` | constellations compiled into RTKLIB |
+| `NFREQ` | `3` | RTKLIB primary frequency slots per observation (3-6); `4` keeps BeiDou B3I and B1C apart |
 
 ## Quick start
 

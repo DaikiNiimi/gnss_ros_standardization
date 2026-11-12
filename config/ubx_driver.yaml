@@ -54,15 +54,15 @@ ubx_driver_node:
     # up on a different time base from the GNSS topics of the same node.
     # ESF-RAW carries no GNSS time of its own (sTtag only), so its timeline is
     # shifted onto GPS time using the offset estimated from the GNSS epochs -
-    # enable nav_pvt, nav_clock or rawx so an anchor exists. Without one the
+    # enable rawx or nav_pvt so an anchor exists. Without one the
     # session stays on the host clock and says so once.
     #
     # Caveat worth knowing before trusting it as absolute time: the estimate
     # removes the host/GPS clock difference and the minimum GNSS output
     # latency, but GNSS epochs and IMU samples do not leave the receiver with
-    # the same delay, and u-blox documents neither. Expect an O(10-100 ms)
-    # systematic offset in ABSOLUTE terms. What it does fix - and what a
-    # fusion node actually consumes - is the IMU/GNSS RELATIVE alignment.
+    # the same delay, and u-blox documents neither. On a ZED-F9R (HPS 1.40) the
+    # IMU stamps were estimated to be 20-50 ms earlier than GPS time; the value
+    # can differ between receivers. The time base itself does not drift.
     #
     # The base is chosen once, at the first published message, and never
     # changes mid-session.
@@ -73,10 +73,14 @@ ubx_driver_node:
     #          airborne_1g, airborne_2g, airborne_4g, watch
     dynamic_model: "portable"
     
-    # Receiver Generation
-    # Options: G9 (F9P/M8 etc.), G10 (X20P etc.)
-    # G9 uses legacy CFG commands, G10 uses CFG-VALSET
-    generation: "G9"
+    # Receiver port the output messages are configured on. THISPORT = the port
+    # the driver is connected to, identified at startup. Name it (USB, UART1,
+    # UART2, I2C, SPI) only for a receiver that cannot report it.
+    # On the other ports the driver's UBX/NMEA messages are switched off (their
+    # rate follows rate_hz); RTCM output and port settings are left as they are.
+    # The configuration interface (CFG-VALSET or legacy UBX-CFG) follows the
+    # protocol version the receiver reports.
+    receiver_port: "THISPORT"
     
     # Output Messages
     messages:
@@ -118,7 +122,7 @@ ubx_driver_node:
 
       # IMU messages (requires F9R or other IMU-enabled receiver). Both can be
       # enabled simultaneously; they publish to different topics.
-      esf_raw: false   # ESF-RAW: uncalibrated, native IMU sample rate → /gnss/imu/data_raw
+      esf_raw: true   # ESF-RAW: uncalibrated, native IMU sample rate → /gnss/imu/data_raw
       esf_ins: false   # ESF-INS: receiver-calibrated angular rate + accel → /gnss/imu/data
       #
       # Use esf_raw for GNSS/IMU fusion. ESF-INS is the receiver's own fused

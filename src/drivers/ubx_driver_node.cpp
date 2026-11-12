@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <array>
+#include <optional>
 #include "gnss_ros_standardization/receiver_health.hpp"
 #include "gnss_ros_standardization/receiver_session.hpp"
 #include "gnss_ros_standardization/binary_framer.hpp"
@@ -6,6 +8,10 @@
 
 #include <chrono>
 #include <cstring>
+#include <cstdio>
+#include <functional>
+#include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -42,7 +48,7 @@ struct UbxConfig {
   int rate_hz{5};
   bool configure_on_startup{true};
   std::string dynamic_model{"portable"};
-  std::string generation{"G9"};
+  std::string receiver_port{"THISPORT"};
   std::string frame_id{"gnss_link"};
   
   // Message settings
@@ -100,7 +106,7 @@ struct UbxConfig {
 ///
 /// This node configures u-blox receivers based on YAML parameters,
 /// decodes the received data, and publishes GNSS observations and ephemerides.
-/// Supports both Gen 9 (legacy CFG commands) and Gen 10+ (CFG-VALSET).
+/// Configures through CFG-VALSET (protocol 27+, chosen from MON-VER) or legacy UBX-CFG.
 class UbxDriverNode : public rclcpp::Node {
  public:
   UbxDriverNode() : Node("ubx_driver_node") {
@@ -111,6 +117,7 @@ class UbxDriverNode : public rclcpp::Node {
 
     if (config_.configure_on_startup) {
       configureReceiver();
+      receiver_health_.restartPeriod();  // judge input from the end of configuration
     }
 
     openRtcmRelay();
@@ -133,6 +140,7 @@ class UbxDriverNode : public rclcpp::Node {
 
   decoder_common::EpochFlushPolicy epoch_flush_;
   wire::ReceiverHealth receiver_health_;
+  decoder_common::PublishRateLog obs_rate_log_;
   void initializeParameters() {
     receiver_health_.configure(5.0);
     receiver_health_.limits(MAXOBS, NFREQ, NEXOBS, MAXPRNCMP);
@@ -141,6 +149,7 @@ class UbxDriverNode : public rclcpp::Node {
     if (!std::isfinite(tick_s) || tick_s <= 0.0 || tick_s >= 1.0)
       throw std::invalid_argument("imu.sttag_tick_s must be finite and in (0, 1)");
     imu_clock_ = ins::SensorTickClock(ins::SensorTickClock::Config{tick_s, 1ull << 32});
+    stream_pacing_.configure(tick_s);
     RCLCPP_INFO(get_logger(), "ESF-RAW uses estimated time: tick=%.9g s, GNSS anchor expiry=2 s", tick_s);
 
     // Basic settings
@@ -148,7 +157,7 @@ class UbxDriverNode : public rclcpp::Node {
     declare_parameter<int>("rate_hz", config_.rate_hz);
     declare_parameter<bool>("configure_on_startup", config_.configure_on_startup);
     declare_parameter<std::string>("dynamic_model", config_.dynamic_model);
-    declare_parameter<std::string>("generation", config_.generation);
+    declare_parameter<std::string>("receiver_port", config_.receiver_port);
     // frame_id: ROS TF frame name attached to the GNSS antenna phase center.
     // Default "gnss_link" — override in launch to integrate with vehicle TF tree.
     declare_parameter<std::string>("frame_id", config_.frame_id);
@@ -198,9 +207,6 @@ class UbxDriverNode : public rclcpp::Node {
     config_.rate_hz = get_parameter("rate_hz").as_int();
     config_.configure_on_startup = get_parameter("configure_on_startup").as_bool();
     config_.dynamic_model = get_parameter("dynamic_model").as_string();
-    config_.generation = get_parameter("generation").as_string();
-    if (config_.generation != "G9" && config_.generation != "G10")
-      throw std::invalid_argument("generation must be G9 or G10");
     {
       static const char* const kModels[] = {"portable", "stationary", "pedestrian",
           "automotive", "sea", "airborne_1g", "airborne_2g", "airborne_4g", "watch"};
@@ -209,6 +215,9 @@ class UbxDriverNode : public rclcpp::Node {
         throw std::invalid_argument("dynamic_model must be one of portable, stationary, "
             "pedestrian, automotive, sea, airborne_1g, airborne_2g, airborne_4g, watch");
     }
+    config_.receiver_port = get_parameter("receiver_port").as_string();
+    // THISPORT is resolved against the receiver at startup (CFG-PRT poll).
+    if (config_.configure_on_startup) port_ = ubx::parseReceiverPort(config_.receiver_port);
     config_.frame_id = get_parameter("frame_id").as_string();
     
     config_.enable_rawx = get_parameter("messages.rawx").as_bool();
@@ -254,9 +263,6 @@ class UbxDriverNode : public rclcpp::Node {
     constexpr int history_limit = 8;
     eph_store_.setHistoryPerSatellite(static_cast<size_t>(history_limit));
 
-    // Detect USB connection from path
-    is_usb_connection_ = (config_.stream_path.find("ttyACM") != std::string::npos);
-
     // Validate rate
     gnss_utils::validatePublishRate(config_.rate_hz, /*fallback=*/5, /*max_hz=*/20, get_logger());
     
@@ -264,7 +270,7 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Configuration loaded:");
     RCLCPP_INFO(get_logger(), "  Stream: %s", decoder_common::redactStreamUri(config_.stream_path).c_str());
     RCLCPP_INFO(get_logger(), "  Rate: %d Hz", config_.rate_hz);
-    RCLCPP_INFO(get_logger(), "  Generation: %s", config_.generation.c_str());
+    RCLCPP_INFO(get_logger(), "  Receiver port: %s", config_.receiver_port.c_str());
     RCLCPP_INFO(get_logger(), "  Dynamic model: %s", config_.dynamic_model.c_str());
     RCLCPP_INFO(get_logger(), "  GNSS: GPS=%d GLO=%d GAL=%d BDS=%d QZS=%d IRN=%d SBAS=%d",
                 config_.enable_gps, config_.enable_glonass, config_.enable_galileo,
@@ -378,18 +384,14 @@ class UbxDriverNode : public rclcpp::Node {
 
   // Receiver Configuration (Unified Entry Point)
 
-  bool isGen10() const { return config_.generation == "G10"; }
+  bool useValset() const { return use_valset_; }
 
   void configureReceiver() {
-    RCLCPP_INFO(get_logger(), "Configuring receiver (Gen: %s)...", config_.generation.c_str());
-    
-    // Step 0: Ping receiver to verify connection and baud rate
-    if (!pingReceiver()) {
-      RCLCPP_ERROR(get_logger(), "Failed to communicate with receiver. Check connection and baud rate.");
-      throw std::runtime_error("Receiver MON-VER poll failed");
-    }
+    RCLCPP_INFO(get_logger(), "Configuring receiver...");
 
-    std::this_thread::sleep_for(500ms);
+    // Step 0: MON-VER verifies the link and selects the configuration interface.
+    identifyReceiver();
+    resolveReceiverPort();
 
     // Step 1: GNSS signal configuration
     setupGnssSignals();
@@ -404,48 +406,128 @@ class UbxDriverNode : public rclcpp::Node {
     setupOutputMessages();
 
     is_configured_ = true;
-    if (rejected_config_transactions_ == 0)
+    if (rejected_items_.empty()) {
       RCLCPP_INFO(get_logger(), "Receiver acknowledged configuration");
-    else
-      RCLCPP_WARN(get_logger(), "Receiver configuration is incomplete: %zu rejected transactions; verify requested signals and outputs", rejected_config_transactions_);
+    } else {
+      constexpr size_t kListed = 6;
+      std::string list;
+      for (size_t i = 0; i < rejected_items_.size() && i < kListed; ++i)
+        list += (i ? ", " : "") + rejected_items_[i];
+      if (rejected_items_.size() > kListed)
+        list += " (+" + std::to_string(rejected_items_.size() - kListed) + " more)";
+      RCLCPP_WARN(get_logger(), "Receiver configuration is incomplete; receiver rejected: %s", list.c_str());
+    }
   }
 
-  bool pingReceiver() {
-    // Send MON-VER (0x0A 0x04) with empty payload (Poll request)
-    std::vector<uint8_t> payload = {};
-    sendUbxRaw(ubx::CLASS_MON, ubx::ID_MON_VER, payload);
-    
-    return waitForResponse(ubx::CLASS_MON, ubx::ID_MON_VER);
+  /// Poll MON-VER and choose CFG-VALSET (protocol >= 27) or legacy UBX-CFG.
+  void identifyReceiver() {
+    sendUbxRaw(ubx::CLASS_MON, ubx::ID_MON_VER, {});
+    const auto response = readResponse(ubx::CLASS_MON, ubx::ID_MON_VER);
+    if (!response || response->payload.size() < 40) {
+      RCLCPP_ERROR(get_logger(), "Failed to communicate with receiver. Check connection and baud rate.");
+      throw std::runtime_error("Receiver MON-VER poll failed");
+    }
+    const double protver = ubx::monVerProtocolVersion(response->payload);
+    use_valset_ = protver >= ubx::PROTVER_VALSET;
+    const std::string module = ubx::monVerField(response->payload, "MOD");
+    const std::string firmware = ubx::monVerField(response->payload, "FWVER");
+    RCLCPP_INFO(get_logger(), "Receiver: %s %s, protocol %s -> %s",
+                module.empty() ? "(module not reported)" : module.c_str(),
+                firmware.c_str(), protver > 0.0 ? ubx::monVerField(response->payload, "PROTVER").c_str() : "not reported",
+                use_valset_ ? "CFG-VALSET" : "legacy UBX-CFG");
+    pumpForConfig(500ms);
   }
 
+  /// receiver_port THISPORT: the empty UBX-CFG-PRT poll returns the
+  /// configuration of the port it arrives on, i.e. its portID.
+  void resolveReceiverPort() {
+    if (port_ != ubx::PORT_THIS) return;
+    sendUbxRaw(ubx::CLASS_CFG, ubx::ID_CFG_PRT, {});
+    const auto response = readResponse(ubx::CLASS_CFG, ubx::ID_CFG_PRT);
+    if (response && response->payload.size() >= 20 && response->payload[0] < ubx::PORT_COUNT) {
+      port_ = response->payload[0];
+      RCLCPP_INFO(get_logger(), "Connected receiver port: %s", ubx::portName(port_));
+      return;
+    }
+    // CFG-VALSET output keys are per port and have no current-port form.
+    if (useValset())
+      throw std::invalid_argument("receiver_port must name the connected port (USB, UART1, "
+          "UART2, I2C or SPI): the receiver did not answer the CFG-PRT current-port poll");
+    RCLCPP_WARN(get_logger(), "Connected port unknown (no CFG-PRT reply): output is configured "
+                "on the current port only and other ports are left unchanged");
+  }
+
+  /// Every byte read during configuration goes to the decoder.
+  template<class Done>
+  bool pumpConfig(std::chrono::steady_clock::duration timeout, Done done,
+                  const std::function<void(uint8_t)>& extra = {}) {
+    return decoder_common::pumpStream(stream_, timeout, [&](uint8_t byte) {
+      parseUbxByte(byte);
+      if (extra) extra(byte);
+    }, done);
+  }
+  void pumpForConfig(std::chrono::steady_clock::duration duration) {
+    pumpConfig(duration, [] { return false; });
+  }
+
+  /// Poll response. A CFG poll is also acknowledged (ACK-ACK, or ACK-NAK when
+  /// unsupported): that reply is read here too, so it cannot be taken for the
+  /// acknowledgement of the next command - CFG-MSG poll and set share an ID.
   std::optional<wire::Frame> readResponse(uint8_t cls, uint8_t id) {
+    bool nak = false;
+    auto response = pollResponse(cls, id, nak);
+    if (nak) return std::nullopt;
+    return response;
+  }
+  /// As readResponse, telling a rejected poll (`nak`) apart from no answer.
+  std::optional<wire::Frame> pollResponse(uint8_t cls, uint8_t id, bool& nak) {
     wire::Framer framer(wire::Protocol::Ubx);
     std::optional<wire::Frame> response;
-    const auto deadline = std::chrono::steady_clock::now() + 2s;
-    uint8_t buffer[4096];
-    while (std::chrono::steady_clock::now() < deadline) {
-      const int n = strread(&stream_, buffer, sizeof(buffer));
-      for (int i = 0; i < n; ++i) {
-        parseUbxByte(buffer[i]);
-        framer.feed(buffer[i], [&](const wire::Frame& f) {
-          if (f.cls == cls && f.id == id) response = f;
-        });
-      }
-      if (response) return response;
-      std::this_thread::sleep_for(2ms);
-    }
-    return std::nullopt;
+    bool acked = cls != ubx::CLASS_CFG;
+    nak = false;
+    pumpConfig(2s, [&] { return nak || (response.has_value() && acked); }, [&](uint8_t byte) {
+      framer.feed(byte, [&](const wire::Frame& f) {
+        if (f.cls == cls && f.id == id) response = f;
+        if (wire::matchesAck(f, cls, id)) {
+          acked = true;
+          nak = f.id == ubx::ID_ACK_NAK;
+        }
+      });
+    });
+    return response;
   }
-  bool waitForResponse(uint8_t cls, uint8_t id) {
-    const auto response = readResponse(cls, id);
-    return response && response->payload.size() >= 40;
+
+  /// CFG-VALGET of RAM values. Keys the receiver lacks are absent from the
+  /// result (a poll naming one is rejected as a whole); nullopt = no answer.
+  std::optional<std::map<uint32_t, uint32_t>> valgetRam(const std::vector<uint32_t>& keys) {
+    std::vector<uint8_t> payload{0x00, 0x00, 0x00, 0x00};  // version 0, RAM layer, position 0
+    for (const uint32_t key : keys)
+      for (int i = 0; i < 4; ++i) payload.push_back(static_cast<uint8_t>(key >> (8 * i)));
+    sendUbxRaw(ubx::CLASS_CFG, ubx::ID_CFG_VALGET, payload);
+    bool nak = false;
+    const auto response = pollResponse(ubx::CLASS_CFG, ubx::ID_CFG_VALGET, nak);
+    std::map<uint32_t, uint32_t> values;
+    if (nak) return values;
+    if (!response || response->payload.size() < 4) return std::nullopt;
+    const auto& p = response->payload;
+    for (size_t pos = 4; pos + 4 <= p.size();) {
+      const uint32_t key = p[pos] | (p[pos+1] << 8) | (p[pos+2] << 16) | (uint32_t(p[pos+3]) << 24);
+      pos += 4;
+      const size_t width = std::array<size_t, 8>{0, 1, 1, 2, 4, 8, 0, 0}[(key >> 28) & 7];
+      if (width == 0 || pos + width > p.size()) break;
+      uint32_t value = 0;
+      for (size_t i = 0; i < width && i < 4; ++i) value |= uint32_t(p[pos + i]) << (8 * i);
+      values[key] = value;
+      pos += width;
+    }
+    return values;
   }
 
   // Step 1: GNSS Signal Configuration
 
   void setupGnssSignals() {
-    if (isGen10()) {
-      setupGnssSignalsG10();
+    if (useValset()) {
+      setupGnssSignalsValset();
     } else {
       RCLCPP_INFO(get_logger(), "GNSS configuration: GPS=%d GLO=%d GAL=%d BDS=%d QZS=%d IRN=%d SBAS=%d",
                   config_.enable_gps, config_.enable_glonass, config_.enable_galileo,
@@ -459,12 +541,22 @@ class UbxDriverNode : public rclcpp::Node {
     auto response = readResponse(ubx::CLASS_CFG, ubx::ID_CFG_GNSS);
     if (!response || response->payload.empty() || response->payload[0] != 0)
       throw std::runtime_error("CFG-GNSS poll failed or returned unsupported version");
-    if (!applyAndSendCfgGnss(response->payload))
+    std::vector<uint8_t> payload = response->payload;
+    if (!applyCfgGnss(payload))
+      throw std::runtime_error("CFG-GNSS poll returned a malformed block list");
+    if (payload == response->payload) {
+      RCLCPP_INFO(get_logger(), "GNSS signal configuration unchanged; GNSS restart not needed");
+      return;
+    }
+    RCLCPP_INFO(get_logger(), "Writing modified CFG-GNSS back to receiver...");
+    sendUbxRaw(ubx::CLASS_CFG, ubx::ID_CFG_GNSS, payload);
+    if (!waitForAck(ubx::CLASS_CFG, ubx::ID_CFG_GNSS))
       throw std::runtime_error("Receiver rejected CFG-GNSS settings");
     performGnssReset();
   }
 
-  bool applyAndSendCfgGnss(std::vector<uint8_t>& payload) {
+  /// Set the enable bit of every managed constellation block; false if malformed.
+  bool applyCfgGnss(std::vector<uint8_t>& payload) {
       if (payload.size() < 4) return false;
       int numBlocks = payload[3];
       if (payload.size() < static_cast<size_t>(4 + numBlocks * 8)) return false;
@@ -497,69 +589,99 @@ class UbxDriverNode : public rclcpp::Node {
           payload[offset+6] = (flags >> 16) & 0xFF;
           payload[offset+7] = (flags >> 24) & 0xFF;
       }
-      
-      RCLCPP_INFO(get_logger(), "Writing modified CFG-GNSS back to receiver...");
-      sendUbxRaw(ubx::CLASS_CFG, ubx::ID_CFG_GNSS, payload);
-      return waitForAck(ubx::CLASS_CFG, ubx::ID_CFG_GNSS);
+      return true;
   }
 
-  void setupGnssSignalsG10() {
-    // Gen 10 uses CFG-VALSET with CFG-SIGNAL-* keys for per-band signal enable.
-    // Note: X20P supports GPS/GAL/BDS(B1C,B2A,B3I)/QZSS/SBAS but NOT GLONASS.
-
-    auto sendSignal = [this](uint32_t key, bool enable, const char* name, bool required = false) {
-      uint32_t val = enable ? 1 : 0;
-      if (!sendCfgValset({{key, val, 1}}, required && enable)) {
-        // NAK is expected for unsupported signals (e.g., GLONASS on X20P)
-        RCLCPP_DEBUG(get_logger(), "Signal %s not accepted by receiver (NAK)", name);
-      }
+  void setupGnssSignalsValset() {
+    // CFG-SIGNAL-* keys for per-band signal enable. Every band of an enabled
+    // constellation is requested; only the constellation keys (with their ROS
+    // parameter) are required. Note: X20P has no GLONASS.
+    struct Signal {
+      uint32_t key;
+      bool enable;
+      const char* name;
+      const char* param;  // set for the required constellation key
+    };
+    const std::vector<Signal> signals = {
+      {ubx::CFG_SIGNAL_GPS_ENA, config_.enable_gps, "GPS_ENA", "navsys.gps"},
+      {ubx::CFG_SIGNAL_GPS_L1CA_ENA, config_.enable_gps, "GPS_L1CA_ENA", nullptr},
+      {ubx::CFG_SIGNAL_GPS_L2C_ENA, config_.enable_gps, "GPS_L2C_ENA", nullptr},
+      {ubx::CFG_SIGNAL_GPS_L5_ENA, config_.enable_gps, "GPS_L5_ENA", nullptr},
+      {ubx::CFG_SIGNAL_SBAS_ENA, config_.enable_sbas, "SBAS_ENA", "navsys.sbs"},
+      {ubx::CFG_SIGNAL_SBAS_L1CA_ENA, config_.enable_sbas, "SBAS_L1CA_ENA", nullptr},
+      {ubx::CFG_SIGNAL_GAL_ENA, config_.enable_galileo, "GAL_ENA", "navsys.gal"},
+      {ubx::CFG_SIGNAL_GAL_E1_ENA, config_.enable_galileo, "GAL_E1_ENA", nullptr},
+      {ubx::CFG_SIGNAL_GAL_E5A_ENA, config_.enable_galileo, "GAL_E5A_ENA", nullptr},
+      {ubx::CFG_SIGNAL_GAL_E5B_ENA, config_.enable_galileo, "GAL_E5B_ENA", nullptr},
+      // BeiDou: B1C, B2a (X20P); B1I, B2I (F9P/M10)
+      {ubx::CFG_SIGNAL_BDS_ENA, config_.enable_beidou, "BDS_ENA", "navsys.bds"},
+      {ubx::CFG_SIGNAL_BDS_B1C_ENA, config_.enable_beidou, "BDS_B1C_ENA", nullptr},
+      {ubx::CFG_SIGNAL_BDS_B2A_ENA, config_.enable_beidou, "BDS_B2A_ENA", nullptr},
+      {ubx::CFG_SIGNAL_BDS_B1I_ENA, config_.enable_beidou, "BDS_B1I_ENA", nullptr},
+      {ubx::CFG_SIGNAL_BDS_B2I_ENA, config_.enable_beidou, "BDS_B2I_ENA", nullptr},
+      // QZSS L1S is SLAS augmentation, not a navigation signal this package
+      // decodes (its SFRBX is undecodable by RTKLIB): keep it off.
+      {ubx::CFG_SIGNAL_QZSS_ENA, config_.enable_qzss, "QZSS_ENA", "navsys.qzs"},
+      {ubx::CFG_SIGNAL_QZSS_L1CA_ENA, config_.enable_qzss, "QZSS_L1CA_ENA", nullptr},
+      {ubx::CFG_SIGNAL_QZSS_L1S_ENA, false, "QZSS_L1S_ENA", nullptr},
+      {ubx::CFG_SIGNAL_QZSS_L2C_ENA, config_.enable_qzss, "QZSS_L2C_ENA", nullptr},
+      {ubx::CFG_SIGNAL_QZSS_L5_ENA, config_.enable_qzss, "QZSS_L5_ENA", nullptr},
+      {ubx::CFG_SIGNAL_GLO_ENA, config_.enable_glonass, "GLO_ENA", "navsys.glo"},
+      {ubx::CFG_SIGNAL_GLO_L1_ENA, config_.enable_glonass, "GLO_L1_ENA", nullptr},
+      {ubx::CFG_SIGNAL_GLO_L2_ENA, config_.enable_glonass, "GLO_L2_ENA", nullptr},
+      {ubx::CFG_SIGNAL_NAVIC_ENA, config_.enable_navic, "NAVIC_ENA", "navsys.irn"},
+      {ubx::CFG_SIGNAL_NAVIC_L5_ENA, config_.enable_navic, "NAVIC_L5_ENA", nullptr},
     };
 
-    // GPS: L1C/A, L2C, L5
-    sendSignal(ubx::CFG_SIGNAL_GPS_ENA, config_.enable_gps, "GPS ENA", true);
-    sendSignal(ubx::CFG_SIGNAL_GPS_L1CA_ENA, config_.enable_gps, "GPS L1C/A");
-    sendSignal(ubx::CFG_SIGNAL_GPS_L2C_ENA, config_.enable_gps, "GPS L2C");
-    sendSignal(ubx::CFG_SIGNAL_GPS_L5_ENA, config_.enable_gps, "GPS L5");
+    // Read the RAM values first: a signal change needs a GNSS restart, which
+    // restarts all carrier tracking, so only differing keys are written. A
+    // rejected group poll falls back to one key at a time, so one unsupported
+    // key cannot hide the others; no answer at all means "unknown: write".
+    std::vector<uint32_t> keys;
+    for (const auto& s : signals) keys.push_back(s.key);
+    std::map<uint32_t, uint32_t> current;
+    std::set<uint32_t> unknown;
+    if (const auto all = valgetRam(keys); !all) {
+      unknown.insert(keys.begin(), keys.end());
+    } else if (all->size() == keys.size()) {
+      current = *all;
+    } else {
+      for (const uint32_t key : keys) {
+        const auto one = valgetRam({key});
+        if (!one) unknown.insert(key);
+        else if (one->count(key)) current[key] = one->at(key);
+      }
+    }
 
-    // SBAS: L1C/A
-    sendSignal(ubx::CFG_SIGNAL_SBAS_ENA, config_.enable_sbas, "SBAS ENA", true);
-    sendSignal(ubx::CFG_SIGNAL_SBAS_L1CA_ENA, config_.enable_sbas, "SBAS L1C/A");
+    bool written = false, differs = false;
+    for (const auto& s : signals) {
+      const uint32_t value = s.enable ? 1 : 0;
+      const bool known = current.count(s.key) != 0;
+      if (!known && !unknown.count(s.key)) {
+        // Not available on this receiver.
+        if (s.enable && s.param) noteRejected(std::string(s.param) + " (CFG-SIGNAL-" + s.name + ")");
+        else RCLCPP_DEBUG(get_logger(), "Signal %s not available on this receiver", s.name);
+        continue;
+      }
+      if (known && current.at(s.key) == value) continue;
+      differs = true;
+      const std::string label = s.param ? std::string(s.param) + " (CFG-SIGNAL-" + s.name + ")" : "";
+      if (sendCfgValset({{s.key, value, 1}}, s.param != nullptr && s.enable, label)) written = true;
+      else RCLCPP_DEBUG(get_logger(), "Signal %s not accepted by receiver (NAK)", s.name);
+    }
 
-    // Galileo: E1, E5a, E5b
-    sendSignal(ubx::CFG_SIGNAL_GAL_ENA, config_.enable_galileo, "Galileo ENA", true);
-    sendSignal(ubx::CFG_SIGNAL_GAL_E1_ENA, config_.enable_galileo, "Galileo E1");
-    sendSignal(ubx::CFG_SIGNAL_GAL_E5A_ENA, config_.enable_galileo, "Galileo E5a");
-    sendSignal(ubx::CFG_SIGNAL_GAL_E5B_ENA, config_.enable_galileo, "Galileo E5b");
-
-    // BeiDou: B1C, B2a (X20P); B1I, B2I (F9P/M10)
-    sendSignal(ubx::CFG_SIGNAL_BDS_ENA, config_.enable_beidou, "BeiDou ENA", true);
-    sendSignal(ubx::CFG_SIGNAL_BDS_B1C_ENA, config_.enable_beidou, "BeiDou B1C");
-    sendSignal(ubx::CFG_SIGNAL_BDS_B2A_ENA, config_.enable_beidou, "BeiDou B2a");
-    sendSignal(ubx::CFG_SIGNAL_BDS_B1I_ENA, config_.enable_beidou, "BeiDou B1I");
-    sendSignal(ubx::CFG_SIGNAL_BDS_B2I_ENA, config_.enable_beidou, "BeiDou B2I");
-
-    // QZSS: L1C/A, L1S, L2C, L5
-    sendSignal(ubx::CFG_SIGNAL_QZSS_ENA, config_.enable_qzss, "QZSS ENA", true);
-    sendSignal(ubx::CFG_SIGNAL_QZSS_L1CA_ENA, config_.enable_qzss, "QZSS L1C/A");
-    sendSignal(ubx::CFG_SIGNAL_QZSS_L1S_ENA, config_.enable_qzss, "QZSS L1S");
-    sendSignal(ubx::CFG_SIGNAL_QZSS_L2C_ENA, config_.enable_qzss, "QZSS L2C");
-    sendSignal(ubx::CFG_SIGNAL_QZSS_L5_ENA, config_.enable_qzss, "QZSS L5");
-
-    // GLONASS: L1, L2
-    sendSignal(ubx::CFG_SIGNAL_GLO_ENA, config_.enable_glonass, "GLO ENA", true);
-    sendSignal(ubx::CFG_SIGNAL_GLO_L1_ENA, config_.enable_glonass, "GLO L1");
-    sendSignal(ubx::CFG_SIGNAL_GLO_L2_ENA, config_.enable_glonass, "GLO L2");
-
-    sendSignal(ubx::CFG_SIGNAL_NAVIC_ENA, config_.enable_navic, "NavIC ENA", true);
-    sendSignal(ubx::CFG_SIGNAL_NAVIC_L5_ENA, config_.enable_navic, "NavIC L5");
-    
-    RCLCPP_INFO(get_logger(), "GNSS signals configured (GPS:%d GLO:%d GAL:%d BDS:%d QZS:%d IRN:%d SBAS:%d)",
+    RCLCPP_INFO(get_logger(), "GNSS signals requested (GPS:%d GLO:%d GAL:%d BDS:%d QZS:%d IRN:%d SBAS:%d)",
         config_.enable_gps ? 1 : 0, config_.enable_glonass ? 1 : 0,
         config_.enable_galileo ? 1 : 0,
         config_.enable_beidou ? 1 : 0, config_.enable_qzss ? 1 : 0,
         config_.enable_navic ? 1 : 0,
         config_.enable_sbas ? 1 : 0);
-
+    if (!written) {
+      RCLCPP_INFO(get_logger(), differs
+          ? "No GNSS signal change was accepted; GNSS restart not needed"
+          : "GNSS signal configuration unchanged; GNSS restart not needed");
+      return;
+    }
     // Signal configuration changes require a GNSS reset to take effect.
     performGnssReset();
   }
@@ -576,26 +698,20 @@ class UbxDriverNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Sending GNSS reset to apply signal config...");
     sendUbxRaw(ubx::CLASS_CFG, ubx::ID_CFG_RST, rst_payload);
 
-    // Wait for GNSS engine to restart
-    std::this_thread::sleep_for(std::chrono::milliseconds(ubx::GNSS_RESET_WAIT_MS));
-
-    // Drain any stale data from the stream buffer after reset
-    drainStreamBuffer();
+    // Wait for the GNSS engine to restart, reading the stream meanwhile so the
+    // receiver's transmit buffer cannot back up behind the next command's ACK.
+    pumpForConfig(std::chrono::milliseconds(ubx::GNSS_RESET_WAIT_MS));
 
     RCLCPP_INFO(get_logger(), "GNSS engine restarted");
   }
 
-  /// Drain all pending data from stream buffer after GNSS reset.
-  /// This prevents stale bytes from interfering with subsequent ACK detection.
+  /// Read (and decode) whatever is pending, so stale replies cannot be taken
+  /// for the next command's ACK.
   void drainStreamBuffer() {
     uint8_t buf[ubx::READ_BUFFER_SIZE];
-    int drained = 0;
-    int n;
+    int n = 0;
     for (int read = 0; read < 32 && (n = strread(&stream_, buf, sizeof(buf))) > 0; ++read) {
-      drained += n;
-    }
-    if (drained > 0) {
-      RCLCPP_DEBUG(get_logger(), "Drained %d stale bytes from stream buffer", drained);
+      for (int i = 0; i < n; ++i) parseUbxByte(buf[i]);
     }
   }
 
@@ -604,18 +720,18 @@ class UbxDriverNode : public rclcpp::Node {
   void setupMeasurementRate() {
     int meas_rate_ms = 1000 / config_.rate_hz;
 
-    if (isGen10()) {
+    if (useValset()) {
       std::vector<ubx::ValsetItem> items = {
           {ubx::CFG_RATE_MEAS, static_cast<uint32_t>(meas_rate_ms), 2},
           {ubx::CFG_RATE_NAV, 1, 2},
       };
-      if (!sendCfgValsetWithRetry(items)) {
+      if (!sendCfgValsetWithRetry(items, "rate_hz (CFG-RATE-MEAS)")) {
         RCLCPP_WARN(get_logger(), "Failed to set measurement rate");
       }
     } else {
       char cmd[64];
       snprintf(cmd, sizeof(cmd), "CFG-RATE %d 1 0", meas_rate_ms);
-      if (!sendLegacyCommand(cmd, ubx::CLASS_CFG, ubx::ID_CFG_RATE)) {
+      if (!sendLegacyCommand(cmd, ubx::CLASS_CFG, ubx::ID_CFG_RATE, "rate_hz (UBX-CFG-RATE)")) {
         RCLCPP_WARN(get_logger(), "Failed to set measurement rate");
       }
     }
@@ -626,11 +742,11 @@ class UbxDriverNode : public rclcpp::Node {
   void setupDynamicModel() {
     ubx::DynamicModel model = ubx::parseDynamicModel(config_.dynamic_model);
 
-    if (isGen10()) {
+    if (useValset()) {
       std::vector<ubx::ValsetItem> items = {
           {ubx::CFG_NAVSPG_DYNMODEL, static_cast<uint32_t>(model), 1},
       };
-      if (!sendCfgValsetWithRetry(items)) {
+      if (!sendCfgValsetWithRetry(items, "dynamic_model (CFG-NAVSPG-DYNMODEL)")) {
         RCLCPP_WARN(get_logger(), "Failed to set dynamic model");
       } else {
         RCLCPP_INFO(get_logger(), "Dynamic model configured");
@@ -640,7 +756,7 @@ class UbxDriverNode : public rclcpp::Node {
       snprintf(cmd, sizeof(cmd),
                "CFG-NAV5 1 %d 3 0 10000 5 0 250 500 100 300 0 60 3 0 0 0 0 0 0 0 0 0 0",
                static_cast<int>(model));
-      if (!sendLegacyCommand(cmd, ubx::CLASS_CFG, ubx::ID_CFG_NAV5)) {
+      if (!sendLegacyCommand(cmd, ubx::CLASS_CFG, ubx::ID_CFG_NAV5, "dynamic_model (UBX-CFG-NAV5)")) {
         RCLCPP_WARN(get_logger(), "Failed to set dynamic model (receiver may not support CFG-NAV5)");
       }
     }
@@ -649,149 +765,152 @@ class UbxDriverNode : public rclcpp::Node {
   // Step 4: Output Messages
 
   void setupOutputMessages() {
-    if (isGen10()) {
-      setupOutputMessagesG10();
+    if (useValset()) {
+      setupOutputMessagesValset();
     } else {
       setupOutputMessagesLegacy();
     }
-  }
-
-  void setupOutputMessagesG10() {
-    // Determine port priority based on connection type
-    std::vector<int> target_ports;
-    if (is_usb_connection_) {
-      target_ports = {ubx::PORT_USB, ubx::PORT_UART1, ubx::PORT_UART2};
-    } else {
-      target_ports = {ubx::PORT_UART1, ubx::PORT_UART2, ubx::PORT_USB};
-    }
-
-    for (int port : target_ports) {
-      // 1. Configure standard UBX output messages
-      std::vector<ubx::ValsetItem> items_ubx = {
-          {ubx::CFG_MSGOUT_UBX_RXM_RAWX_I2C  + port, config_.enable_rawx    ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_RXM_SFRBX_I2C + port, config_.enable_sfrbx   ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_PVT_I2C     + port, config_.enable_nav_pvt     ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_DOP_I2C     + port, config_.enable_nav_dop     ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_COV_I2C     + port, config_.enable_nav_cov     ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_CLOCK_I2C   + port, config_.enable_nav_clock   ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_POSECEF_I2C + port, config_.enable_nav_posecef ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_VELECEF_I2C + port, config_.enable_nav_velecef ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_HPPOSLLH_I2C  + port, config_.enable_nav_hpposllh  ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_NAV_HPPOSECEF_I2C + port, config_.enable_nav_hpposecef ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_ESF_RAW_I2C   + port, config_.enable_esf_raw ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_UBX_ESF_INS_I2C   + port, config_.enable_esf_ins ? 1u : 0u, 1},
-      };
-
-      if (!sendOutputCfgValset(items_ubx)) {
-        RCLCPP_DEBUG(get_logger(), "UBX output config failed on port %d", port);
-      } else {
-        RCLCPP_INFO(get_logger(), "UBX output configured on port %d", port);
-      }
-
-      // 2. Configure NMEA outputs separately to avoid potential receiver firmware bugs
-      std::vector<ubx::ValsetItem> items_nmea = {
-          {ubx::CFG_MSGOUT_NMEA_ID_GGA_I2C + port, config_.enable_nmea_gga ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_NMEA_ID_RMC_I2C + port, config_.enable_nmea_rmc ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_NMEA_ID_GSA_I2C + port, config_.enable_nmea_gsa ? 1u : 0u, 1},
-          {ubx::CFG_MSGOUT_NMEA_ID_GST_I2C + port, config_.enable_nmea_gst ? 1u : 0u, 1},
-      };
-
-      // Disable unused NMEA to save bandwidth
-      if (!config_.enable_nmea_gga && !config_.enable_nmea_rmc &&
-          !config_.enable_nmea_gsa && !config_.enable_nmea_gst) {
-        items_nmea.push_back({ubx::CFG_MSGOUT_NMEA_ID_GLL_I2C + port, 0u, 1});
-        items_nmea.push_back({ubx::CFG_MSGOUT_NMEA_ID_VTG_I2C + port, 0u, 1});
-        items_nmea.push_back({ubx::CFG_MSGOUT_NMEA_ID_ZDA_I2C + port, 0u, 1});
-        items_nmea.push_back({ubx::CFG_MSGOUT_NMEA_ID_GSV_I2C + port, 0u, 1});
-      }
-
-      if (!sendOutputCfgValset(items_nmea)) {
-        RCLCPP_DEBUG(get_logger(), "NMEA output config failed on port %d", port);
-      } else {
-        RCLCPP_INFO(get_logger(), "NMEA output configured on port %d", port);
-      }
-    }
-
     // NMEA High Precision Mode (applies globally, not per-port)
     if (config_.nmea_high_precision) {
-      if (!sendCfgValset({{ubx::CFG_NMEA_HIGHPREC, 1u, 1}})) {
+      if (!sendCfgValset({{ubx::CFG_NMEA_HIGHPREC, 1u, 1}}, true,
+                         "messages.nmea_high_precision (CFG-NMEA-HIGHPREC)")) {
         RCLCPP_WARN(get_logger(), "Failed to enable NMEA High Precision mode");
       } else {
         RCLCPP_INFO(get_logger(), "NMEA High Precision mode enabled");
       }
     }
+  }
+
+  /// An output this driver owns. On the connected port it gets `enable`
+  /// (nullopt = leave as configured). On every other port it is switched off:
+  /// u-blox output rates count navigation epochs, so a rate_hz increase would
+  /// otherwise multiply e.g. the factory NMEA on a 38400 bd UART until its
+  /// transmit buffer overflows - and the buffers are shared, so the connected
+  /// port then stops too. Outputs the driver does not own (RTCM, port
+  /// protocols, baud rates) are never touched on any port.
+  struct ManagedOutput {
+    uint8_t cls, id;
+    uint32_t key_i2c;  // CFG-MSGOUT key of the I2C port; + port number for the others
+    std::optional<bool> enable;
+    const char* name;
+    bool nmea;
+    const char* param;  // ROS parameter requesting it; nullptr when never requested
+    std::string label() const {
+      return std::string(param ? param : name) + (nmea ? " (NMEA-" : " (UBX-") + name + " output)";
+    }
+  };
+  std::vector<ManagedOutput> managedOutputs() const {
+    const bool any_nmea = config_.enable_nmea_gga || config_.enable_nmea_rmc ||
+                          config_.enable_nmea_gsa || config_.enable_nmea_gst;
+    // The remaining standard sentences are disabled on the connected port only
+    // when no NMEA was requested at all (bandwidth); otherwise left as they are.
+    const std::optional<bool> rest = any_nmea ? std::nullopt : std::optional<bool>(false);
+    return {
+      {ubx::CLASS_RXM, ubx::ID_RXM_RAWX,      ubx::CFG_MSGOUT_UBX_RXM_RAWX_I2C,      config_.enable_rawx,          "RXM-RAWX", false, "messages.rawx"},
+      {ubx::CLASS_RXM, ubx::ID_RXM_SFRBX,     ubx::CFG_MSGOUT_UBX_RXM_SFRBX_I2C,     config_.enable_sfrbx,         "RXM-SFRBX", false, "messages.sfrbx"},
+      {ubx::CLASS_NAV, ubx::ID_NAV_PVT,       ubx::CFG_MSGOUT_UBX_NAV_PVT_I2C,       config_.enable_nav_pvt,       "NAV-PVT", false, "messages.nav_pvt"},
+      {ubx::CLASS_NAV, ubx::ID_NAV_DOP,       ubx::CFG_MSGOUT_UBX_NAV_DOP_I2C,       config_.enable_nav_dop,       "NAV-DOP", false, "messages.nav_dop"},
+      {ubx::CLASS_NAV, ubx::ID_NAV_COV,       ubx::CFG_MSGOUT_UBX_NAV_COV_I2C,       config_.enable_nav_cov,       "NAV-COV", false, "messages.nav_cov"},
+      {ubx::CLASS_NAV, ubx::ID_NAV_CLOCK,     ubx::CFG_MSGOUT_UBX_NAV_CLOCK_I2C,     config_.enable_nav_clock,     "NAV-CLOCK", false, "messages.nav_clock"},
+      {ubx::CLASS_NAV, ubx::ID_NAV_POSECEF,   ubx::CFG_MSGOUT_UBX_NAV_POSECEF_I2C,   config_.enable_nav_posecef,   "NAV-POSECEF", false, "messages.nav_posecef"},
+      {ubx::CLASS_NAV, ubx::ID_NAV_VELECEF,   ubx::CFG_MSGOUT_UBX_NAV_VELECEF_I2C,   config_.enable_nav_velecef,   "NAV-VELECEF", false, "messages.nav_velecef"},
+      {ubx::CLASS_NAV, ubx::ID_NAV_HPPOSLLH,  ubx::CFG_MSGOUT_UBX_NAV_HPPOSLLH_I2C,  config_.enable_nav_hpposllh,  "NAV-HPPOSLLH", false, "messages.nav_hpposllh"},
+      {ubx::CLASS_NAV, ubx::ID_NAV_HPPOSECEF, ubx::CFG_MSGOUT_UBX_NAV_HPPOSECEF_I2C, config_.enable_nav_hpposecef, "NAV-HPPOSECEF", false, "messages.nav_hpposecef"},
+      {ubx::CLASS_ESF, ubx::ID_ESF_RAW,       ubx::CFG_MSGOUT_UBX_ESF_RAW_I2C,       config_.enable_esf_raw,       "ESF-RAW", false, "messages.esf_raw"},
+      {ubx::CLASS_ESF, ubx::ID_ESF_INS,       ubx::CFG_MSGOUT_UBX_ESF_INS_I2C,       config_.enable_esf_ins,       "ESF-INS", false, "messages.esf_ins"},
+      {ubx::CLASS_NMEA, ubx::NMEA_GGA, ubx::CFG_MSGOUT_NMEA_ID_GGA_I2C, config_.enable_nmea_gga, "GGA", true, "messages.nmea_gga"},
+      {ubx::CLASS_NMEA, ubx::NMEA_RMC, ubx::CFG_MSGOUT_NMEA_ID_RMC_I2C, config_.enable_nmea_rmc, "RMC", true, "messages.nmea_rmc"},
+      {ubx::CLASS_NMEA, ubx::NMEA_GSA, ubx::CFG_MSGOUT_NMEA_ID_GSA_I2C, config_.enable_nmea_gsa, "GSA", true, "messages.nmea_gsa"},
+      {ubx::CLASS_NMEA, ubx::NMEA_GST, ubx::CFG_MSGOUT_NMEA_ID_GST_I2C, config_.enable_nmea_gst, "GST", true, "messages.nmea_gst"},
+      {ubx::CLASS_NMEA, ubx::NMEA_GLL, ubx::CFG_MSGOUT_NMEA_ID_GLL_I2C, rest, "GLL", true, nullptr},
+      {ubx::CLASS_NMEA, ubx::NMEA_VTG, ubx::CFG_MSGOUT_NMEA_ID_VTG_I2C, rest, "VTG", true, nullptr},
+      {ubx::CLASS_NMEA, ubx::NMEA_ZDA, ubx::CFG_MSGOUT_NMEA_ID_ZDA_I2C, rest, "ZDA", true, nullptr},
+      {ubx::CLASS_NMEA, ubx::NMEA_GSV, ubx::CFG_MSGOUT_NMEA_ID_GSV_I2C, rest, "GSV", true, nullptr},
+    };
+  }
+
+  void setupOutputMessagesValset() {
+    const auto outputs = managedOutputs();
+    const int port = port_;
+    // UBX and NMEA go in separate transactions to avoid potential firmware bugs.
+    for (const bool nmea : {false, true}) {
+      std::vector<ubx::ValsetItem> items;
+      std::vector<std::string> labels;
+      for (const auto& o : outputs)
+        if (o.nmea == nmea && o.enable) {
+          items.push_back({o.key_i2c + port, *o.enable ? 1u : 0u, 1});
+          labels.push_back(o.label());
+        }
+      if (!sendOutputCfgValset(items, labels))
+        RCLCPP_DEBUG(get_logger(), "%s output config failed on port %s", nmea ? "NMEA" : "UBX", ubx::portName(port));
+      else
+        RCLCPP_INFO(get_logger(), "%s output configured on port %s", nmea ? "NMEA" : "UBX", ubx::portName(port));
+    }
+    std::string others;
+    for (int other = 0; other < ubx::PORT_COUNT; ++other) {
+      if (other == port) continue;
+      for (const bool nmea : {false, true}) {
+        std::vector<ubx::ValsetItem> items;
+        for (const auto& o : outputs) if (o.nmea == nmea) items.push_back({o.key_i2c + other, 0u, 1});
+        // A port or message the product lacks NAKs the whole transaction:
+        // fall back to one key at a time. Disabling is never "required".
+        if (!sendCfgValset(items, false))
+          for (const auto& item : items) sendCfgValset({item}, false);
+      }
+      others += std::string(others.empty() ? "" : ", ") + ubx::portName(other);
+    }
+    RCLCPP_INFO(get_logger(), "Driver-managed UBX/NMEA output switched off on the other ports (%s)",
+                others.c_str());
   }
 
   void setupOutputMessagesLegacy() {
-    auto sendMsg = [this](uint8_t cls, uint8_t id, bool enable, const char* name) {
-      char cmd[64];
-      int rate = enable ? 1 : 0;
-      snprintf(cmd, sizeof(cmd), "CFG-MSG %d %d %d %d %d %d 0 0", cls, id, rate, rate, rate, rate);
-      if (!sendLegacyCommand(cmd, ubx::CLASS_CFG, ubx::ID_CFG_MSG)) {
-        RCLCPP_WARN(get_logger(), "Failed to configure %s", name);
-      }
-    };
-
-    auto sendNmea = [this](uint8_t id, bool enable, const char* name) {
-      char cmd[64];
-      int rate = enable ? 1 : 0;
-      snprintf(cmd, sizeof(cmd), "CFG-MSG 240 %d %d %d %d %d 0 0", id, rate, rate, rate, rate);
-      if (!sendLegacyCommand(cmd, ubx::CLASS_CFG, ubx::ID_CFG_MSG)) {
-        RCLCPP_DEBUG(get_logger(), "Failed to configure NMEA %s", name);
-      }
-    };
-
-    sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_RAWX,  config_.enable_rawx,    "RXM-RAWX");
-    sendMsg(ubx::CLASS_RXM, ubx::ID_RXM_SFRBX, config_.enable_sfrbx,   "RXM-SFRBX");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_PVT,     config_.enable_nav_pvt,     "NAV-PVT");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_DOP,     config_.enable_nav_dop,     "NAV-DOP");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_COV,     config_.enable_nav_cov,     "NAV-COV");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_CLOCK,   config_.enable_nav_clock,   "NAV-CLOCK");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_POSECEF, config_.enable_nav_posecef, "NAV-POSECEF");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_VELECEF, config_.enable_nav_velecef, "NAV-VELECEF");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_HPPOSLLH,  config_.enable_nav_hpposllh,  "NAV-HPPOSLLH");
-    sendMsg(ubx::CLASS_NAV, ubx::ID_NAV_HPPOSECEF, config_.enable_nav_hpposecef, "NAV-HPPOSECEF");
-    sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_RAW,   config_.enable_esf_raw, "ESF-RAW");
-    sendMsg(ubx::CLASS_ESF, ubx::ID_ESF_INS,   config_.enable_esf_ins, "ESF-INS");
-
-    sendNmea(ubx::NMEA_GGA, config_.enable_nmea_gga, "GGA");
-    sendNmea(ubx::NMEA_RMC, config_.enable_nmea_rmc, "RMC");
-    sendNmea(ubx::NMEA_GSA, config_.enable_nmea_gsa, "GSA");
-    sendNmea(ubx::NMEA_GST, config_.enable_nmea_gst, "GST");
-
-    // Disable unused NMEA to save bandwidth
-    if (!config_.enable_nmea_gga && !config_.enable_nmea_rmc &&
-        !config_.enable_nmea_gsa && !config_.enable_nmea_gst) {
-      sendNmea(ubx::NMEA_GLL, false, "GLL");
-      sendNmea(ubx::NMEA_VTG, false, "VTG");
-      sendNmea(ubx::NMEA_ZDA, false, "ZDA");
-      sendNmea(ubx::NMEA_GSV, false, "GSV");
-    }
-
-    // NMEA High Precision Mode (applies globally, not per-port)
-    if (config_.nmea_high_precision) {
-      if (!sendCfgValset({{ubx::CFG_NMEA_HIGHPREC, 1u, 1}})) {
-        RCLCPP_WARN(get_logger(), "Failed to enable NMEA High Precision mode");
+    const int port = port_;
+    for (const auto& o : managedOutputs()) {
+      bool ok = false;
+      if (port == ubx::PORT_THIS) {
+        // Port unknown: the 3-byte form sets the rate on the current port only.
+        if (!o.enable) continue;
+        ok = sendUbxPacket(ubx::CLASS_CFG, ubx::ID_CFG_MSG, {o.cls, o.id, uint8_t(*o.enable ? 1 : 0)},
+                           *o.enable, o.label());
       } else {
-        RCLCPP_INFO(get_logger(), "NMEA High Precision mode enabled");
+        // Read the per-port rates, then write them back with the connected
+        // port set as requested and the other ports switched off.
+        std::array<uint8_t, 6> rates{};
+        sendUbxRaw(ubx::CLASS_CFG, ubx::ID_CFG_MSG, {o.cls, o.id});
+        const auto current = readResponse(ubx::CLASS_CFG, ubx::ID_CFG_MSG);
+        if (current && current->payload.size() == 8 &&
+            current->payload[0] == o.cls && current->payload[1] == o.id)
+          std::copy(current->payload.begin() + 2, current->payload.end(), rates.begin());
+        if (o.enable) rates[port] = *o.enable ? 1 : 0;
+        for (int other = 0; other < ubx::PORT_COUNT; ++other) if (other != port) rates[other] = 0;
+        ok = sendUbxPacket(ubx::CLASS_CFG, ubx::ID_CFG_MSG,
+            {o.cls, o.id, rates[0], rates[1], rates[2], rates[3], rates[4], rates[5]},
+            o.enable.value_or(false), o.label());
+      }
+      if (!ok) {
+        if (o.nmea) RCLCPP_DEBUG(get_logger(), "Failed to configure NMEA %s", o.name);
+        else RCLCPP_WARN(get_logger(), "Failed to configure %s", o.name);
       }
     }
   }
 
-  // UBX Communication (Gen 10: CFG-VALSET)
+  // UBX Communication (CFG-VALSET)
 
-  bool sendOutputCfgValset(const std::vector<ubx::ValsetItem>& items) {
+  bool sendOutputCfgValset(const std::vector<ubx::ValsetItem>& items,
+                           const std::vector<std::string>& labels) {
     if (sendCfgValset(items, false)) return true;
     // An unsupported optional key rejects a whole VALSET. Retry output-rate keys
     // separately so a missing ESF message/port cannot disable RAWX/SFRBX setup.
     bool complete = true;
-    for (const auto& item : items) {
-      if (!sendCfgValset({item}, item.value != 0) && item.value != 0) complete = false;
+    for (size_t i = 0; i < items.size(); ++i) {
+      const auto& item = items[i];
+      if (!sendCfgValset({item}, item.value != 0, labels[i]) && item.value != 0) complete = false;
     }
     return complete;
   }
 
-  bool sendCfgValset(const std::vector<ubx::ValsetItem>& items, bool required = true) {
+  bool sendCfgValset(const std::vector<ubx::ValsetItem>& items, bool required = true,
+                     const std::string& label = {}) {
     if (items.empty()) return true;
     
     std::vector<uint8_t> payload;
@@ -815,14 +934,14 @@ class UbxDriverNode : public rclcpp::Node {
        }
     }
     
-    return sendUbxPacket(ubx::CLASS_CFG, ubx::ID_CFG_VALSET, payload, required);
+    return sendUbxPacket(ubx::CLASS_CFG, ubx::ID_CFG_VALSET, payload, required, label);
   }
 
   /// Send CFG-VALSET with retry logic. Useful after GNSS reset when receiver
   /// may not respond to the first command immediately.
-  bool sendCfgValsetWithRetry(const std::vector<ubx::ValsetItem>& items) {
+  bool sendCfgValsetWithRetry(const std::vector<ubx::ValsetItem>& items, const std::string& label) {
     for (int attempt = 0; attempt <= ubx::MAX_RETRIES; ++attempt) {
-      if (sendCfgValset(items)) return true;
+      if (sendCfgValset(items, true, label)) return true;
       if (attempt < ubx::MAX_RETRIES) {
         RCLCPP_DEBUG(get_logger(), "Retrying CFG-VALSET (attempt %d/%d)...", 
                      attempt + 1, ubx::MAX_RETRIES);
@@ -836,14 +955,15 @@ class UbxDriverNode : public rclcpp::Node {
   // UBX Communication (Low-level)
 
   /// Send a UBX frame and wait for ACK.
-  bool sendUbxPacket(uint8_t msg_class, uint8_t msg_id, const std::vector<uint8_t>& payload, bool required = true) {
+  bool sendUbxPacket(uint8_t msg_class, uint8_t msg_id, const std::vector<uint8_t>& payload,
+                     bool required = true, const std::string& label = {}) {
     auto frame = ubx::buildUbxFrame(msg_class, msg_id, payload);
     RCLCPP_DEBUG(get_logger(), "Sending UBX 0x%02X 0x%02X (len=%zu)", 
                 msg_class, msg_id, payload.size());
     
     if (!decoder_common::writeAll(stream_, frame.data(), frame.size())) throw std::runtime_error("UBX command write failed");
     
-    return waitForAck(msg_class, msg_id, required);
+    return waitForAck(msg_class, msg_id, required, label);
   }
 
   /// Send a UBX frame without waiting for ACK (for commands like CFG-RST).
@@ -855,8 +975,9 @@ class UbxDriverNode : public rclcpp::Node {
       throw std::runtime_error("UBX command write timed out");
   }
 
-  /// Send a legacy UBX command string (Gen 9). Uses RTKLIB's gen_ubx().
-  bool sendLegacyCommand(const char* cmd, uint8_t expected_class, uint8_t expected_id) {
+  /// Send a legacy UBX command string (protocol < 27). Uses RTKLIB gen_ubx().
+  bool sendLegacyCommand(const char* cmd, uint8_t expected_class, uint8_t expected_id,
+                         const std::string& label) {
     uint8_t buff[256];
     int len = gen_ubx(cmd, buff);
     if (len <= 0) {
@@ -868,17 +989,18 @@ class UbxDriverNode : public rclcpp::Node {
 
     if (!decoder_common::writeAll(stream_, buff, len)) throw std::runtime_error("UBX command write failed");
 
-    return waitForAck(expected_class, expected_id);
+    return waitForAck(expected_class, expected_id, true, label);
   }
 
   // ACK/NAK Detection
 
-  size_t rejected_config_transactions_{0};
-  bool waitForAck(uint8_t msg_class, uint8_t msg_id, bool required = true) {
-    auto start = std::chrono::steady_clock::now();
-    uint8_t buffer[256];
-    const auto timeout = std::chrono::milliseconds(ubx::ACK_TIMEOUT_MS);
-
+  // Requested settings the receiver rejected, in user terms (parameter and key).
+  std::vector<std::string> rejected_items_;
+  void noteRejected(const std::string& item) {
+    if (std::find(rejected_items_.begin(), rejected_items_.end(), item) == rejected_items_.end())
+      rejected_items_.push_back(item);
+  }
+  bool waitForAck(uint8_t msg_class, uint8_t msg_id, bool required = true, const std::string& label = {}) {
     // Reset ACK state
     pending_ack_class_ = msg_class;
     pending_ack_id_ = msg_id;
@@ -886,17 +1008,18 @@ class UbxDriverNode : public rclcpp::Node {
     ack_received_ = false;
     nak_received_ = false;
 
-    while (std::chrono::steady_clock::now() - start < timeout) {
-      int n = strread(&stream_, buffer, sizeof(buffer));
-      for (int i = 0; i < n; ++i) {
-        parseUbxByte(buffer[i]);
-        checkAckNak(buffer[i]);
+    pumpConfig(std::chrono::milliseconds(ubx::ACK_TIMEOUT_MS),
+               [this] { return ack_received_ || nak_received_; },
+               [this](uint8_t byte) { checkAckNak(byte); });
+    if (ack_received_) return true;
+    if (nak_received_) {
+      if (required) {
+        char fallback[32];
+        std::snprintf(fallback, sizeof(fallback), "UBX 0x%02X 0x%02X", msg_class, msg_id);
+        noteRejected(label.empty() ? std::string(fallback) : label);
       }
-      if (ack_received_) return true;
-      if (nak_received_) { if (required) ++rejected_config_transactions_; return false; }
-      std::this_thread::sleep_for(10ms);
+      return false;
     }
-
     throw std::runtime_error("UBX ACK timed out; configuration stopped to prevent a delayed ACK matching a later command");
   }
 
@@ -918,7 +1041,11 @@ class UbxDriverNode : public rclcpp::Node {
         resetReceiverSession(false);
         receiver_timeline_.frame(wire::Protocol::Ubx,f);
       }
-      for (uint8_t byte : f.bytes) {
+      // Known-undecodable navigation subframes are counted, not reported as
+      // malformed input (RTKLIB would return an error for every one).
+      const bool undecoded = ubx::isUndecodedSfrbx(f.cls, static_cast<uint8_t>(f.id), f.payload);
+      if (undecoded) GNSS_RX_EVENT(GNSS_RX_NAV_UNSUPPORTED, 1);
+      if (!undecoded) for (uint8_t byte : f.bytes) {
         const int status = input_ubx(&raw_, byte);
         // A successfully decoded RAW/RAWX dates the receiver even with zero
         // observations. Do not refresh from unrelated, weekless messages.
@@ -938,6 +1065,7 @@ class UbxDriverNode : public rclcpp::Node {
   }
 
   void handleUbxFrame() {
+    if (ubx_frm_cls_ == ubx::CLASS_INF) receiver_text_.inf(get_logger(), ubx_frm_id_, ubx_frm_payload_);
     if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_RAW) handleEsfRaw();
     if (ubx_frm_cls_ == ubx::CLASS_ESF && ubx_frm_id_ == ubx::ID_ESF_INS) handleEsfIns();
     if (ubx_frm_cls_ == ubx::CLASS_NAV && ubx_frm_id_ == ubx::ID_NAV_PVT)     handleNavPvt();
@@ -959,11 +1087,11 @@ class UbxDriverNode : public rclcpp::Node {
   // put the IMU on GPS time is the documented practice of enabling ESF-RAW
   // alongside NAV-PVT / NAV-CLOCK and ESTIMATING the offset from them.
   //
-  // The estimate is the same one GnssEpochAligner already makes and is tested
-  // on: the sliding-window minimum of (host arrival - GPS time of the epoch),
-  // which is the host/GPS clock difference plus the receiver's minimum output
-  // latency. Subtracting it from the sTtag timeline lands the IMU on UTC(GPST),
-  // the same base the GNSS topics use when use_gps_timestamp is set.
+  // The estimate (ins::GnssTimeAnchor) is a robust floor of (host arrival - GPS
+  // time of the epoch), which is the host/GPS clock difference plus the
+  // receiver's minimum output latency. Subtracting it from the sTtag timeline
+  // lands the IMU on UTC(GPST), the same base the GNSS topics use when
+  // use_gps_timestamp is set.
   //
   // What this does NOT remove is that minimum latency difference: GNSS epochs
   // and IMU samples do not leave the receiver with the same delay, and u-blox
@@ -973,7 +1101,8 @@ class UbxDriverNode : public rclcpp::Node {
   // is tAcc, a quality gate on the epoch's time. Expect an O(10-100 ms)
   // systematic offset in ABSOLUTE terms; what a fusion node consumes - the
   // IMU/GNSS relative alignment - is what this fixes.
-  void feedGnssAnchor(int week, double tow, const rclcpp::Time& arrival) {
+  void feedGnssAnchor(int week, double tow, const rclcpp::Time& arrival,
+                      ins::GnssTimeAnchor::Source source) {
     if (week <= 0 || !std::isfinite(tow) || tow < 0.0 || tow >= 604800.0) { GNSS_RX_EVENT(GNSS_RX_TIME,1); return; }
     if (!gnss_utils::isRosTimeRepresentable(gpst2time(week,tow))) { GNSS_RX_EVENT(GNSS_RX_TIME,1); return; }
     // NAV-CLOCK tAcc gate: the Integration manual warns that iTOW values may
@@ -981,11 +1110,20 @@ class UbxDriverNode : public rclcpp::Node {
     // uncertain. 1 ms is generous - a receiver with time has tAcc in the tens
     // of nanoseconds - so this only excludes genuinely bad time.
     if (has_nav_clock_ && last_nav_clock_.time_acc_s > 1e-3) { GNSS_RX_EVENT(GNSS_RX_TIME,1); return; }
-    const rclcpp::Time aligned =
-        gnss_anchor_.align(static_cast<uint32_t>(week), tow, arrival);
     const int64_t meas_ns =
         gnss_utils::gpstToUtcRosTime(gpst2time(week, tow)).nanoseconds();
-    const double offset_s = (aligned.nanoseconds() - meas_ns) / 1e9;
+    if (source == ins::GnssTimeAnchor::Source::Observation) {
+      // On a replay, IMU samples read after this epoch are taken as arriving at
+      // the next one: their position in the stream is all that is known.
+      const int64_t interval_ns = meas_ns - last_observation_ns_;
+      if (last_observation_ns_ >= 0 && interval_ns > 0 && interval_ns < 2000000000LL)
+        observation_interval_ns_ = interval_ns;
+      last_observation_ns_ = meas_ns;
+      replay_arrival_ns_ = meas_ns + observation_interval_ns_;
+    }
+    gnss_anchor_.update(source, arrival.nanoseconds(), meas_ns);
+    if (!gnss_anchor_.valid()) return;
+    const double offset_s = gnss_anchor_.offset();
     if (has_gnss_anchor_ && std::fabs(offset_s - gnss_anchor_offset_s_) > 1.0) {
       imu_offset_clock_.reset(); last_raw_imu_ns_ = -1;
       RCLCPP_WARN(get_logger(), "GNSS anchor discontinuity: resetting estimated IMU time");
@@ -1011,38 +1149,10 @@ class UbxDriverNode : public rclcpp::Node {
   // invisible failure into a log line. Report once when the window first
   // fills, then only while it stays implausible.
   void reportImuClockDrift() {
-    if (!imu_clock_.windowFilled()) return;
-    const double ppm = imu_clock_.driftRate() * 1e6;
-
-    // A "drift" of whole percent is not a clock error at all: it means the
-    // stream is not real-time paced, which is normal when replaying a
-    // recorded log through file:// (minutes of receiver time handed over in
-    // seconds). The tick constant cannot be judged against a clock that is
-    // not running at wall speed, so say so rather than cry wolf.
-    constexpr double kNotRealTimePpm = 50000.0;  // 5 %
-    if (std::fabs(ppm) > kNotRealTimePpm) {
-      if (!imu_clock_drift_reported_) {
-        imu_clock_drift_reported_ = true;
-        RCLCPP_INFO(get_logger(),
-          "ESF-RAW stream is not real-time paced (%.0f %% off wall speed) — "
-          "offline replay assumed; the sTtag tick diagnostic is skipped.",
-          ppm / 1e4);
-      }
-      return;
-    }
-
-    if (!imu_clock_drift_reported_) {
-      imu_clock_drift_reported_ = true;
-      RCLCPP_INFO(get_logger(),
-        "ESF-RAW sTtag clock: %.1f ppm vs the host clock", ppm);
-    }
-    if (std::fabs(ppm) > 100.0) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 30000,
-        "ESF-RAW sTtag clock drifting at %.0f ppm vs the host — "
-        "imu.sttag_tick_s may be wrong for this receiver/firmware; measured tick %.12g s.",
-        ppm, get_parameter("imu.sttag_tick_s").as_double() * (1.0 + imu_clock_.driftRate()));
-    }
+    const std::string line = ins::tickRateReport(imu_clock_, imu_rate_reported_);
+    if (!line.empty()) RCLCPP_INFO(get_logger(), "%s", line.c_str());
   }
+
 
   // UBX-ESF-RAW: batched IMU samples. No GNSS time (sTtag only) — the topic is
   // host-clock based, mapped through ins::SensorTickClock so the stream lands
@@ -1057,11 +1167,24 @@ class UbxDriverNode : public rclcpp::Node {
     if (samples.empty()) return;
 
     const rclcpp::Time arrival = now();
+    // A replayed log arrives at reading speed, so host time says nothing about
+    // when a sample was taken: the IMU timeline then follows the GNSS epochs
+    // reached in the log. The anchor offset does not apply to that timeline.
+    if (config_.use_gps_timestamp && !imu_replay_ &&
+        stream_pacing_.update(samples.back().sttag, arrival.nanoseconds() * 1e-9) ==
+            ins::StreamPacing::State::Replay) {
+      imu_replay_ = true;
+      imu_clock_.reset();
+      RCLCPP_INFO(get_logger(), "ESF-RAW input is not paced by real time: IMU time follows the GNSS epochs in the log");
+    }
+    if (imu_replay_ && replay_arrival_ns_ < 0) { receiver_health_.timeWithheld(); return; }
+    const rclcpp::Time clock_arrival =
+        imu_replay_ ? rclcpp::Time(replay_arrival_ns_, arrival.get_clock_type()) : arrival;
     std::string clock_warn;
     const auto stamps = ins::stampBatch(
         imu_clock_, samples, [](const ubx::esf_raw::Sample& s) {
           return static_cast<uint64_t>(s.sttag);
-        }, arrival, &clock_warn);
+        }, clock_arrival, &clock_warn);
     if (!clock_warn.empty() && clock_warn.find("clamped") == std::string::npos) {
       imu_offset_clock_.reset(); last_raw_imu_ns_ = -1;
     }
@@ -1078,7 +1201,7 @@ class UbxDriverNode : public rclcpp::Node {
       imu_gps_warned_ = true;
       RCLCPP_WARN(get_logger(),
         "use_gps_timestamp is set but no GNSS epoch has anchored the ESF-RAW "
-        "timeline yet — enable UBX-NAV-PVT, UBX-NAV-CLOCK or RXM-RAWX so the "
+        "timeline yet — enable RXM-RAWX or UBX-NAV-PVT so the "
         "IMU can be put on GPS time.");
     }
 
@@ -1086,10 +1209,11 @@ class UbxDriverNode : public rclcpp::Node {
       const auto& s = samples[i];
       sensor_msgs::msg::Imu imu;
       const auto measurement_stamp = time_base_.stampPrecomputed(
-          config_.use_gps_timestamp, has_gnss_anchor_ &&
+          config_.use_gps_timestamp, imu_replay_ || (has_gnss_anchor_ &&
           arrival.nanoseconds() >= gnss_anchor_arrival_ns_ &&
           arrival.nanoseconds() - gnss_anchor_arrival_ns_ <= 2000000000LL &&
-          std::chrono::steady_clock::now()-gnss_anchor_steady_ <= std::chrono::seconds(2), has_gnss_anchor_ ? imuHostToGps(stamps[i]) : stamps[i], stamps[i],
+          std::chrono::steady_clock::now()-gnss_anchor_steady_ <= std::chrono::seconds(2)),
+          has_gnss_anchor_ && !imu_replay_ ? imuHostToGps(stamps[i]) : stamps[i], stamps[i],
           get_logger(), *get_clock());
     if (!measurement_stamp) { receiver_health_.timeWithheld(); return; }
       if (measurement_stamp->nanoseconds() <= last_raw_imu_ns_) { GNSS_RX_EVENT(GNSS_RX_TIME,1); continue; }
@@ -1191,10 +1315,11 @@ class UbxDriverNode : public rclcpp::Node {
     eph_store_.clear(); publishSnapshot();
     initPendingExpectedMask();
     imu_clock_.reset(); gnss_anchor_.reset(); imu_offset_clock_.reset();
+    replay_arrival_ns_=-1; last_observation_ns_=-1;
     last_raw_imu_ns_=-1; has_gnss_anchor_=false; imu_gps_warned_=false;
     gnss_anchor_offset_s_=0; gnss_anchor_arrival_ns_=0;
     has_nav_clock_=false; last_nav_clock_={}; pvt_time_valid_=false; nav_time_ref_.reset(); observation_time_ref_.reset();
-    imu_clock_drift_reported_=false;
+    imu_rate_reported_=ins::SensorTickClock::RateState::Pending;
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Receiver session reset: %s; waiting for fresh time/navigation references",
                 disconnected ? "connection lost" : "measurement rewind or clock reset");
   }
@@ -1222,7 +1347,7 @@ class UbxDriverNode : public rclcpp::Node {
     }
     if (wire_framer_.rejected() != wire_last_rejected_) {
       wire_last_rejected_ = wire_framer_.rejected();
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      RCLCPP_DEBUG(get_logger(),
           "Rejected binary frame/header count: %llu",
           static_cast<unsigned long long>(wire_last_rejected_));
     }
@@ -1253,7 +1378,9 @@ class UbxDriverNode : public rclcpp::Node {
   // Source is locked at startup; no mid-session switching.
   enum class SolutionSource { BINARY, NMEA };
 
+  decoder_common::ReceiverTextLog receiver_text_;
   void handleNmeaSentence(const std::string& sentence) {
+    receiver_text_.nmea(get_logger(), sentence);
     if (nmea_parser_.parseSentence(sentence, nmea_solution_)) {
       if (source_ == SolutionSource::NMEA) {
         publishSolution(nmea_solution_);
@@ -1614,7 +1741,7 @@ class UbxDriverNode : public rclcpp::Node {
     const rclcpp::Time sol_arrival = now();
     if (source_ == SolutionSource::BINARY && week_for_stamp > 0 &&
         pvt_time_valid_) {
-      feedGnssAnchor(week_for_stamp, sol.time_tow, sol_arrival);
+      feedGnssAnchor(week_for_stamp, sol.time_tow, sol_arrival, ins::GnssTimeAnchor::Source::Solution);
     }
 
     const auto measurement_stamp = time_base_.stamp(
@@ -1671,7 +1798,7 @@ class UbxDriverNode : public rclcpp::Node {
     msg::GnssObservations msg;
     const rclcpp::Time obs_arrival = now();
     // Anchor the ESF-RAW timeline; RXM-RAWX epochs are RTKLIB-validated.
-    feedGnssAnchor(week, tow, obs_arrival);
+    feedGnssAnchor(week, tow, obs_arrival, ins::GnssTimeAnchor::Source::Observation);
 
     const auto measurement_stamp = time_base_.stamp(
         config_.use_gps_timestamp, week > 0,
@@ -1693,11 +1820,11 @@ class UbxDriverNode : public rclcpp::Node {
     obs_pub_->publish(msg);
     receiver_health_.published(msg.week, msg.tow, msg.observations.size());
 
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+    if (obs_rate_log_.due()) RCLCPP_INFO(get_logger(),
+      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d) rate=%s",
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
-      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
+      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown, obs_rate_log_.rate());
   }
 
   // Ephemeris Publishing
@@ -1737,7 +1864,8 @@ class UbxDriverNode : public rclcpp::Node {
 
   // Configuration
   UbxConfig config_;
-  bool is_usb_connection_{false};
+  int port_{ubx::PORT_THIS};   // connected receiver port, PORT_THIS until resolved
+  bool use_valset_{false};     // CFG-VALSET (protocol >= 27) instead of legacy UBX-CFG
 
   // Publishers
   rclcpp::Publisher<msg::GnssObservations>::SharedPtr  obs_pub_;
@@ -1750,14 +1878,15 @@ class UbxDriverNode : public rclcpp::Node {
   // above is what catches a wrong constant.
   ins::SensorTickClock imu_clock_{ins::SensorTickClock::Config{
       ubx::esf_raw::STTAG_TICK_S, 1ull << 32}};
-  bool imu_clock_drift_reported_{false};
+  ins::SensorTickClock::RateState imu_rate_reported_{ins::SensorTickClock::RateState::Pending};
 
-  // GNSS time anchor for the ESF-RAW timeline (see feedGnssAnchor). The
-  // estimator is GnssEpochAligner in TowAutoOffset mode, reused rather than
-  // reimplemented because it is the tested one.
-  gnss_utils::GnssEpochAligner gnss_anchor_{
-      gnss_utils::GnssEpochAligner::Config{
-          gnss_utils::GnssEpochAligner::Source::TowAutoOffset, 60.0}};
+  // GNSS time anchor for the ESF-RAW timeline (see feedGnssAnchor).
+  ins::GnssTimeAnchor gnss_anchor_;
+  ins::StreamPacing stream_pacing_;
+  bool imu_replay_{false};
+  int64_t replay_arrival_ns_{-1};
+  int64_t last_observation_ns_{-1};
+  int64_t observation_interval_ns_{100000000};
   double gnss_anchor_offset_s_{0.0};
   bool   has_gnss_anchor_{false};
   int64_t gnss_anchor_arrival_ns_{0};

@@ -123,6 +123,33 @@ def cartesian(family, ms):
     return wire.oem(241, p, tow=ms)
 
 
+def sbf_pvt_age(block, ms, age, short=False, no_pvt=False):
+    # PVTGeodetic (4007) / PVTCartesian (4006): MeanCorrAge u2 [0.01 s] at body
+    # offset 70, 65535 = Do-Not-Use; a 68-byte body ends before the field.
+    p=bytearray(68 if short else 88)
+    position=(0.,0.,123.25) if block==4007 else (6378260.25,0.,0.)
+    struct.pack_into('<IHBB3d', p, 0, ms, 2300, 0 if no_pvt else 4, 0, *position)
+    p[66]=12
+    if not short: struct.pack_into('<H', p, 70, age)
+    return spec.sbf_spec(block, p, 0 if short else 2)
+
+
+def ubx_pvt_age(ms, code, length=92):
+    # NAV-PVT flags3 (X2, payload offset 78): lastCorrectionAge class in bits 4..1.
+    p=bytearray(92)
+    struct.pack_into('<I',p,0,ms);p[11]=7;p[20]=3;p[21]=1;p[23]=12
+    struct.pack_into('<iii',p,24,0,0,123250)
+    struct.pack_into('<H',p,78,code<<1)
+    anchor=spec.frame(struct.pack('<dHbBBB2x',ms*.001,2300,18,1,1,1)+spec.row(1))
+    return anchor+wire.ubx(1,7,bytes(p[:length]))
+
+
+def nmea_txt(kind, text):
+    body='GNTXT,01,01,%s,%s'%(kind,text);checksum=0
+    for ch in body.encode():checksum^=ch
+    return ('$%s*%02X\r\n'%(body,checksum)).encode()
+
+
 class PvtSupplementSpecification(unittest.TestCase):
     def assert_array(self, actual, expected, tolerance=1e-7):
         self.assertEqual(len(actual), len(expected))
@@ -216,6 +243,55 @@ class PvtSupplementSpecification(unittest.TestCase):
                         if index==2: expected=[0.]*9  # no covariance from rejected DNU block
                         self.assert_array(cov,expected)
                         self.assert_array(vel,expected)
+
+    def test_sbf_mean_corr_age_fills_age_diff(self):
+        nan=float('nan')
+        # (tow ms, MeanCorrAge raw, short block, no PVT, expected age_diff)
+        epochs=[(100500,21850,False,False,218.5),(101500,21850,False,True,nan),
+                (102500,65535,False,False,nan),(103500,0,True,False,nan),
+                (104500,100,False,False,1.)]
+        names={4007:'pvt_geodetic',4006:'pvt_cartesian'}
+        for mode in ('decoder','driver'):
+            for blocks in ((4007,),(4006,),(4007,4006)):
+                with self.subTest(mode=mode,blocks=blocks):
+                    data=[b''.join(sbf_pvt_age(b,ms,raw,short,no_pvt) for b in blocks)
+                          for ms,raw,short,no_pvt,_ in epochs]
+                    result=wire.run('pvt_age_sbf_'+mode+'_'+'_'.join(map(str,blocks)),'sbf_'+mode+'_node',
+                                    data,self.params('sbf',mode,[names[b] for b in blocks]),chunk_delay=.15)
+                    self.assertEqual([m.time_tow for m in result['sol']],[e[0]/1000 for e in epochs])
+                    for m,(_,_,_,_,expected) in zip(result['sol'],epochs):
+                        if math.isnan(expected):self.assertTrue(math.isnan(m.age_diff),(m.time_tow,m.age_diff))
+                        else:self.assertAlmostEqual(m.age_diff,expected,delta=1e-4)
+
+    def test_ubx_last_correction_age_fills_age_diff(self):
+        nan=float('nan')
+        codes=[(0,nan),(1,1.),(3,5.),(11,120.),(12,120.),(15,120.)]
+        data=[ubx_pvt_age(100500+1000*i,code) for i,(code,_) in enumerate(codes)]
+        data.append(ubx_pvt_age(106500,3,length=80))  # ends before flags3: rejected as a whole
+        for mode in ('decoder','driver'):
+            with self.subTest(mode=mode):
+                r=wire.run('pvt_age_ubx_'+mode,'ubx_'+mode+'_node',data,self.params('ubx',mode,['nav_pvt']),chunk_delay=.15)
+                self.assertEqual([m.time_tow for m in r['sol']],[100.5+i for i in range(len(codes))])
+                for m,(_,expected) in zip(r['sol'],codes):
+                    if math.isnan(expected):self.assertTrue(math.isnan(m.age_diff),m.time_tow)
+                    else:self.assertEqual(m.age_diff,expected)
+
+    def test_ubx_receiver_warnings_are_logged_and_rate_limited(self):
+        notice=nmea_txt('02','ANTSTATUS=OK')+wire.ubx(4,2,b'INF notice text')
+        data=[]
+        for i in range(12):
+            chunk=ubx_pvt_age(100500+1000*i,1)+nmea_txt('01','txbuf alloc')
+            if i==0:chunk+=wire.ubx(4,1,b'INF warning text')+notice
+            data.append(chunk)
+        for mode in ('decoder','driver'):
+            with self.subTest(mode=mode):
+                r=wire.run('rx_text_ubx_'+mode,'ubx_'+mode+'_node',data,self.params('ubx',mode,['nav_pvt']),chunk_delay=1.)
+                self.assertEqual([m.time_tow for m in r['sol']],[100.5+i for i in range(12)])
+                warns=[l for l in r['log'].splitlines() if '[WARN]' in l and 'Receiver reports:' in l]
+                txbuf=[l for l in warns if 'txbuf alloc' in l]
+                self.assertTrue(1<=len(txbuf)<=3,warns)
+                self.assertTrue(any('INF warning text' in l for l in warns),warns)
+                self.assertFalse([l for l in warns if 'ANTSTATUS' in l or 'notice' in l],warns)
 
     def test_oem_delayed_velocity_and_bestxyz_only(self):
         for mode in ('decoder','driver'):

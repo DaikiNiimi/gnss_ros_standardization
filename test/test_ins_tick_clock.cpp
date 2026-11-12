@@ -11,8 +11,10 @@
 // frames arrive in one read. Downstream, the FGO drops the whole IMU factor
 // for such an epoch and its imu_buffer_ stops being sorted.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <string>
 #include <vector>
@@ -431,6 +433,257 @@ TEST(SensorTickClock, DriftRateDetectsAWrongTickConstant) {
   }
   EXPECT_GT(clock.driftRate(), 1e-3)
       << "a 1% tick error must show up as a large drift rate";
+}
+
+// Measured on a real ZED-F9R (HPS 1.40): the sTtag counter runs on the IMU's
+// own oscillator, 38.7447 us per tick instead of the nominal 39.0625 us. With
+// the tick taken as a constant, the stamps ran ahead of real time by 7.9 ms
+// every second. The clock must measure the rate and stay on real time.
+namespace {
+constexpr double kF9rTrueTick = 38.7447e-6;
+
+struct LiveRun {
+  std::vector<double> stamp, truth;
+};
+
+// 100 Hz samples at the true tick; arrival = truth + 1 ms + jitter in [0, 4 ms)
+// plus an optional backlog that drains (arrival never goes backwards).
+LiveRun runLive(ins::SensorTickClock& clock, int samples, double backlog_s = 0.0,
+                double drain_s = 1.0) {
+  LiveRun run;
+  ArrivalSequence arrivals;
+  std::uint64_t tick = 7000;
+  std::uint32_t lcg = 12345;
+  double last_arrival = -1.0;
+  for (int i = 0; i < samples; ++i) {
+    const double truth = 500.0 + i * kTicksPer10ms * kF9rTrueTick;
+    lcg = lcg * 1664525u + 1013904223u;
+    const double jitter = 0.004 * (lcg >> 8) / double(1u << 24);
+    const double backlog = std::max(0.0, backlog_s * (1.0 - (truth - 500.0) / drain_s));
+    double arrival = truth + 0.001 + jitter + backlog;
+    arrival = std::max(arrival, last_arrival);
+    last_arrival = arrival;
+    run.stamp.push_back(clock.stamp(tick, arrivals.next(arrival)).nanoseconds() * 1e-9);
+    run.truth.push_back(truth);
+    tick = (tick + kTicksPer10ms) & 0xffffffffu;
+  }
+  return run;
+}
+
+void expectOnRealTime(const ins::SensorTickClock& clock, const LiveRun& run, size_t from) {
+  for (size_t i = 1; i < run.stamp.size(); ++i)
+    ASSERT_GT(run.stamp[i], run.stamp[i - 1]) << "backwards stamp at sample " << i;
+  double worst = 0.0;
+  for (size_t i = from; i < run.stamp.size(); ++i)
+    worst = std::max(worst, std::fabs(run.stamp[i] - (run.truth[i] + 0.001)));
+  EXPECT_LT(worst, 0.003) << "stamps left real time by " << worst << " s";
+  const size_t n = run.stamp.size() - 1;
+  const double dt = (run.stamp[n] - run.stamp[from]) / double(n - from);
+  EXPECT_NEAR(dt / (kTicksPer10ms * kF9rTrueTick), 1.0, 1e-4) << "sample spacing";
+  EXPECT_EQ(clock.rateState(), ins::SensorTickClock::RateState::Tracking);
+  EXPECT_NEAR(clock.appliedTick() / kF9rTrueTick, 1.0, 5e-5);
+}
+}  // namespace
+
+TEST(SensorTickClock, FollowsAMeasuredTickOffTheNominalValue) {
+  ins::SensorTickClock clock(sttagConfig());
+  const auto run = runLive(clock, 60000);  // 10 min
+  expectOnRealTime(clock, run, 12000);     // from 2 min on
+}
+
+// A driver connecting to a receiver that has been streaming meets a burst of
+// buffered output first: its delayed arrivals must not bias the rate.
+TEST(SensorTickClock, StartupBacklogDoesNotBiasTheRate) {
+  ins::SensorTickClock clock(sttagConfig());
+  const auto run = runLive(clock, 60000, /*backlog_s=*/0.4, /*drain_s=*/6.0);
+  expectOnRealTime(clock, run, 12000);
+}
+
+TEST(SensorTickClock, ReplayIsReportedUnpacedAndKeepsTheNominalTick) {
+  ins::SensorTickClock clock(sttagConfig());
+  std::uint64_t tick = 1000;
+  for (int i = 0; i < 6000; ++i) {
+    clock.stamp(tick, at(900.0 + i * 0.010 / 80.0));
+    tick += kTicksPer10ms;
+  }
+  EXPECT_EQ(clock.rateState(), ins::SensorTickClock::RateState::Unpaced);
+  EXPECT_DOUBLE_EQ(clock.appliedTick(), kSttagTick);
+}
+
+// ---- GnssTimeAnchor ------------------------------------------------------
+namespace {
+using Anchor = ins::GnssTimeAnchor;
+std::int64_t ns(double seconds) { return static_cast<std::int64_t>(std::llround(seconds * 1e9)); }
+
+// 10 Hz epochs: latency = floor + jitter in [0, 10 ms).
+struct LatencyGen {
+  std::uint32_t lcg{4242};
+  double next() {
+    lcg = lcg * 1664525u + 1013904223u;
+    return 0.050 + 0.010 * (lcg >> 8) / double(1u << 24);
+  }
+};
+}  // namespace
+
+// Measured on a ZED-F9R: one RXM-RAWX in 6000 arrived 23 ms early and a plain
+// 60 s minimum then held the whole IMU timeline 20 ms off for 60 s.
+TEST(GnssTimeAnchor, OneEarlyEpochDoesNotMoveTheOffset) {
+  Anchor anchor;
+  LatencyGen latency;
+  std::deque<std::pair<double, double>> window;  // the previous estimator, for contrast
+  double worst_anchor = 0.0, worst_window_min = 0.0;
+  for (int i = 0; i < 3000; ++i) {
+    const double gnss = 1000.0 + i * 0.1;
+    double y = latency.next();
+    if (i == 1500) y -= 0.023;
+    anchor.update(Anchor::Source::Observation, ns(gnss + y), ns(gnss));
+    window.emplace_back(gnss, y);
+    while (gnss - window.front().first > 60.0) window.pop_front();
+    if (i < 700) continue;
+    double min = window.front().second;
+    for (const auto& w : window) min = std::min(min, w.second);
+    worst_anchor = std::max(worst_anchor, std::fabs(anchor.offset() - 0.050));
+    worst_window_min = std::max(worst_window_min, std::fabs(min - 0.050));
+  }
+  EXPECT_LT(worst_anchor, 0.002);
+  EXPECT_GT(worst_window_min, 0.015) << "scenario must reproduce the defect";
+}
+
+// RXM-RAWX is output about 30 ms earlier in an epoch without a navigation
+// solution. Those epochs must not pull the offset, whatever their share.
+TEST(GnssTimeAnchor, EpochsWithoutNavigationSolutionDoNotMoveTheOffset) {
+  Anchor anchor;
+  for (int i = 0; i < 1200; ++i) {
+    const double gnss = 100.0 + i * 0.1;
+    const bool with_nav = i % 2 == 0;
+    anchor.update(Anchor::Source::Observation, ns(gnss + (with_nav ? 0.060 : 0.030)), ns(gnss));
+    if (with_nav) anchor.update(Anchor::Source::Solution, ns(gnss + 0.100), ns(gnss));
+  }
+  EXPECT_NEAR(anchor.offset(), 0.060, 1e-6) << "no-NAV epochs must be excluded";
+}
+
+TEST(GnssTimeAnchor, ObservationWaitsForItsSolution) {
+  Anchor anchor;
+  anchor.update(Anchor::Source::Observation, ns(100.05), ns(100.0));
+  anchor.update(Anchor::Source::Solution, ns(100.09), ns(100.007));
+  ASSERT_TRUE(anchor.valid());
+  EXPECT_NEAR(anchor.offset(), 0.05, 1e-6);
+
+  // Pending until the solution of the same epoch: its arrival time is the one used.
+  anchor.update(Anchor::Source::Observation, ns(100.17), ns(100.1));
+  EXPECT_NEAR(anchor.offset(), 0.05, 1e-6);
+  anchor.update(Anchor::Source::Solution, ns(100.25), ns(100.107));
+  EXPECT_NEAR(anchor.offset(), 0.07, 1e-6);  // the first solution restarted the window
+
+  // A solution of another epoch does not release a pending observation.
+  anchor.update(Anchor::Source::Observation, ns(100.31), ns(100.3));
+  anchor.update(Anchor::Source::Solution, ns(100.45), ns(100.207));
+  EXPECT_NEAR(anchor.offset(), 0.07, 1e-6);
+}
+
+TEST(GnssTimeAnchor, SolutionBeforeItsObservationIsAlsoMatched) {
+  Anchor anchor;
+  anchor.update(Anchor::Source::Observation, ns(100.05), ns(100.0));
+  anchor.update(Anchor::Source::Solution, ns(100.09), ns(100.0));
+  anchor.update(Anchor::Source::Solution, ns(102.09), ns(102.0));
+  anchor.update(Anchor::Source::Observation, ns(102.15), ns(102.007));
+  EXPECT_GT(anchor.offset(), 0.05);  // the 0.143 s sample entered the median
+}
+
+TEST(GnssTimeAnchor, EitherMessageAloneStillAnchors) {
+  Anchor observations;
+  observations.update(Anchor::Source::Observation, ns(10.03), ns(10.0));
+  EXPECT_NEAR(observations.offset(), 0.03, 1e-6);
+
+  Anchor solutions;
+  EXPECT_FALSE(solutions.valid());
+  solutions.update(Anchor::Source::Solution, ns(20.1), ns(20.0));
+  EXPECT_NEAR(solutions.offset(), 0.1, 1e-6);
+  // The first observation takes over once its solution confirms the epoch.
+  solutions.update(Anchor::Source::Observation, ns(20.13), ns(20.1));
+  EXPECT_NEAR(solutions.offset(), 0.1, 1e-6);
+  solutions.update(Anchor::Source::Solution, ns(20.2), ns(20.1));
+  EXPECT_NEAR(solutions.offset(), 0.03, 1e-6);
+}
+
+// file:// replay hands over GNSS epochs 80x faster than the host clock, so y
+// falls continuously. The offset stays with it, without steps the nodes would
+// treat as a discontinuity (> 1 s).
+TEST(GnssTimeAnchor, FasterThanRealTimeReplayStaysWithTheStream) {
+  Anchor anchor;
+  double previous = 0.0;
+  for (int i = 0; i < 20000; ++i) {
+    const double gnss = 5000.0 + i * 0.1;
+    const double arrival = 900.0 + i * 0.1 / 80.0;
+    anchor.update(Anchor::Source::Observation, ns(arrival), ns(gnss));
+    const double y = arrival - gnss;
+    EXPECT_LT(std::fabs(anchor.offset() - y), 0.7) << "epoch " << i;
+    if (i) { EXPECT_LT(std::fabs(anchor.offset() - previous), 1.0) << "epoch " << i; }
+    previous = anchor.offset();
+  }
+}
+
+TEST(GnssTimeAnchor, HostClockStepDownIsFollowedAndAStallIsIgnored) {
+  Anchor anchor;
+  double gnss = 2000.0;
+  for (int i = 0; i < 600; ++i, gnss += 0.1) anchor.update(Anchor::Source::Observation, ns(gnss + 0.05), ns(gnss));
+  // A stalled delivery raises one sample by 0.8 s: not a clock step.
+  anchor.update(Anchor::Source::Observation, ns(gnss + 0.85), ns(gnss));
+  EXPECT_NEAR(anchor.offset(), 0.05, 1e-6);
+  gnss += 0.1;
+  // The host clock steps back 2 s.
+  anchor.update(Anchor::Source::Observation, ns(gnss - 1.95), ns(gnss));
+  EXPECT_NEAR(anchor.offset(), -1.95, 1e-6);
+}
+
+TEST(GnssTimeAnchor, ResetForgetsTheObservationReference) {
+  Anchor anchor;
+  anchor.update(Anchor::Source::Observation, ns(10.03), ns(10.0));
+  anchor.reset();
+  EXPECT_FALSE(anchor.valid());
+  anchor.update(Anchor::Source::Solution, ns(20.1), ns(20.0));
+  EXPECT_NEAR(anchor.offset(), 0.1, 1e-6);
+}
+
+// ---- StreamPacing --------------------------------------------------------
+using Pacing = ins::StreamPacing;
+
+TEST(StreamPacing, FastLogIsReplayAndRealTimeIsLive) {
+  Pacing replay;
+  std::uint32_t c = 1000;
+  for (int i = 0; i < 400; ++i, c += kTicksPer10ms) replay.update(c, 50.0 + i * 0.010 / 80.0);
+  EXPECT_EQ(replay.state(), Pacing::State::Replay);
+
+  Pacing live;
+  c = 1000;
+  for (int i = 0; i < 400; ++i, c += kTicksPer10ms) live.update(c, 50.0 + i * 0.010);
+  EXPECT_EQ(live.state(), Pacing::State::Live);
+}
+
+// A connection meets the receiver's buffered output first: a burst of buffered
+// samples is not a replay.
+TEST(StreamPacing, StartupBurstIsNotAReplay) {
+  Pacing pacing;
+  std::uint32_t c = 1000;
+  double arrival = 50.0;
+  for (int i = 0; i < 400; ++i, c += kTicksPer10ms) {
+    pacing.update(c, arrival);
+    arrival += i < 50 ? 0.0005 : 0.010;  // 0.5 s of buffered samples at once
+  }
+  EXPECT_EQ(pacing.state(), Pacing::State::Live);
+}
+
+TEST(StreamPacing, CounterRestartBeginsANewMeasurementAndDecisionIsLatched) {
+  Pacing pacing;
+  std::uint32_t c = 1000;
+  for (int i = 0; i < 100; ++i, c += kTicksPer10ms) pacing.update(c, 50.0 + i * 0.010 / 80.0);
+  EXPECT_EQ(pacing.state(), Pacing::State::Unknown);
+  c = 500;  // receiver restarted its counter
+  for (int i = 0; i < 400; ++i, c += kTicksPer10ms) pacing.update(c, 60.0 + i * 0.010);
+  EXPECT_EQ(pacing.state(), Pacing::State::Live);
+  // Latched: later delivery changes do not switch the timeline.
+  for (int i = 0; i < 400; ++i, c += kTicksPer10ms) pacing.update(c, 70.0);
+  EXPECT_EQ(pacing.state(), Pacing::State::Live);
 }
 
 struct FakeSample { std::uint32_t sttag; };

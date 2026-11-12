@@ -59,7 +59,12 @@ class RelayNames(unittest.TestCase):
                         with corrections.accept()[0] as correction:
                             if not output: correction.sendall(payload)
                             outgoing = correction if output else main
-                            self.assertEqual(receive(outgoing, len(payload)), payload)
+                            # configure_on_startup false: a driver still requests the stored
+                            # ephemerides once (this fake answers nothing) before relaying.
+                            request = {'sbf_driver_node': b'S' * 10,
+                                       'novatel_driver_node': b'LOG THISPORT RAWEPHEMB ONCE\r\n'}.get(executable, b'')
+                            if output: request = b''
+                            self.assertEqual(receive(outgoing, len(request) + len(payload)), request + payload)
                 except Exception:
                     log.flush(); log.seek(0)
                     print(log.read())

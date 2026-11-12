@@ -80,6 +80,35 @@ TEST(ReceiverProtocol, SbfNoPvtIsAnEpochWithoutSolutionAndInvalidTimeIsRejected)
   }
 }
 
+// PVTGeodetic/PVTCartesian MeanCorrAge: u2 [0.01 s] at body offset 70,
+// 65535 = Do-Not-Use. Unavailable (DNU, short block, no PVT) is NaN.
+TEST(ReceiverProtocol, SbfMeanCorrAgeIsTheDifferentialAge) {
+  for (auto parse : {&sbf::pvt::parsePVTGeodetic, &sbf::pvt::parsePVTCartesian}) {
+    std::vector<uint8_t> b(88);
+    put<uint32_t>(b, 0, 100000);
+    put<uint16_t>(b, 4, 2300);
+    b[6] = 4;
+    put<double>(b, 8, 0.6);   // valid as latitude [rad] and as ECEF x [m]
+    put<uint16_t>(b, 70, 21850);
+    msg::GnssSolution s;
+    ASSERT_TRUE(parse(b.data(), b.size(), s));
+    EXPECT_FLOAT_EQ(s.age_diff, 218.5f);
+    put<uint16_t>(b, 70, 65535);
+    s = msg::GnssSolution();
+    ASSERT_TRUE(parse(b.data(), b.size(), s));
+    EXPECT_TRUE(std::isnan(s.age_diff));
+    put<uint16_t>(b, 70, 21850);
+    s = msg::GnssSolution();
+    ASSERT_TRUE(parse(b.data(), 68, s));   // older, shorter block
+    EXPECT_TRUE(std::isnan(s.age_diff));
+    b[6] = 0;                              // no PVT
+    s = msg::GnssSolution();
+    ASSERT_TRUE(parse(b.data(), b.size(), s));
+    EXPECT_EQ(s.status, msg::GnssSolution::STATUS_NONE);
+    EXPECT_TRUE(std::isnan(s.age_diff));
+  }
+}
+
 // A-7: a Do-Not-Use velocity leaves the PVT position valid.
 TEST(ReceiverProtocol, SbfVelocityDoNotUseKeepsThePosition) {
   std::vector<uint8_t> b(88);
@@ -264,6 +293,42 @@ TEST(ReceiverProtocol, StructuralPromptsAndRepeatedPrompts) {
   wire::CommandReply error(wire::Protocol::Novatel,"cmd");
   int result=0; for (char c:std::string("[COM1]<ERROR: rejected\r\n")) result=error.feed(c);
   EXPECT_EQ(result,-1);
+}
+
+// The Septentrio escape is answered by an unterminated prompt naming the port,
+// possibly between SBF blocks; prompt text inside a block is not a prompt.
+TEST(ReceiverProtocol, EscapePromptNamesThePortAroundBinaryBlocks) {
+  std::vector<uint8_t> block{'$', '@', 0, 0, 0xa7, 0x0f, 16, 0};
+  for (char c : std::string("USB2>\r\n")) block.push_back(uint8_t(c));
+  block.push_back(0);
+  wire::CommandReply reply(wire::Protocol::Sbf, {});
+  for (auto c : block) reply.feed(c);
+  EXPECT_EQ(reply.prompt(), "");
+  for (auto c : std::string("$GPGGA,1*00\r\nUSB1")) reply.feed(c);
+  EXPECT_EQ(reply.prompt(), "");
+  reply.feed('>');
+  EXPECT_EQ(reply.prompt(), "USB1");
+  for (auto c : block) reply.feed(c);
+  EXPECT_EQ(reply.prompt(), "USB1");
+  for (const auto& text : {"echo>", "xIP10>", "$R: sso, Stream1, USB1, PVTGeodetic, sec1\r\n"}) {
+    wire::CommandReply other(wire::Protocol::Sbf, {});
+    for (char c : std::string(text)) EXPECT_EQ(other.feed(c), 0) << text;
+    EXPECT_EQ(other.prompt(), "") << text;
+  }
+  // A query value follows its ACK; the next prompt completes the response.
+  wire::CommandReply query(wire::Protocol::Sbf, "getSBFOutput, Stream2");
+  for (char c : std::string("USB1>$GPGGA,1*00\r\n$R: getSBFOutput, Stream2\r\n"
+                            "  SBFOutput, Stream2, USB1, ExtSensorMeas, OnChange\r\n"))
+    query.feed(c);
+  EXPECT_FALSE(query.complete());
+  for (char c : std::string("USB1>")) query.feed(c);
+  EXPECT_TRUE(query.complete());
+  ASSERT_EQ(query.lines().size(), 1u);
+  EXPECT_EQ(query.lines()[0], "SBFOutput, Stream2, USB1, ExtSensorMeas, OnChange");
+  wire::CommandReply rejected(wire::Protocol::Sbf, "cmd");
+  for (char c : std::string("$R? cmd: Invalid command!\r\nCOM2>")) rejected.feed(c);
+  EXPECT_EQ(rejected.feed('\n'), -1);
+  EXPECT_EQ(rejected.prompt(), "COM2");
 }
 
 TEST(ReceiverProtocol, PartialWritesPreserveEveryByteAndStopOnFailure) {
@@ -599,4 +664,59 @@ TEST(ReleaseQ6, ReuseRatioFollowsObservedClocksInsteadOfConfiguredRates) {
     ASSERT_TRUE(rover.known());ASSERT_TRUE(base.known());
     EXPECT_NEAR(base.seconds()/rover.seconds(),rover_hz,1e-9);
   }
+}
+
+TEST(GgaUplink, SolutionRoundTripsThroughTheNmeaParser) {
+  msg::GnssSolution in;
+  in.status = msg::GnssSolution::STATUS_FIX;
+  in.time_week = 2300; in.time_tow = 100.0; in.num_sats = 17;
+  in.latitude = -35.6812345678; in.longitude = -139.7671234567; in.altitude = 41.234;
+  std::string sentence;
+  ASSERT_TRUE(decoder_common::solutionToGga(in, sentence));
+  ASSERT_GE(sentence.size(), 2u);
+  EXPECT_EQ(sentence.substr(sentence.size() - 2), "\r\n");
+  sentence.resize(sentence.size() - 2);
+  gnss_utils::NmeaParser parser;
+  msg::GnssSolution out;
+  EXPECT_FALSE(parser.parseSentence(sentence, out));
+  // The parser publishes an epoch when the next one starts.
+  ASSERT_TRUE(parser.parseSentence("$GPGGA,235959.00,0000.000,N,00000.000,E,1,12,1.0,0.0,M,0.0,M,,", out));
+  EXPECT_EQ(out.status, msg::GnssSolution::STATUS_FIX);
+  EXPECT_EQ(out.num_sats, 17);
+  EXPECT_NEAR(out.latitude, in.latitude, 1e-7);
+  EXPECT_NEAR(out.longitude, in.longitude, 1e-7);
+  EXPECT_NEAR(out.altitude, in.altitude, 1e-3);
+}
+
+TEST(GgaUplink, NoPositionIsNeverSent) {
+  msg::GnssSolution s;
+  s.latitude = 35.0; s.longitude = 139.0; s.altitude = 40.0;
+  std::string sentence;
+  s.status = msg::GnssSolution::STATUS_NONE;
+  EXPECT_FALSE(decoder_common::solutionToGga(s, sentence));
+  s.status = msg::GnssSolution::STATUS_SINGLE;
+  s.latitude = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(decoder_common::solutionToGga(s, sentence));
+  s.latitude = 35.0;
+  EXPECT_TRUE(decoder_common::solutionToGga(s, sentence));  // no GPS week: host time
+  EXPECT_EQ(sentence.rfind("$GPGGA,", 0), 0u);
+}
+
+TEST(StreamUri, EnvironmentReferencesExpandOnceAndReportMissing) {
+  setenv("GRS_TEST_USER", "alice", 1);
+  setenv("GRS_TEST_PASS", "p$GRS_TEST_USER@x", 1);
+  setenv("GRS_TEST_EMPTY", "", 1);
+  unsetenv("GRS_TEST_UNSET");
+  std::vector<std::string> missing;
+  // A value containing `$` is not expanded again.
+  EXPECT_EQ(decoder_common::expandStreamUri("ntrip://${GRS_TEST_USER}:$GRS_TEST_PASS@h:2101/M", missing),
+            "ntrip://alice:p$GRS_TEST_USER@x@h:2101/M");
+  EXPECT_TRUE(missing.empty());
+  for (const std::string literal : {"tcpcli://h:1", "a$", "a$1b", "a${", "a${B", "a${}", "$-x"}) {
+    EXPECT_EQ(decoder_common::expandStreamUri(literal, missing), literal);
+    EXPECT_TRUE(missing.empty()) << literal;
+  }
+  EXPECT_EQ(decoder_common::expandStreamUri("x${GRS_TEST_UNSET}y$GRS_TEST_EMPTY", missing),
+            "x${GRS_TEST_UNSET}y$GRS_TEST_EMPTY");
+  EXPECT_EQ(missing, (std::vector<std::string>{"GRS_TEST_UNSET", "GRS_TEST_EMPTY"}));
 }

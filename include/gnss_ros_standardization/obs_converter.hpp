@@ -46,7 +46,9 @@ inline obsd_t convertObs(const gnss_ros_standardization::msg::GnssObservation& m
   const int code = resolveSignal(m.code_str, m.code);
   if (!code) return o;
   const int idx = code2idx(sys, code);
-  if (idx < 0 || idx >= NFREQ) return o;
+  // FrequencyMask selects bands 0-2 only; a larger NFREQ must not pass B3/E6/L6
+  // to the solvers unmasked.
+  if (idx < 0 || idx >= NFREQ || idx > 2) return o;
   if (!isPrimaryCode(sys, code, idx)) return o;
   if (idx == 0 && !mask.l1) return o;
   if (idx == 1 && !mask.l2) return o;
@@ -82,6 +84,119 @@ class SignalSelection {
   std::map<std::pair<int,int>, std::array<uint8_t,2>> arcs_;
 };
 
+// Signals chosen for one rover/base epoch pair.
+struct SignalChoice {
+  // (RTKLIB satellite, frequency index) -> code on the rover, on the base.
+  std::map<std::pair<int,int>, std::array<uint8_t,2>> codes;
+  // Bands whose code changed: treated as a cycle slip on both receivers.
+  std::set<std::pair<int,int>> switched;
+};
+
+// Pick the code of every (satellite, band) of one epoch pair. Shared by the RTK
+// and FGO nodes so that both use the same signals. RTKLIB differences satellites
+// within a constellation: selecting different tracking families per satellite
+// changes the inter-receiver bias within that group, so the policy is per group.
+inline SignalChoice selectSignals(
+    const gnss_ros_standardization::msg::GnssObservations& rover,
+    const gnss_ros_standardization::msg::GnssObservations* base,
+    const FrequencyMask& mask, SignalSelection& selection) {
+  SignalChoice out;
+  using Band = std::pair<int,int>; // (constellation, frequency index)
+  using Codes = std::set<uint8_t>;
+  std::map<Band, std::array<Codes,2>> candidates;
+  std::map<Band, std::array<Codes,2>> per_satellite;
+  auto collect = [&](const auto& epoch, int rcv) {
+    for (const auto& m : epoch.observations) {
+      const auto o = convertObs(m, gpst2time(epoch.week, epoch.tow), rcv, mask);
+      if (!o.sat) continue;
+      for (int band=0; band<NFREQ; ++band)
+        if (o.code[band]) per_satellite[{o.sat,band}][rcv-1].insert(o.code[band]);
+    }
+  };
+  collect(rover,1);
+  if (base) collect(*base,2);
+  for (const auto& [sat_band, receivers]:per_satellite) {
+    if (receivers[0].empty() || receivers[1].empty()) continue;
+    const Band group{satsys(sat_band.first,nullptr),sat_band.second};
+    for (int rcv=0;rcv<2;++rcv)
+      candidates[group][rcv].insert(receivers[rcv].begin(),receivers[rcv].end());
+  }
+  std::map<Band,std::array<uint8_t,2>> group_codes;
+  for (const auto& [key, receivers] : candidates) {
+    const int sys=key.first;
+    const auto previous=selection.selected_.find(key);
+    const std::array<uint8_t,2> old=previous==selection.selected_.end()
+        ? std::array<uint8_t,2>{} : previous->second;
+    const auto pick=[&](const Codes& allowed,uint8_t sticky) -> uint8_t {
+      if (allowed.empty()) return 0;
+      if (allowed.count(sticky)) return sticky;
+      uint8_t code=*allowed.begin();
+      for (const auto candidate:allowed)
+        if (getcodepri(sys,candidate,"")>getcodepri(sys,code,"")) code=candidate;
+      return code;
+    };
+    std::array<uint8_t,2> codes{};
+    if (!receivers[0].empty() && !receivers[1].empty()) {
+      Codes common;
+      std::set_intersection(receivers[0].begin(),receivers[0].end(),
+                            receivers[1].begin(),receivers[1].end(),
+                            std::inserter(common,common.end()));
+      if (!common.empty()) {
+        codes.fill(pick(common,common.count(old[0]) ? old[0] : old[1]));
+      } else if (old[0] && old[0]==old[1] &&
+                 (receivers[0].count(old[0]) || receivers[1].count(old[0]))) {
+        // A temporary outage is not a tracking-mode change. Keep the
+        // established code on the receiver that still observes it. There
+        // is no mixed-code DD, and no artificial hole in its phase history.
+        codes=old;
+      } else if (crossCodePairingSupported(sys,key.second)) {
+        // Preserve the pre-existing Galileo/L5 component-pairing policy.
+        // Exact-code-only selection would remove every Galileo band in
+        // heterogeneous PPC receivers (rover C/Q, base X).
+        for (int rcv=0;rcv<2;++rcv) codes[rcv]=pick(receivers[rcv],old[rcv]);
+      } else if ((sys==SYS_GPS || sys==SYS_QZS) && key.second==1) {
+        // RTKLIB permits stable heterogeneous L2 tracking. Select once per
+        // constellation/receiver; a real change is still a private slip.
+        for (int rcv=0;rcv<2;++rcv) codes[rcv]=pick(receivers[rcv],old[rcv]);
+      } else continue; // No compatible pair: preserve prior selection through outage.
+    } else {
+      for (int rcv=0;rcv<2;++rcv) codes[rcv]=pick(receivers[rcv],old[rcv]);
+    }
+    auto next=old;
+    for (int rcv=0;rcv<2;++rcv) if (codes[rcv]) {
+      next[rcv]=codes[rcv];
+    }
+    group_codes[key]=codes;
+    selection.selected_[key]=next;
+  }
+  for (const auto& [key, receivers]:per_satellite) {
+    const int sys=satsys(key.first,nullptr);
+    auto old=selection.arcs_[key];
+    std::array<uint8_t,2> codes{};
+    if (!receivers[0].empty() && !receivers[1].empty()) {
+      const auto group=group_codes.find({sys,key.second});
+      if (group!=group_codes.end()) codes=group->second;
+    } else {
+      // A receiver-only band cannot form a double difference. Retain its
+      // independent SPP/Doppler information, including BDS B2b on the base.
+      for (int rcv=0;rcv<2;++rcv) if (!receivers[rcv].empty()) {
+        codes[rcv]=*receivers[rcv].begin();
+        if (receivers[rcv].count(old[rcv])) codes[rcv]=old[rcv];
+        else for (auto code:receivers[rcv])
+          if (getcodepri(sys,code,"")>getcodepri(sys,codes[rcv],"")) codes[rcv]=code;
+      }
+    }
+    for (int rcv=0;rcv<2;++rcv) {
+      if (!receivers[rcv].count(codes[rcv])) { codes[rcv]=0; continue; }
+      if (old[rcv] && old[rcv]!=codes[rcv]) out.switched.insert(key);
+      old[rcv]=codes[rcv];
+    }
+    selection.arcs_[key]=old;
+    out.codes[key]=codes;
+  }
+  return out;
+}
+
 // Build the RTKLIB observation vector for one epoch: convert every signal
 // message, merge the per-band entries of the same (receiver, satellite) into
 // one multi-frequency obsd_t, and sort by receiver then satellite — the
@@ -100,106 +215,11 @@ inline std::vector<obsd_t> buildObsEpoch(
     if (counters) ++counters->invalid_epoch;
     return {};
   }
-  // RTKLIB differences satellites within a constellation. Selecting different
-  // tracking families per satellite changes the inter-receiver bias within
-  // that group. Use a common group policy, not a per-satellite fallback.
-  using Band = std::pair<int,int>; // (constellation, frequency index)
-  using Codes = std::set<uint8_t>;
-  std::map<Band, std::array<Codes,2>> candidates;
-  std::map<Band, std::array<Codes,2>> per_satellite;
-  std::map<Band, std::array<uint8_t,2>> chosen;
-  std::set<Band> switched;
-  if (selection) {
-    auto collect = [&](const auto& epoch, int rcv) {
-      for (const auto& m : epoch.observations) {
-        const auto o = convertObs(m, gpst2time(epoch.week, epoch.tow), rcv, mask);
-        if (!o.sat) continue;
-        for (int band=0; band<NFREQ; ++band)
-          if (o.code[band]) per_satellite[{o.sat,band}][rcv-1].insert(o.code[band]);
-      }
-    };
-    collect(rover,1);
-    if (base) collect(*base,2);
-    for (const auto& [sat_band, receivers]:per_satellite) {
-      if (receivers[0].empty() || receivers[1].empty()) continue;
-      const Band group{satsys(sat_band.first,nullptr),sat_band.second};
-      for (int rcv=0;rcv<2;++rcv)
-        candidates[group][rcv].insert(receivers[rcv].begin(),receivers[rcv].end());
-    }
-    std::map<Band,std::array<uint8_t,2>> group_codes;
-    for (const auto& [key, receivers] : candidates) {
-      const int sys=key.first;
-      const auto previous=selection->selected_.find(key);
-      const std::array<uint8_t,2> old=previous==selection->selected_.end()
-          ? std::array<uint8_t,2>{} : previous->second;
-      const auto pick=[&](const Codes& allowed,uint8_t sticky) -> uint8_t {
-        if (allowed.empty()) return 0;
-        if (allowed.count(sticky)) return sticky;
-        uint8_t code=*allowed.begin();
-        for (const auto candidate:allowed)
-          if (getcodepri(sys,candidate,"")>getcodepri(sys,code,"")) code=candidate;
-        return code;
-      };
-      std::array<uint8_t,2> codes{};
-      if (!receivers[0].empty() && !receivers[1].empty()) {
-        Codes common;
-        std::set_intersection(receivers[0].begin(),receivers[0].end(),
-                              receivers[1].begin(),receivers[1].end(),
-                              std::inserter(common,common.end()));
-        if (!common.empty()) {
-          codes.fill(pick(common,common.count(old[0]) ? old[0] : old[1]));
-        } else if (old[0] && old[0]==old[1] &&
-                   (receivers[0].count(old[0]) || receivers[1].count(old[0]))) {
-          // A temporary outage is not a tracking-mode change. Keep the
-          // established code on the receiver that still observes it. There
-          // is no mixed-code DD, and no artificial hole in its phase history.
-          codes=old;
-        } else if (crossCodePairingSupported(sys,key.second)) {
-          // Preserve the pre-existing Galileo/L5 component-pairing policy.
-          // Exact-code-only selection would remove every Galileo band in
-          // heterogeneous PPC receivers (rover C/Q, base X).
-          for (int rcv=0;rcv<2;++rcv) codes[rcv]=pick(receivers[rcv],old[rcv]);
-        } else if ((sys==SYS_GPS || sys==SYS_QZS) && key.second==1) {
-          // RTKLIB permits stable heterogeneous L2 tracking. Select once per
-          // constellation/receiver; a real change is still a private slip.
-          for (int rcv=0;rcv<2;++rcv) codes[rcv]=pick(receivers[rcv],old[rcv]);
-        } else continue; // No compatible pair: preserve prior selection through outage.
-      } else {
-        for (int rcv=0;rcv<2;++rcv) codes[rcv]=pick(receivers[rcv],old[rcv]);
-      }
-      auto next=old;
-      for (int rcv=0;rcv<2;++rcv) if (codes[rcv]) {
-        next[rcv]=codes[rcv];
-      }
-      group_codes[key]=codes;
-      selection->selected_[key]=next;
-    }
-    for (const auto& [key, receivers]:per_satellite) {
-      const int sys=satsys(key.first,nullptr);
-      auto old=selection->arcs_[key];
-      std::array<uint8_t,2> codes{};
-      if (!receivers[0].empty() && !receivers[1].empty()) {
-        const auto group=group_codes.find({sys,key.second});
-        if (group!=group_codes.end()) codes=group->second;
-      } else {
-        // A receiver-only band cannot form a double difference. Retain its
-        // independent SPP/Doppler information, including BDS B2b on the base.
-        for (int rcv=0;rcv<2;++rcv) if (!receivers[rcv].empty()) {
-          codes[rcv]=*receivers[rcv].begin();
-          if (receivers[rcv].count(old[rcv])) codes[rcv]=old[rcv];
-          else for (auto code:receivers[rcv])
-            if (getcodepri(sys,code,"")>getcodepri(sys,codes[rcv],"")) codes[rcv]=code;
-        }
-      }
-      for (int rcv=0;rcv<2;++rcv) {
-        if (!receivers[rcv].count(codes[rcv])) { codes[rcv]=0; continue; }
-        if (old[rcv] && old[rcv]!=codes[rcv]) switched.insert(key);
-        old[rcv]=codes[rcv];
-      }
-      selection->arcs_[key]=old;
-      chosen[key]=codes;
-    }
-  }
+  using Band = std::pair<int,int>; // (satellite, frequency index)
+  SignalChoice choice;
+  if (selection) choice = selectSignals(rover, base, mask, *selection);
+  const auto& chosen = choice.codes;
+  const auto& switched = choice.switched;
   std::map<int, obsd_t> obs_map;
   std::set<int> conflicting_channels;
   std::map<int,uint8_t> known_channels;

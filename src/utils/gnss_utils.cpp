@@ -1051,7 +1051,7 @@ void NmeaParser::flushPending(gnss_ros_standardization::msg::GnssSolution& solut
     solution.longitude = nan_d;
     solution.altitude  = nan_d;
     solution.num_sats  = 0;
-    solution.age_diff  = 0.0;
+    solution.age_diff  = nan_f;
     solution.hdop      = nan_f;
     solution.pos_ecef.x = nan_d;
     solution.pos_ecef.y = nan_d;

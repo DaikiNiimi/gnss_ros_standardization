@@ -4,9 +4,13 @@
 #include "gnss_ros_standardization/binary_framer.hpp"
 #include <rclcpp/rclcpp.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -103,7 +107,10 @@ class SbfDriverNode : public rclcpp::Node {
 
     if (config_.configure_on_startup) {
       configureReceiver();
+    } else {
+      requestStoredNavigationOnly();
     }
+    receiver_health_.restartPeriod();  // judge input from the end of the startup commands
 
     openRtcmRelay();
     if (config_.configure_on_startup && config_.enable_meas_epoch) receiver_health_.expectObservations(config_.publish_rate);
@@ -125,6 +132,7 @@ class SbfDriverNode : public rclcpp::Node {
   decoder_common::EpochFlushPolicy epoch_flush_;
   SbfObservationCompletion observation_completion_;
   wire::ReceiverHealth receiver_health_;
+  decoder_common::PublishRateLog obs_rate_log_;
   void initializeParameters() {
     receiver_health_.configure(5.0);
     receiver_health_.limits(MAXOBS, NFREQ, NEXOBS, MAXPRNCMP);
@@ -178,8 +186,7 @@ class SbfDriverNode : public rclcpp::Node {
     config_.frame_id             = get_parameter("frame_id").as_string();
     config_.publish_rate         = get_parameter("rate_hz").as_int();
     // Upper bound 200 Hz: getIntervalString maps 200->msec5, 100->msec10. The
-    // receiver caps GNSS blocks at its licensed measurement rate on its own,
-    // while ExtSensorMeas streams up to the IMU's native sample rate.
+    // receiver caps GNSS blocks at its licensed measurement rate on its own.
     gnss_utils::validatePublishRate(config_.publish_rate, /*fallback=*/1, /*max_hz=*/200, get_logger());
     config_.receiver_port        = get_parameter("receiver_port").as_string();
     config_.configure_on_startup = get_parameter("configure_on_startup").as_bool();
@@ -349,33 +356,170 @@ class SbfDriverNode : public rclcpp::Node {
         });
   }
 
+  static std::string upper(std::string s) {
+    for (auto& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return s;
+  }
+
+  // A port in input mode 'auto' ignores commands after RTCM input until it
+  // receives the escape sequence; in command mode the escape only returns the
+  // prompt, which names the receiver port of this connection. Returns that
+  // port, or empty without a prompt.
+  std::string enterCommandMode() {
+    return decoder_common::requestPrompt(
+        stream_, wire::Protocol::Sbf, sbf::COMMAND_MODE_ESCAPE, std::chrono::seconds(2),
+        [this](uint8_t byte) { parseSbfByte(byte); });
+  }
+
+  // The driver owns the outputs of its own port, identified by port, never by
+  // stream number: streams of other ports (disk logging, COM2, ...) are never
+  // written.
+  struct OutputStream {
+    int number;
+    std::string name, port;
+  };
+
+  // "SBFOutput, Stream2, USB1, <list>, <interval>" lines; ResN entries are ignored.
+  static std::vector<OutputStream> parseStreamTable(const std::vector<std::string>& lines,
+                                                    const std::string& kind) {
+    std::vector<OutputStream> streams;
+    for (const auto& line : lines) {
+      std::vector<std::string> fields;
+      size_t start = 0;
+      for (size_t comma; (comma = line.find(',', start)) != std::string::npos; start = comma + 1)
+        fields.push_back(line.substr(start, comma - start));
+      fields.push_back(line.substr(start));
+      for (auto& f : fields) {
+        const auto first = f.find_first_not_of(' ');
+        f = first == std::string::npos ? "" : f.substr(first, f.find_last_not_of(' ') - first + 1);
+      }
+      if (fields.size() < 3 || fields[0] != kind) continue;
+      const std::string& name = fields[1];
+      if (upper(name).rfind("STREAM", 0) != 0 || name.size() <= 6 || name.size() > 9 ||
+          name.find_first_not_of("0123456789", 6) != std::string::npos) continue;
+      const int number = std::stoi(name.substr(6));
+      if (std::none_of(streams.begin(), streams.end(),
+                       [&](const OutputStream& s) { return s.number == number; }))
+        streams.push_back({number, name, fields[2]});
+    }
+    std::sort(streams.begin(), streams.end(),
+              [](const OutputStream& a, const OutputStream& b) { return a.number < b.number; });
+    return streams;
+  }
+
+  // The stream table, or nothing when the query is not acknowledged or lists no stream.
+  std::optional<std::vector<OutputStream>> readStreamTable(const char* query, const char* kind) {
+    const auto lines = decoder_common::queryAscii(stream_, wire::Protocol::Sbf, query,
+        [this](uint8_t byte) { parseSbfByte(byte); });
+    if (!lines) return std::nullopt;
+    auto streams = parseStreamTable(*lines, kind);
+    if (streams.empty()) return std::nullopt;
+    return streams;
+  }
+
+  bool ownPort(const OutputStream& s) const { return upper(s.port) == upper(config_.receiver_port); }
+
+  // The lowest stream already on this port, else the lowest unused one.
+  const OutputStream* chooseStream(const std::vector<OutputStream>& streams,
+                                   const OutputStream* exclude) const {
+    for (const bool own : {true, false})
+      for (const auto& s : streams)
+        if (&s != exclude && (own ? ownPort(s) : upper(s.port) == "NONE")) return &s;
+    return nullptr;
+  }
+
+  [[noreturn]] void noFreeStream(const char* kind, const std::vector<OutputStream>& streams) const {
+    std::string used;
+    for (const auto& s : streams)
+      if (upper(s.port) != "NONE") used += (used.empty() ? "" : ", ") + s.name + ": " + s.port;
+    throw std::runtime_error(std::string("No free ") + kind + " stream for " + config_.receiver_port +
+                             "; streams in use: " + used);
+  }
+
+  // Streams on this port that the driver does not use are left from earlier runs.
+  void switchOffUnused(const char* command, const char* kind, const std::vector<OutputStream>& streams,
+                       std::initializer_list<const OutputStream*> used) {
+    for (const auto& s : streams) {
+      if (!ownPort(s) || std::find(used.begin(), used.end(), &s) != used.end()) continue;
+      const std::string cmd = std::string(command) + ", " + s.name + ", none, none, off";
+      RCLCPP_INFO(get_logger(), "%s %s on %s switched off: %s", kind, s.name.c_str(),
+                  s.port.c_str(), cmd.c_str());
+      sendCommand(cmd);
+    }
+  }
+
+  std::vector<const char*> storedNavigationBlocks() const {
+    std::vector<const char*> blocks;
+    if (config_.enable_gps_nav) blocks.push_back(sbf::BLOCK_GPSNAV);
+    if (config_.enable_glo_nav) blocks.push_back(sbf::BLOCK_GLONAV);
+    if (config_.enable_gal_nav) blocks.push_back(sbf::BLOCK_GALNAV);
+    if (config_.enable_bds_nav) blocks.push_back(sbf::BLOCK_BDSNAV);
+    if (config_.enable_qzs_nav) blocks.push_back(sbf::BLOCK_QZSNAV);
+    if (config_.enable_gps_nav) blocks.push_back(sbf::BLOCK_GPSION);
+    if (config_.enable_gal_nav) blocks.push_back(sbf::BLOCK_GALION);
+    if (config_.enable_bds_nav) blocks.push_back(sbf::BLOCK_BDSION);
+    return blocks;
+  }
+
+  // Decoded navigation blocks are output when the receiver decodes a new
+  // issue; exeSBFOnce outputs the stored ones now. Failure is not fatal.
+  void requestStoredNavigation(const std::string& port) {
+    const auto blocks = storedNavigationBlocks();
+    if (blocks.empty()) return;
+    std::string cmd = std::string(sbf::CMD_EXE_SBF_ONCE) + ", " + port + ", " + blocks[0];
+    for (size_t i = 1; i < blocks.size(); ++i) cmd += std::string("+") + blocks[i];
+    const int result = decoder_common::commandAscii(stream_, wire::Protocol::Sbf, cmd,
+        [this](uint8_t byte) { parseSbfByte(byte); });
+    if (result > 0) {
+      RCLCPP_INFO(get_logger(), "Requested stored navigation data: %s", cmd.c_str());
+      return;
+    }
+    RCLCPP_WARN(get_logger(), "Stored navigation data not requested (%s: %s); ephemerides arrive as "
+                "the receiver decodes them", cmd.c_str(),
+                result == -1 ? "rejected" : result == -2 ? "write failed" : "no reply");
+  }
+
+  // configure_on_startup false: receiver settings are not changed; the stored
+  // navigation data is still requested once, from the port named by the prompt.
+  void requestStoredNavigationOnly() {
+    if (!decoder_common::twoWayStream(stream_) || storedNavigationBlocks().empty()) return;
+    const std::string port = enterCommandMode();
+    if (port.empty()) {
+      RCLCPP_WARN(get_logger(), "No command prompt received; stored navigation data not requested");
+      return;
+    }
+    RCLCPP_INFO(get_logger(), "Connected to receiver port %s", port.c_str());
+    requestStoredNavigation(port);
+  }
+
   void configureReceiver() {
     RCLCPP_INFO(get_logger(), "Configuring receiver...");
+    std::string prompt_port = enterCommandMode();
+    if (!prompt_port.empty() && upper(prompt_port) != upper(config_.receiver_port)) {
+      // Buffered binary outside a framed block can mimic a prompt: confirm it
+      // with a second escape before reporting a port mismatch.
+      const std::string second = enterCommandMode();
+      if (upper(second) == upper(config_.receiver_port)) prompt_port = second;
+      else if (upper(second) != upper(prompt_port)) prompt_port.clear();
+    }
+    if (prompt_port.empty()) {
+      RCLCPP_INFO(get_logger(), "No command prompt received; sending configuration commands");
+    } else if (upper(prompt_port) != upper(config_.receiver_port)) {
+      throw std::runtime_error("Receiver prompt names port " + prompt_port + ", but receiver_port is " +
+                               config_.receiver_port + ": receiver_port must be the receiver port "
+                               "this stream is connected to");
+    } else {
+      RCLCPP_INFO(get_logger(), "Connected to receiver port %s", prompt_port.c_str());
+    }
 
     const std::string interval_str = sbf::getIntervalString(config_.publish_rate);
 
-    // --- NMEA output (Stream2, same physical port) ---
-    // Send NMEA setup FIRST while the port is quiet. If SBF were enabled
-    // first, its binary stream would saturate the port and bury the `sno`
-    // ACK (and empirically appears to prevent NMEA from routing at all).
     std::vector<std::string> nmea_sentences;
     if (config_.enable_nmea_gga) nmea_sentences.push_back("GGA");
     if (config_.enable_nmea_rmc) nmea_sentences.push_back("RMC");
     if (config_.enable_nmea_gsa) nmea_sentences.push_back("GSA");
     if (config_.enable_nmea_gst) nmea_sentences.push_back("GST");
 
-    if (!nmea_sentences.empty()) {
-      std::string nmea_list = nmea_sentences[0];
-      for (size_t i = 1; i < nmea_sentences.size(); ++i) nmea_list += "+" + nmea_sentences[i];
-
-      // Use Stream2 for NMEA at the requested publish rate.
-      std::string nmea_cmd = std::string(sbf::CMD_SET_NMEA_OUTPUT) + ", Stream2, " +
-                             config_.receiver_port + ", " + nmea_list + ", " + interval_str;
-      RCLCPP_INFO(get_logger(), "NMEA config: %s", nmea_cmd.c_str());
-      sendCommand(nmea_cmd);
-    }
-
-    // --- SBF output (Stream1) ---
     std::vector<std::string> blocks;
     if (config_.enable_meas_epoch) {
       blocks.push_back(sbf::BLOCK_MEASEPOCH);
@@ -401,19 +545,65 @@ class SbfDriverNode : public rclcpp::Node {
     if (config_.enable_pos_cov_cartesian)blocks.push_back(sbf::BLOCK_POSCOVCARTESIAN);
     if (config_.enable_vel_cov_cartesian)blocks.push_back(sbf::BLOCK_VELCOVCARTESIAN);
     if (config_.enable_dop)              blocks.push_back(sbf::BLOCK_DOP);
-    // ExtSensorMeas shares Stream1: configuring it on a separate stream with
-    // OnChange produced no output on real hardware. With a single stream the
-    // receiver caps each block individually — GNSS blocks at the licensed
-    // measurement rate, ExtSensorMeas at the IMU's native sample rate — so
-    // rate_hz: 100 (msec10) yields e.g. GNSS 10 Hz + IMU 100 Hz, matching
-    // the WebUI Interval=10ms behavior.
-    if (config_.enable_ext_sensor_meas)  blocks.push_back(sbf::BLOCK_EXTSENSORMEAS);
 
-    if (!blocks.empty()) {
+    // --- Choose streams before writing anything ---
+    const auto sbf_streams = readStreamTable(sbf::CMD_GET_SBF_OUTPUT, "SBFOutput");
+    if (!sbf_streams)
+      throw std::runtime_error("SBF stream configuration could not be read; getSBFOutput gave no "
+                               "stream table, and streams are not changed without it (set "
+                               "configure_on_startup: false to use the receiver as configured)");
+    const auto nmea_streams = readStreamTable(sbf::CMD_GET_NMEA_OUTPUT, "NMEAOutput");
+    if (!nmea_streams) {
+      if (!nmea_sentences.empty())
+        throw std::runtime_error("NMEA stream configuration could not be read; getNMEAOutput gave "
+                                 "no stream table, and streams are not changed without it");
+      RCLCPP_WARN(get_logger(), "NMEA stream configuration could not be read; NMEA streams left unchanged");
+    }
+    const OutputStream* gnss = nullptr;
+    const OutputStream* imu = nullptr;
+    const OutputStream* nmea = nullptr;
+    if (!blocks.empty() && !(gnss = chooseStream(*sbf_streams, nullptr))) noFreeStream("SBF", *sbf_streams);
+    if (config_.enable_ext_sensor_meas && !(imu = chooseStream(*sbf_streams, gnss)))
+      noFreeStream("SBF", *sbf_streams);
+    if (!nmea_sentences.empty() && !(nmea = chooseStream(*nmea_streams, nullptr)))
+      noFreeStream("NMEA", *nmea_streams);
+    std::string chosen;
+    if (gnss) chosen += gnss->name + " (GNSS)";
+    if (imu) chosen += (chosen.empty() ? "" : ", ") + imu->name + " (IMU)";
+    if (!chosen.empty())
+      RCLCPP_INFO(get_logger(), "SBF output: %s on %s", chosen.c_str(), config_.receiver_port.c_str());
+    if (nmea)
+      RCLCPP_INFO(get_logger(), "NMEA output: %s on %s", nmea->name.c_str(), config_.receiver_port.c_str());
+
+    switchOffUnused(sbf::CMD_SET_SBF_OUTPUT, "SBF", *sbf_streams, {gnss, imu});
+    if (nmea_streams) switchOffUnused(sbf::CMD_SET_NMEA_OUTPUT, "NMEA", *nmea_streams, {nmea});
+
+    // --- NMEA output ---
+    // Sent before the SBF streams while the port is quiet: a saturated port
+    // buried the `sno` ACK.
+    if (nmea) {
+      std::string nmea_list = nmea_sentences[0];
+      for (size_t i = 1; i < nmea_sentences.size(); ++i) nmea_list += "+" + nmea_sentences[i];
+      const std::string nmea_cmd = std::string(sbf::CMD_SET_NMEA_OUTPUT) + ", " + nmea->name + ", " +
+                                   config_.receiver_port + ", " + nmea_list + ", " + interval_str;
+      RCLCPP_INFO(get_logger(), "NMEA config: %s", nmea_cmd.c_str());
+      sendCommand(nmea_cmd);
+    }
+
+    // --- IMU output: its own stream, at the IMU's rate independent of rate_hz ---
+    if (imu) {
+      const std::string cmd = std::string(sbf::CMD_SET_SBF_OUTPUT) + ", " + imu->name + ", " +
+                              config_.receiver_port + ", " + sbf::BLOCK_EXTSENSORMEAS + ", OnChange";
+      RCLCPP_INFO(get_logger(), "IMU config: %s", cmd.c_str());
+      sendCommand(cmd);
+    }
+
+    // --- GNSS output ---
+    if (gnss) {
       std::string messages = blocks[0];
       for (size_t i = 1; i < blocks.size(); ++i) messages += "+" + blocks[i];
 
-      std::string sbf_cmd = std::string(sbf::CMD_SET_SBF_OUTPUT) + ", Stream1, " +
+      std::string sbf_cmd = std::string(sbf::CMD_SET_SBF_OUTPUT) + ", " + gnss->name + ", " +
                             config_.receiver_port + ", " + messages + ", " + interval_str;
       RCLCPP_INFO(get_logger(), "SBF config: %s", sbf_cmd.c_str());
       sendCommand(sbf_cmd);
@@ -422,6 +612,7 @@ class SbfDriverNode : public rclcpp::Node {
     }
 
     RCLCPP_INFO(get_logger(), "Receiver acknowledged configuration commands; verify actual message types and rates");
+    requestStoredNavigation(config_.receiver_port);
   }
 
   // Polling
@@ -475,7 +666,7 @@ class SbfDriverNode : public rclcpp::Node {
     }
     if (wire_framer_.rejected() != wire_last_rejected_) {
       wire_last_rejected_ = wire_framer_.rejected();
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      RCLCPP_DEBUG(get_logger(),
           "Rejected binary frame/header count: %llu",
           static_cast<unsigned long long>(wire_last_rejected_));
     }
@@ -993,11 +1184,11 @@ class SbfDriverNode : public rclcpp::Node {
     obs_pub_->publish(msg);
     receiver_health_.published(msg.week, msg.tow, msg.observations.size());
 
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+    if (obs_rate_log_.due()) RCLCPP_INFO(get_logger(),
+      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d) rate=%s",
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
-      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
+      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown, obs_rate_log_.rate());
   }
 
   // Ephemeris Publishing (snapshot-on-change + heartbeat via EphemerisStore)

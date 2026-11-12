@@ -92,7 +92,7 @@ def _run(node,executor,label,exe,data,extra,*,file_input,disconnect,chunk_delay)
         if exe.startswith('ubx'): args+=['-p','messages.nav_pvt:=true']
     if extra: args+=extra
     args=[arg.replace('/review/',topic_prefix) for arg in args]
-    args+=['-r','__node:='+receiver_name]
+    args+=['-r','__node:='+receiver_name,'--log-level',receiver_name+':=debug']
     with open(TEMP.name+'/'+label+'.log','w') as log:
         proc=subprocess.Popen(args,stdout=log,stderr=log)
         client=None

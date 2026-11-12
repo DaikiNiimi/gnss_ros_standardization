@@ -8,6 +8,7 @@
 | [`GlonassEphemeris`](GlonassEphemeris.msg) | GLONASS ephemeris | `geph_t` |
 | [`GnssEphemerides`](GnssEphemerides.msg) | all retained ephemerides and ionosphere parameters | `eph_t[]`, `geph_t[]`, `nav_t.ion_*` |
 | [`GnssSolution`](GnssSolution.msg) | position, velocity, covariances in LLH, ECEF and ENU | `sol_t` |
+| [`GnssBaseStation`](GnssBaseStation.msg) | RTCM reference station position, antenna and receiver, with the time it applies from | `sta_t` |
 
 Units, frames and enumerations are documented in each `.msg` file. Time, missing
 values and per-field rules: [topic contract](../docs/TOPIC_DATA_CONTRACT.md).

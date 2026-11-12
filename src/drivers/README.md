@@ -6,13 +6,17 @@ same message tables, same common parameters).
 
 | Executable | Receiver | Configuration commands | Configuration file |
 |---|---|---|---|
-| `ubx_driver_node` | u-blox | UBX-CFG (`G9`) or UBX-CFG-VALSET (`G10`) | [`config/ubx_driver.yaml`](../../config/ubx_driver.yaml) |
+| `ubx_driver_node` | u-blox | UBX-CFG-VALSET (protocol 27+) or legacy UBX-CFG, chosen from UBX-MON-VER | [`config/ubx_driver.yaml`](../../config/ubx_driver.yaml) |
 | `sbf_driver_node` | Septentrio | `setSBFOutput` / `setNMEAOutput` | [`config/sbf_driver.yaml`](../../config/sbf_driver.yaml) |
 | `novatel_driver_node` | NovAtel OEM | `log ... ontime` / `onnew` | [`config/novatel_driver.yaml`](../../config/novatel_driver.yaml) |
 
 ```bash
 ros2 run gnss_ros_standardization ubx_driver_node --ros-args \
   --params-file config/ubx_driver.yaml
+ros2 run gnss_ros_standardization sbf_driver_node --ros-args \
+  --params-file config/sbf_driver.yaml
+ros2 run gnss_ros_standardization novatel_driver_node --ros-args \
+  --params-file config/novatel_driver.yaml
 ```
 
 ## Parameters
@@ -21,10 +25,9 @@ In addition to the [decoder parameters](../decoders/README.md#parameters):
 
 | Parameter | Default (YAML) | Nodes | Meaning |
 |---|---|---|---|
-| `configure_on_startup` | `true` | all | send the configuration commands; `false` = decode only |
+| `configure_on_startup` | `true` | all | apply the YAML output settings to the receiver; `false` = receiver settings are not changed, stored ephemerides are still requested once (Septentrio, NovAtel) |
 | `rate_hz` | `10` | all | measurement / log rate in Hz (u-blox and NovAtel 1–20, Septentrio 1–200) |
-| `receiver_port` | `USB1` / `THISPORT` | SBF, NovAtel | receiver port the output is configured on; must be the connected port |
-| `generation` | `G9` | UBX | `G9` (F9P, M8: UBX-CFG) or `G10` (X20P: UBX-CFG-VALSET) |
+| `receiver_port` | `USB1` / `THISPORT` / `THISPORT` | SBF, NovAtel, UBX | receiver port the output is configured on; must be the connected port. UBX: `THISPORT` is identified at startup, or name `USB`, `UART1`, `UART2`, `I2C`, `SPI` |
 | `dynamic_model` | `portable` | UBX | `portable`, `stationary`, `pedestrian`, `automotive`, `sea`, `airborne_1g`, `airborne_2g`, `airborne_4g`, `watch` |
 | `navsys.gps`, `.glo`, `.gal`, `.bds`, `.qzs`, `.irn`, `.sbs` | see YAML | UBX | constellations enabled on the receiver |
 | `rtcm_input.enable` | `false` | all | host the RTCM correction server (`rtcm_input.listen`) |
@@ -58,9 +61,11 @@ In addition to the [decoder parameters](../decoders/README.md#parameters):
 | `pvt_cartesian`, `pos_cov_cartesian`, `vel_cov_cartesian` | PVTCartesian, PosCovCartesian, VelCovCartesian | solution |
 | `dop` | DOP | solution |
 | `nmea_gga`, `nmea_rmc`, `nmea_gsa`, `nmea_gst` | NMEA | solution (when no binary PVT) |
-| `ext_sensor_meas` | ExtSensorMeas | imu_raw |
+| `ext_sensor_meas` | ExtSensorMeas on its own SBF stream at the IMU's own rate (not `rate_hz`) | imu_raw |
 
-Use either the geodetic or the cartesian PVT/covariance set.
+Use either the geodetic or the cartesian PVT/covariance set. The driver uses the lowest free SBF
+(and, if NMEA is enabled, NMEA) stream for its port, switches off its own earlier streams on that
+port, and leaves streams of other ports untouched.
 
 ### `novatel_driver_node`
 

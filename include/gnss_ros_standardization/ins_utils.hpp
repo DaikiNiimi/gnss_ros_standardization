@@ -7,6 +7,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <limits>
 #include <string>
@@ -55,9 +57,22 @@ inline std::array<double, 9> makeDiagCovariance(
 
 /// Map a free-running receiver sample counter onto a monotone ROS timeline.
 ///
-///     t_ros(c) = unwrap(c) * tick_s + b
-///     b        -> sliding-window minimum of (arrival - unwrap(c) * tick_s),
-///                 approached under a slew limit.
+///     t_ros(c) = tau(c) + b,   tau advances by (counter delta) * tick_s * rate
+///     rate     -> measured counter rate / nominal rate (see below)
+///     b        -> sliding-window minimum of (arrival - tau), approached under
+///                 a slew limit.
+///
+/// THE COUNTER RATE IS MEASURED, NOT ASSUMED. On a real ZED-F9R the sTtag
+/// counter runs on the IMU's own oscillator: one unit measured 38.7447 us per
+/// tick against the nominal 39.0625 us (-8135 ppm, stable to +-15 ppm over
+/// 10 min). With a fixed tick the counter time runs 0.8 % fast, b can follow
+/// only max_slew of it, and the stamps ran ahead of real time by 7.9 ms every
+/// second (4 s after 9 min). The rate is therefore fitted to the arrival
+/// lower envelope - the minima of (arrival - counter * tick_s) in rate_bin_s
+/// bins over rate_window_s, Theil-Sen slope so a startup backlog or a few
+/// stalled bins cannot bias it - and accepted within max_rate_error. A larger
+/// rate difference is not an oscillator: the stream is not paced by real time
+/// (file:// replay of a log), and tick_s is used as is.
 ///
 /// Why a counter at all: u-blox UBX-ESF-RAW carries only `sTtag`, a receiver
 /// sample counter with no GNSS time and - per the ZED-F9R Interface
@@ -153,7 +168,22 @@ class SensorTickClock {
     /// A forward counter jump beyond this means a corrupt tag, or an outage
     /// long enough that the old offset estimate is not worth keeping.
     double max_forward_gap_s{300.0};
+    /// Measure the counter rate (see the class note); false trusts tick_s.
+    bool estimate_rate{true};
+    /// Bin width of the arrival lower envelope [s of counter time].
+    double rate_bin_s{2.0};
+    /// Span of bins the rate is fitted over [s of counter time].
+    double rate_window_s{60.0};
+    /// Closed bins needed before the first rate estimate.
+    int rate_min_bins{10};
+    /// Largest accepted |measured / nominal rate - 1|. Sensor oscillators are
+    /// within about 1 %; a file:// replay is off by orders of magnitude.
+    double max_rate_error{0.03};
   };
+
+  /// Pending: not enough data yet. Tracking: measured rate applied.
+  /// Unpaced: the stream does not follow real time; tick_s is used as is.
+  enum class RateState { Pending, Tracking, Unpaced };
 
   SensorTickClock() = default;
   explicit SensorTickClock(const Config& cfg) : cfg_(cfg) {}
@@ -220,7 +250,10 @@ class SensorTickClock {
 
     last_raw_ = raw_counter;
     unwrapped_ += d;
-    const double counter_s = static_cast<double>(unwrapped_) * cfg_.tick_s;
+    const double nominal_s = static_cast<double>(unwrapped_) * cfg_.tick_s;
+    if (cfg_.estimate_rate) updateRate(nominal_s, arrival_s);
+    tau_ += static_cast<double>(d) * cfg_.tick_s * rate_;
+    const double counter_s = tau_;
 
     // Sliding-window minimum of the offset, over receiver time so the window
     // does not stretch when arrivals are bursty.
@@ -241,8 +274,12 @@ class SensorTickClock {
     for (const auto& s : floor_) target = std::min(target, s.second);
 
     // Slew-limited approach to the target. This is what keeps the output
-    // monotone; see the class note.
-    const double slew = window_filled_ ? cfg_.max_slew : cfg_.warmup_slew;
+    // monotone; see the class note. The fast warm-up slew lasts until the
+    // rate is settled too: whatever offset error built up while the rate was
+    // still unknown must be absorbed in seconds, not at max_slew.
+    const bool rate_settled = !cfg_.estimate_rate || rate_state_ == RateState::Unpaced ||
+        (rate_state_ == RateState::Tracking && counter_s - tracking_since_ >= cfg_.window_s);
+    const double slew = window_filled_ && rate_settled ? cfg_.max_slew : cfg_.warmup_slew;
     const double max_step = slew * gap_s;
     const double want = target - b_;
     b_ += std::max(-max_step, std::min(max_step, want));
@@ -276,17 +313,12 @@ class SensorTickClock {
   /// Current offset estimate [s].
   double offset() const { return b_; }
 
-  /// Drift of the offset across the window [s/s], i.e. (true_tick /
-  /// nominal_tick - 1). Diagnostic only: tick_s is an undocumented constant for
-  /// u-blox sTtag, so a persistent non-zero drift here is the only signal
-  /// that the constant is wrong for a given receiver or firmware.
-  /// Returns 0 until the window spans a usable interval.
-  double driftRate() const {
-    if (floor_.size() < 2) return 0.0;
-    const double span = floor_.back().first - floor_.front().first;
-    if (span <= 0.0) return 0.0;
-    return (floor_.back().second - floor_.front().second) / span;
-  }
+  /// Last measured (true tick / tick_s - 1), whether or not it was accepted;
+  /// 0 while the rate is still Pending.
+  double driftRate() const { return measured_rate_error_; }
+  RateState rateState() const { return rate_state_; }
+  /// Counter tick currently applied [s].
+  double appliedTick() const { return cfg_.tick_s * rate_; }
 
   bool seeded() const { return seeded_; }
   bool windowFilled() const { return window_filled_; }
@@ -301,9 +333,58 @@ class SensorTickClock {
     last_arrival_s_ = -std::numeric_limits<double>::infinity();
     last_skew_ = 0.0;
     floor_.clear();
+    resetRate();
   }
 
  private:
+  struct RateBin { double start, x, y; };  // y = min(arrival - nominal counter s) at x
+
+  void resetRate() {
+    tau_ = 0.0;
+    rate_ = 1.0;
+    rate_state_ = RateState::Pending;
+    measured_rate_error_ = 0.0;
+    tracking_since_ = 0.0;
+    bins_.clear();
+  }
+
+  /// Lower-envelope rate fit; see the class note. Re-fitted when a bin closes.
+  void updateRate(double nominal_s, double arrival_s) {
+    const double y = arrival_s - nominal_s;
+    bool closed = false;
+    if (bins_.empty() || nominal_s - bins_.back().start >= cfg_.rate_bin_s) {
+      closed = !bins_.empty();
+      bins_.push_back({nominal_s, nominal_s, y});
+    } else if (y < bins_.back().y) {
+      bins_.back().x = nominal_s;
+      bins_.back().y = y;
+    }
+    while (bins_.size() > 1 && nominal_s - bins_.front().start > cfg_.rate_window_s)
+      bins_.pop_front();
+    const size_t n = bins_.size() - 1;  // closed bins; the last one is still open
+    if (!closed || static_cast<int>(n) < std::max(2, cfg_.rate_min_bins)) return;
+    std::vector<double> slopes;
+    slopes.reserve(n * (n - 1) / 2);
+    for (size_t i = 0; i < n; ++i)
+      for (size_t j = i + 1; j < n; ++j)
+        if (bins_[j].x > bins_[i].x)
+          slopes.push_back((bins_[j].y - bins_[i].y) / (bins_[j].x - bins_[i].x));
+    if (slopes.empty()) return;
+    auto mid = slopes.begin() + slopes.size() / 2;
+    std::nth_element(slopes.begin(), mid, slopes.end());
+    const double error = *mid;
+    if (!std::isfinite(error)) return;
+    measured_rate_error_ = error;
+    if (std::fabs(error) <= cfg_.max_rate_error) {
+      if (rate_state_ != RateState::Tracking) tracking_since_ = tau_;
+      rate_state_ = RateState::Tracking;
+      rate_ = 1.0 + error;
+    } else {
+      rate_state_ = RateState::Unpaced;
+      rate_ = 1.0;
+    }
+  }
+
   void seed(std::uint64_t raw, double arrival_s) {
     seeded_ = true;
     window_filled_ = false;
@@ -319,6 +400,8 @@ class SensorTickClock {
     last_skew_ = 0.0;  // the seed puts t exactly on arrival
     floor_.clear();
     floor_.emplace_back(0.0, arrival_s);
+    resetRate();
+    if (cfg_.estimate_rate) updateRate(0.0, arrival_s);
   }
 
   /// Counter delta in (-modulus/2, +modulus/2], so a legitimate wrap reads as
@@ -351,6 +434,12 @@ class SensorTickClock {
   double last_arrival_s_{-std::numeric_limits<double>::infinity()};
   double last_skew_{0.0};
   std::deque<std::pair<double, double>> floor_;
+  double tau_{0.0};       // counter time at the applied rate [s]
+  double rate_{1.0};      // applied tick / tick_s
+  RateState rate_state_{RateState::Pending};
+  double measured_rate_error_{0.0};
+  double tracking_since_{0.0};
+  std::deque<RateBin> bins_;
 };
 
 // Smooth anchor refinements without introducing timestamp inversions. An
@@ -373,6 +462,192 @@ class SlewedTimeOffset {
   int64_t last_ns_{0};
   double offset_s_{0};
 };
+
+/// Host-clock minus GNSS-time offset for placing an IMU timeline on GNSS time.
+///
+/// Each GNSS epoch gives y = host arrival - GNSS time, which is the clock
+/// difference plus that epoch's output latency. The offset is the MEDIAN of the
+/// per-bin minima of y over the window, because a plain window minimum is held
+/// for the whole window by one early epoch.
+///
+/// Which epochs: on a ZED-F9R an RXM-RAWX leaves the receiver about 30 ms earlier
+/// when no navigation solution is computed for that epoch, and how often that
+/// happens depends on the navigation state (sensor fusion lowers the NAV-PVT
+/// rate). Only RXM-RAWX epochs that have a NAV-PVT are therefore used, so the
+/// reference does not move with the navigation rate. RXM-RAWX comes first, so
+/// it waits here for its NAV-PVT. Without one of the two message types, the
+/// other is used alone.
+class GnssTimeAnchor {
+ public:
+  enum class Source { Observation, Solution };
+
+  void reset() {
+    observation_seen_ = false;
+    solution_seen_ = false;
+    pending_valid_ = false;
+    valid_ = false;
+    offset_s_ = 0.0;
+    last_arrival_s_ = 0.0;
+    last_gnss_s_ = 0.0;
+    last_solution_ns_ = -1;
+    bins_.clear();
+  }
+
+  /// Times are nanoseconds on the host clock and on the GNSS-derived timeline.
+  void update(Source source, std::int64_t arrival_ns, std::int64_t gnss_ns) {
+    if (source == Source::Observation) {
+      if (!observation_seen_) {
+        observation_seen_ = true;
+        bins_.clear();
+      }
+      if (!solution_seen_ || sameEpoch(last_solution_ns_, gnss_ns)) {
+        accept(arrival_ns, gnss_ns);
+        pending_valid_ = false;
+      } else {
+        pending_arrival_ns_ = arrival_ns;
+        pending_gnss_ns_ = gnss_ns;
+        pending_valid_ = true;
+      }
+      return;
+    }
+    if (!observation_seen_) {
+      solution_seen_ = true;
+      accept(arrival_ns, gnss_ns);
+      return;
+    }
+    if (!solution_seen_) {
+      solution_seen_ = true;
+      bins_.clear();
+    }
+    last_solution_ns_ = gnss_ns;
+    if (pending_valid_ && sameEpoch(pending_gnss_ns_, gnss_ns)) {
+      accept(pending_arrival_ns_, pending_gnss_ns_);
+      pending_valid_ = false;
+    }
+  }
+
+  double offset() const { return offset_s_; }
+  bool valid() const { return valid_; }
+
+ private:
+  static constexpr double kWindowS = 60.0;
+  static constexpr double kBinS = 2.0;
+  static constexpr double kDownStepS = 0.5;
+  static constexpr double kRewindS = 5.0;
+  static constexpr std::int64_t kSameEpochNs = 50000000;  // half a 10 Hz epoch
+  struct Bin { double start, min; };
+
+  static bool sameEpoch(std::int64_t a_ns, std::int64_t b_ns) {
+    return a_ns >= 0 && std::llabs(a_ns - b_ns) < kSameEpochNs;
+  }
+
+  void accept(std::int64_t arrival_ns, std::int64_t gnss_ns) {
+    const double arrival_s = arrival_ns * 1e-9;
+    const double gnss_s = gnss_ns * 1e-9;
+    const double y = (arrival_ns - gnss_ns) * 1e-9;
+    // Stream restart, or a downward step no latency can explain: a host clock
+    // step, or a log replayed faster than real time (y then falls continuously
+    // and the offset has to stay with it). A rise is left to the window: it can
+    // also be a stalled delivery, which must not move the offset.
+    if (valid_ && (arrival_s < last_arrival_s_ || gnss_s < last_gnss_s_ - kRewindS ||
+                   y < offset_s_ - kDownStepS))
+      bins_.clear();
+    last_arrival_s_ = arrival_s;
+    last_gnss_s_ = gnss_s;
+
+    if (bins_.empty() || arrival_s - bins_.back().start >= kBinS)
+      bins_.push_back({arrival_s, y});
+    else
+      bins_.back().min = std::min(bins_.back().min, y);
+    while (bins_.size() > 1 && arrival_s - bins_.front().start > kWindowS) bins_.pop_front();
+
+    std::vector<double> minima;
+    minima.reserve(bins_.size());
+    for (const auto& bin : bins_) minima.push_back(bin.min);
+    std::sort(minima.begin(), minima.end());
+    const size_t n = minima.size();
+    offset_s_ = n % 2 ? minima[n / 2] : 0.5 * (minima[n / 2 - 1] + minima[n / 2]);
+    valid_ = true;
+  }
+
+  bool observation_seen_{false};
+  bool solution_seen_{false};
+  bool pending_valid_{false};
+  bool valid_{false};
+  double offset_s_{0.0};
+  double last_arrival_s_{0.0};
+  double last_gnss_s_{0.0};
+  std::int64_t last_solution_ns_{-1};
+  std::int64_t pending_arrival_ns_{0};
+  std::int64_t pending_gnss_ns_{0};
+  std::deque<Bin> bins_;
+};
+
+/// Is the receiver stream arriving in real time, or is a recorded log being
+/// replayed through it? file:// reads and the launch playback (which reaches the
+/// decoder as tcpsvr://) both deliver at the speed the node reads, so this is
+/// decided from the data: seconds of IMU counter against seconds of arrival.
+/// Latched once decided. The receiver's transmit buffer holds well under a
+/// second of output, so a live stream cannot deliver 2 s of samples in 1 s.
+class StreamPacing {
+ public:
+  enum class State { Unknown, Live, Replay };
+
+  void configure(double tick_s) { tick_s_ = tick_s; }
+  State state() const { return state_; }
+
+  State update(std::uint32_t counter, double arrival_s) {
+    if (state_ != State::Unknown) return state_;
+    if (!started_) { restart(counter, arrival_s); return state_; }
+    const auto delta = static_cast<std::int32_t>(counter - last_counter_);
+    // A counter step back means the receiver restarted its counter.
+    if (delta <= 0) { if (delta < 0) restart(counter, arrival_s); return state_; }
+    last_counter_ = counter;
+    elapsed_ticks_ += delta;
+    const double counter_s = static_cast<double>(elapsed_ticks_) * tick_s_;
+    if (counter_s >= kDecideAfterS)
+      state_ = arrival_s - start_arrival_s_ < kReplayRatio * counter_s ? State::Replay : State::Live;
+    return state_;
+  }
+
+ private:
+  static constexpr double kDecideAfterS = 2.0;
+  static constexpr double kReplayRatio = 0.5;
+
+  void restart(std::uint32_t counter, double arrival_s) {
+    started_ = true;
+    last_counter_ = counter;
+    elapsed_ticks_ = 0;
+    start_arrival_s_ = arrival_s;
+  }
+
+  State state_{State::Unknown};
+  double tick_s_{39.0625e-6};
+  bool started_{false};
+  std::uint32_t last_counter_{0};
+  std::int64_t elapsed_ticks_{0};
+  double start_arrival_s_{0.0};
+};
+
+/// Log line when the counter-rate state changes (once per state), else "".
+inline std::string tickRateReport(const SensorTickClock& clock,
+                                  SensorTickClock::RateState& reported) {
+  using State = SensorTickClock::RateState;
+  const State state = clock.rateState();
+  if (state == State::Pending || state == reported) return {};
+  reported = state;
+  char line[256];
+  if (state == State::Unpaced)
+    std::snprintf(line, sizeof(line),
+        "ESF-RAW stream is not real-time paced (%.0f %% off wall speed): offline replay "
+        "assumed; using imu.sttag_tick_s = %.9g s", clock.driftRate() * 100.0,
+        clock.config().tick_s);
+  else
+    std::snprintf(line, sizeof(line),
+        "ESF-RAW sTtag tick measured %.6f us (%+.0f ppm vs imu.sttag_tick_s), applied",
+        clock.appliedTick() * 1e6, clock.driftRate() * 1e6);
+  return line;
+}
 
 /// Stamp a whole batch of samples that arrived together. `samples` must be in
 /// stream order (ubx::esf_raw::parseEsfRawSamples guarantees this);

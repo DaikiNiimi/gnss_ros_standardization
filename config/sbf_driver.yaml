@@ -14,16 +14,17 @@ sbf_driver_node:
     #   tcpcli://192.168.1.100:5000
     stream_path: "serial:///dev/ttyACM0:115200"
     
-    # Output interval in Hz (1-200) for ALL SBF blocks on Stream1. The receiver
-    # caps each block individually (GNSS at its licensed rate, ExtSensorMeas at
-    # the IMU's native rate) — set this to the IMU rate when using both.
+    # Output interval in Hz (1-200) for the GNSS SBF blocks (the receiver caps
+    # them at its licensed rate). ExtSensorMeas is output at the IMU's own rate
+    # on a separate SBF stream.
     rate_hz: 10
     
     # ROS settings
     frame_id: "gnss_link"
     
-    # Send configuration commands on startup. false uses the receiver's
-    # current config as-is (preserves a WebUI-made setup).
+    # Apply the output settings below on startup. false leaves the receiver's
+    # settings unchanged (preserves a WebUI-made setup); the stored ephemerides
+    # are still requested once (exeSBFOnce).
     configure_on_startup: true
 
     # Use GPS week/tow for message header stamps instead of system clock.
@@ -85,10 +86,10 @@ sbf_driver_node:
       dop: false                # DOP            (ID 4001) → pdop/hdop/vdop (+ gdop = sqrt(pdop²+tdop²))
 
       # IMU output (requires AsteRx-i / mosaic-X5 or other receiver with integrated IMU)
-      ext_sensor_meas: false   # Uncalibrated raw IMU accel + gyro → /gnss/imu/data_raw
+      ext_sensor_meas: false   # Uncalibrated raw IMU accel + gyro → /gnss/imu/data_raw (own SBF stream, IMU rate)
 
       # NMEA output (used for GnssSolution topic via NmeaParser)
-      # Sentences are output on the same physical port as SBF (Stream2, sec1 = 1 Hz)
+      # Sentences are output on the same port as SBF, at rate_hz
       nmea_gga: false         # GGA: position, fix quality, satellites, HDOP, altitude
       nmea_rmc: false         # RMC: velocity (speed/course)
       nmea_gsa: false         # GSA: DOP values

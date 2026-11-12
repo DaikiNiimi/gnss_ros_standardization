@@ -828,7 +828,7 @@ void GnssPreprocessor::detectSlips(const std::vector<obsd_t>& obs,
     SlipTrack& tr = slip_track_[sat];  // default-constructs (all *val false) if new
     const SlipTrack pr = tr;           // previous-epoch snapshot
 
-    double lam[NFREQ] = {0.0, 0.0, 0.0};
+    double lam[NFREQ] = {};
     for (int f = 0; f < NFREQ; ++f) {
       const double freq = sat2freq(sat, ro.code[f], &navigation);
       lam[f] = (freq > 0.0) ? CLIGHT / freq : 0.0;

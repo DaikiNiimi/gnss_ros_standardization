@@ -26,6 +26,9 @@ class ReceiverHealth {
       throw std::invalid_argument("diagnostics.period_s must be in [1, 60]");
     period_=period;
   }
+  /// Start the reporting period afresh, e.g. after a startup configuration
+  /// that kept the node busy: input is judged from here on.
+  void restartPeriod(Clock::time_point now=Clock::now()) { last_report_=now; }
   void input(int bytes,Clock::time_point now=Clock::now()) {
     if(bytes>0) { bytes_+=bytes; last_input_=now; have_input_=true; }
   }
@@ -107,10 +110,7 @@ class ReceiverHealth {
     week_=week; tow_=tow; last_epoch_=now; have_epoch_=true;
   }
   std::string describe(Clock::time_point now=Clock::now()) const {
-    const char* state=!have_input_ ? "no_input" :
-        std::chrono::duration<double>(now-last_input_).count()>period_ ? "input_stale" :
-        !have_epoch_ ? "observations_not_observed" :
-        std::chrono::duration<double>(now-last_epoch_).count()>period_ ? "observations_stale" : "observations_active";
+    const char* state=stateName(currentState(now));
     std::ostringstream s;
     s << std::setprecision(15);
     s << "Receiver health: state=" << state << " bytes=" << bytes_
@@ -190,10 +190,39 @@ class ReceiverHealth {
   void report(const rclcpp::Logger& logger,Clock::time_point now=Clock::now()) {
     if(std::chrono::duration<double>(now-last_report_).count()<period_) return;
     last_report_=now;
-    const auto line=describe(now);
-    RCLCPP_INFO(logger,"%s",line.c_str());
+    // Warn once when the stream goes silent; recovery and steady state stay quiet.
+    const State state=currentState(now);
+    if(state!=last_state_) {
+      if(state==State::NoInput)
+        RCLCPP_WARN(logger,"No receiver input for %.0f s",period_);
+      else if(state==State::InputStale)
+        RCLCPP_WARN(logger,"Receiver input stopped: no bytes for %.0f s",period_);
+      else if(state==State::ObservationsStale)
+        RCLCPP_WARN(logger,"Observations stopped: no epoch published for %.0f s while input continues",period_);
+    }
+    last_state_=state;
+    RCLCPP_DEBUG(logger,"%s",describe(now).c_str());
   }
  private:
+  enum class State { NoInput, InputStale, ObservationsNotObserved, ObservationsStale, ObservationsActive };
+  State currentState(Clock::time_point now) const {
+    if(!have_input_) return State::NoInput;
+    if(std::chrono::duration<double>(now-last_input_).count()>period_) return State::InputStale;
+    if(!have_epoch_) return State::ObservationsNotObserved;
+    if(std::chrono::duration<double>(now-last_epoch_).count()>period_) return State::ObservationsStale;
+    return State::ObservationsActive;
+  }
+  static const char* stateName(State state) {
+    switch(state) {
+      case State::NoInput: return "no_input";
+      case State::InputStale: return "input_stale";
+      case State::ObservationsNotObserved: return "observations_not_observed";
+      case State::ObservationsStale: return "observations_stale";
+      case State::ObservationsActive: break;
+    }
+    return "observations_active";
+  }
+  State last_state_{State::ObservationsNotObserved};
   gnss_receiver_diagnostics backend_{};
   bool backend_observed_{false},pvt_observed_{false},imu_observed_{false},pvt_pending_{false},imu_pending_{false};
   double period_{5},tow_{0},last_period_{0},expected_rate_{0}; int week_{0};

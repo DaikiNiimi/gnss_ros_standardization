@@ -14,8 +14,8 @@ import rclpy
 from rclpy.serialization import serialize_message
 from rosidl_runtime_py.convert import message_to_ordereddict
 from gnss_ros_standardization.msg import (
-    GlonassEphemeris, GnssEphemerides, GnssEphemeris, GnssObservation,
-    GnssObservations, GnssSolution,
+    GlonassEphemeris, GnssBaseStation, GnssEphemerides, GnssEphemeris,
+    GnssObservation, GnssObservations, GnssSolution,
 )
 
 
@@ -33,7 +33,7 @@ def main():
     assert "Redistributions in binary form must" in notices
     assert "modified copies" in notices
     classes = (GnssObservation, GnssObservations, GnssEphemeris,
-               GlonassEphemeris, GnssEphemerides, GnssSolution)
+               GlonassEphemeris, GnssEphemerides, GnssSolution, GnssBaseStation)
     package = importlib.import_module("gnss_ros_standardization.msg")
     for removed in ("NavigationMetadata", "ReceiverFrame"):
         assert not hasattr(package, removed), removed

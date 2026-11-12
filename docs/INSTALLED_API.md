@@ -9,7 +9,7 @@ target_link_libraries(my_subscriber gnss_ros_standardization::gnss_utils)
 ```
 
 `gnss_ros_standardization::gnss_utils` brings the message types, the helper library
-and the RTKLIB compile definitions (constellations, `NEXOBS`). For direct RTKLIB
+and the RTKLIB compile definitions (constellations, `NFREQ`, `NEXOBS`). For direct RTKLIB
 access link `gnss_ros_standardization::rtkcore_lib` and include
 `gnss_ros_standardization/rtklib_compat.hpp`. Example:
 [test/install_consumer](../test/install_consumer/).

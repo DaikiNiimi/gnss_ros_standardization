@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "gnss_ros_standardization/decoder_common.hpp"
+#include "gnss_ros_standardization/msg/gnss_base_station.hpp"
 #include "gnss_ros_standardization/ephemeris_store.hpp"
 
 
@@ -37,6 +38,10 @@ constexpr uint32_t CRC24Q_POLY    = 0x1864CFB; // CRC-24Q
 // rejected by receivers via age-of-differential anyway, so the whole carry is
 // dropped with a WARN (still gentler than STRSVR's immediate silent drop).
 constexpr size_t RELAY_CARRY_MAX  = 256 * 1024;
+
+// GGA uplink period (RTKLIB rtknavi's default NMEA cycle). Casters that pick
+// the base from the rover position need only a coarse, regularly refreshed fix.
+constexpr auto GGA_PERIOD = std::chrono::seconds(5);
 } // namespace
 
 /// @brief ROS 2 node for decoding RTCM3 messages from NTRIP/serial/file streams
@@ -68,6 +73,7 @@ private:
   // Initialization
 
   wire::ReceiverHealth receiver_health_;
+  decoder_common::PublishRateLog obs_rate_log_;
   void initializeParameters() {
     receiver_health_.configure(5.0);
     receiver_health_.limits(MAXOBS, NFREQ, NEXOBS, MAXPRNCMP);
@@ -87,11 +93,14 @@ private:
     if (station_id_ < -1 || station_id_ > 4095) throw std::invalid_argument("station_id must be -1 or 0..4095");
     declare_parameter<std::string>("topics.observation", "/gnss/observation");
     declare_parameter<std::string>("topics.ephemeris", "/gnss/ephemeris");
+    declare_parameter<std::string>("topics.station", "/gnss/station");
     declare_parameter<double>("ephemeris.snapshot_period_s", 30.0);
     declare_parameter<double>("ephemeris.max_age_s", 0.0);  // 0 = keep all
 
     // RTCM relay output (opt-in, see openRtcmRelay). Empty = disabled.
     declare_parameter<std::string>("rtcm_output.destination", "");
+    // GGA uplink to the NTRIP caster (opt-in, see sendGga). Empty = disabled.
+    gga_topic_ = declare_parameter<std::string>("gga.solution_topic", "");
 
     eph_store_.setSnapshotPeriod(get_parameter("ephemeris.snapshot_period_s").as_double());
     eph_store_.setMaxAge(get_parameter("ephemeris.max_age_s").as_double());
@@ -103,14 +112,34 @@ private:
         "Example: --ros-args -p stream_path:=\"ntrip://user:pass@host:port/mountpoint\"");
       throw std::runtime_error("stream_path parameter is required");
     }
+    // Only an NTRIP caster understands GGA; on a receiver port it would be a
+    // command, and on a file it would overwrite the recording.
+    std::vector<std::string> missing;  // reported by openStream
+    if (!gga_topic_.empty() &&
+        decoder_common::expandStreamUri(get_parameter("stream_path").as_string(), missing).rfind("ntrip://", 0) != 0 &&
+        missing.empty())
+      throw std::invalid_argument("gga.solution_topic requires an ntrip:// stream_path");
   }
 
   void initializePublishers() {
     obs_pub_ = create_publisher<gnss_ros_standardization::msg::GnssObservations>(
         get_parameter("topics.observation").as_string(), 10);
+    // Depth 8: a late subscriber still gets the records of recent station
+    // changes for observation epochs it has not processed yet.
+    station_pub_ = create_publisher<gnss_ros_standardization::msg::GnssBaseStation>(
+        get_parameter("topics.station").as_string(), rclcpp::QoS(8).reliable().transient_local());
     nav_pub_ = create_publisher<gnss_ros_standardization::msg::GnssEphemerides>(
         get_parameter("topics.ephemeris").as_string(),
         rclcpp::QoS(256).transient_local()  /* depth 256: latch full ephemeris set, not just the last satellite (per-sat messages) */);
+    if (!gga_topic_.empty()) {
+      gga_sub_ = create_subscription<gnss_ros_standardization::msg::GnssSolution>(
+          gga_topic_, 10, [this](const gnss_ros_standardization::msg::GnssSolution& solution) {
+            std::string sentence;
+            if (decoder_common::solutionToGga(solution, sentence)) gga_ = std::move(sentence);
+          });
+      RCLCPP_INFO(get_logger(), "GGA uplink enabled: position from '%s' every %llds",
+                  gga_topic_.c_str(), static_cast<long long>(GGA_PERIOD.count()));
+    }
   }
 
   void initializeDecoder() {
@@ -226,7 +255,7 @@ private:
   void openStream() {
     if (!decoder_common::openStreamPath(get_logger(), stream_,
                                         get_parameter("stream_path").as_string(),
-                                        STR_MODE_R, "Input")) {
+                                        gga_topic_.empty() ? STR_MODE_R : STR_MODE_RW, "Input")) {
       throw std::runtime_error("stropen failed");
     }
   }
@@ -269,6 +298,13 @@ private:
     station_id_=get_parameter("station_id").as_int();
     for (auto& timeline : receiver_timelines_) timeline.reset();
     active_station_ = -1; eph_store_.clear();
+    // A new timeline re-announces the station from its next epoch. After a
+    // reconnection the base may have moved (VRS), so its position is unknown
+    // again until 1005/1006 arrive.
+    if (station_) {
+      if (disconnected) beginStation(station_->station_id);
+      else station_announced_ = false;
+    }
     receiver_health_.resetSession();
     nav_pub_->publish(eph_store_.buildSnapshot(now()));
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "RTCM session reset: %s; incomplete epoch and station/time/navigation caches cleared",
@@ -282,6 +318,7 @@ private:
     receiver_health_.assemblyPending(!pending_msm_epochs_.empty() || (rtcm_.obs.n>0 && !rtcm_.obsflag));
     receiver_health_.report(get_logger());
     if (stream_session_.poll(stream_)) resetReceiverSession(true);
+    sendGga();
     // STRSVR-style relay: forward the raw bytes verbatim toward the receiver
     // driver before (and independent of) local decoding. Runs on idle reads
     // too, so a pending carry keeps draining once the relay target recovers.
@@ -315,6 +352,30 @@ private:
       }
     }
     publishEphemeridesIfChanged(false);
+  }
+
+  // GGA uplink (RTKLIB rtksvr nmeareq style): the latest rover position goes
+  // to the caster once per GGA_PERIOD while the NTRIP session is up. Nothing
+  // is sent before the first valid position. A GGA describes only the present,
+  // so a short write is not carried over: the next period sends a fresh one.
+  void sendGga() {
+    if (gga_.empty()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (gga_last_sent_ && now - *gga_last_sent_ < GGA_PERIOD) return;
+    if (strstat(&stream_, nullptr) < 2) return;  // NTRIP response not yet accepted
+    gga_last_sent_ = now;
+    const int n = strwrite(&stream_, reinterpret_cast<uint8_t*>(gga_.data()),
+                           static_cast<int>(gga_.size()));
+    if (n == static_cast<int>(gga_.size())) {
+      ++gga_sent_;
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 60000,
+                           "GGA uplink: %llu sent", static_cast<unsigned long long>(gga_sent_));
+    } else {
+      ++gga_failed_;
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "GGA uplink: write incomplete (%d of %zu bytes, %llu failed)", n,
+                           gga_.size(), static_cast<unsigned long long>(gga_failed_));
+    }
   }
 
   // ---- RTCM3 framing & decode ---------------------------------------------
@@ -407,6 +468,7 @@ private:
         rx_off_ += flen; continue;
       }
       bool nav_changed = false;
+      bool station_info = false;
       bool rejected = false;
       if (type==1013) acceptTimeAnnouncement(head,plen);
       if (type==1020) acceptGlonassDate(head,plen);
@@ -422,6 +484,7 @@ private:
           unreferenced_gps_[rtcm_.ephsat]=std::vector<uint8_t>(head,head+flen);
         receiver_health_.backendResult(r);
         nav_changed = nav_changed || r == 2;
+        station_info = station_info || r == 5;
         rejected = rejected || r < 0;
         // Completion is the backend return value, not an incidental obsflag
         // side effect. In particular, 1002/1010 return 1 on DF005=0 without
@@ -467,6 +530,8 @@ private:
       if (!rejected && msm && (excluded_lanes_&(1u<<(type/10-107))))
         receiver_health_.msmSystemExcluded();
       if (observation) rtcm_.time=previous_time;
+      // Before completing an epoch: that epoch announces this station's record.
+      if (!rejected && station >= 0) noteStation(station, type, head, plen, station_info);
       if (!rejected && observation && rtcm_.obsflag) {
         if (discard_until_complete_) discard_until_complete_=false;
         else completeMsmChain();
@@ -619,13 +684,102 @@ private:
     msg.week=static_cast<uint32_t>(epoch.week); msg.tow=epoch.tow;
     msg.observations=epoch.observations;
     last_published_=key;
+    announceStation(epoch.week, epoch.tow);
     obs_pub_->publish(msg);
     receiver_health_.observationCapacity(rtcm_.obs.n,MAXOBS);
     receiver_health_.published(msg.week,msg.tow,msg.observations.size());
-    RCLCPP_INFO_THROTTLE(get_logger(),*get_clock(),5000,
-        "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+    if (obs_rate_log_.due()) RCLCPP_INFO(get_logger(),
+        "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d) rate=%s",
         epoch.week,epoch.tow,msg.observations.size(),epoch.cnt_G,epoch.cnt_R,epoch.cnt_E,
-        epoch.cnt_J,epoch.cnt_C,epoch.cnt_I,epoch.cnt_S,epoch.cnt_U);
+        epoch.cnt_J,epoch.cnt_C,epoch.cnt_I,epoch.cnt_S,epoch.cnt_U,obs_rate_log_.rate());
+  }
+
+  // ---- base station (GnssBaseStation) --------------------------------------
+  //
+  // One record per station configuration. A configuration starts when the
+  // station ID changes, or when 1005/1006 announce a different position for
+  // the same ID (a VRS moving its virtual base). Its record is announced just
+  // before the first observation epoch it applies to (valid_from), and is
+  // republished with the same valid_from whenever 1005-1008/1033/1230 add to
+  // it. Observations are never withheld for a missing position.
+  void beginStation(int id) {
+    gnss_ros_standardization::msg::GnssBaseStation record;
+    record.station_id = static_cast<uint16_t>(id);
+    record.antenna_height = std::numeric_limits<double>::quiet_NaN();
+    record.glonass_code_phase_bias.fill(std::numeric_limits<double>::quiet_NaN());
+    station_ = record;
+    station_announced_ = false;
+  }
+
+  void noteStation(int id, int type, const uint8_t* frame, size_t payload_size, bool info) {
+    if (!station_ || station_->station_id != id) beginStation(id);
+    if (!info) return;
+    const auto before = *station_;
+    const sta_t& sta = rtcm_.sta;
+    if (type == 1005 || type == 1006) {
+      if (station_->position_valid && (station_->arp_ecef.x != sta.pos[0] ||
+          station_->arp_ecef.y != sta.pos[1] || station_->arp_ecef.z != sta.pos[2])) {
+        RCLCPP_WARN(get_logger(), "RTCM station %d moved its reference point: new station record", id);
+        beginStation(id);
+      }
+      station_->position_valid = true;
+      station_->arp_ecef.x = sta.pos[0];
+      station_->arp_ecef.y = sta.pos[1];
+      station_->arp_ecef.z = sta.pos[2];
+      if (type == 1006) station_->antenna_height = sta.hgt;
+      station_->itrf_realization_year = static_cast<uint8_t>(sta.itrf);
+    } else if (type == 1007 || type == 1008 || type == 1033) {
+      station_->antenna_descriptor = sta.antdes;
+      station_->antenna_setup_id = static_cast<uint8_t>(sta.antsetup);
+      station_->antenna_serial = sta.antsno;
+      if (type == 1033) {
+        station_->receiver_type = sta.rectype;
+        station_->receiver_firmware = sta.recver;
+        station_->receiver_serial = sta.recsno;
+      }
+    } else if (type == 1230) {
+      // DF421 alignment, DF422 mask, then one DF423-DF426 bias per set bit.
+      station_->glonass_code_phase_aligned = sta.glo_cp_align != 0;
+      const unsigned mask = getbitu(frame, 24 + 28, 4);
+      unsigned bit = 24 + 32;
+      for (int j = 0; j < 4; ++j) {
+        double bias = std::numeric_limits<double>::quiet_NaN();
+        if ((mask & (1u << (3 - j))) && bit + 16 <= (RTCM3_HDR_LEN + payload_size) * 8) {
+          const int raw = getbits(frame, bit, 16); bit += 16;
+          if (raw != -32768) bias = raw * 0.02;
+        }
+        station_->glonass_code_phase_bias[j] = bias;
+      }
+    }
+    // Periodic repeats of unchanged station messages are not republished.
+    if (station_announced_ && !sameStationContent(*station_, before)) publishStation();
+  }
+
+  // Message operator== is false for any unset (NaN) field, even against itself.
+  static bool sameStationContent(gnss_ros_standardization::msg::GnssBaseStation a,
+                                 gnss_ros_standardization::msg::GnssBaseStation b) {
+    for (auto* record : {&a, &b}) {
+      constexpr double unset = std::numeric_limits<double>::max();
+      if (std::isnan(record->antenna_height)) record->antenna_height = unset;
+      for (auto& bias : record->glonass_code_phase_bias) if (std::isnan(bias)) bias = unset;
+    }
+    return a == b;
+  }
+
+  void announceStation(int week, double tow) {
+    if (!station_ || station_announced_) return;
+    station_->valid_from_week = static_cast<uint32_t>(week);
+    station_->valid_from_tow = tow;
+    station_announced_ = true;
+    publishStation();
+    RCLCPP_INFO(get_logger(), "RTCM station %d from week=%d tow=%.3f: %s", station_->station_id,
+                week, tow, station_->position_valid ? "position known" : "position pending (1005/1006)");
+  }
+
+  void publishStation() {
+    station_->header.stamp = now();
+    station_->header.frame_id = "gnss_receiver";
+    station_pub_->publish(*station_);
   }
 
   // ---- ephemerides (snapshot-on-change + heartbeat) ------------------------
@@ -657,7 +811,17 @@ private:
   // pubs/timer
   rclcpp::Publisher<gnss_ros_standardization::msg::GnssObservations>::SharedPtr  obs_pub_;
   rclcpp::Publisher<gnss_ros_standardization::msg::GnssEphemerides>::SharedPtr   nav_pub_;
+  rclcpp::Publisher<gnss_ros_standardization::msg::GnssBaseStation>::SharedPtr   station_pub_;
+  std::optional<gnss_ros_standardization::msg::GnssBaseStation> station_;  // current configuration
+  bool station_announced_{false};  // its valid_from is set and it has been published
   rclcpp::TimerBase::SharedPtr                                         timer_;
+  rclcpp::Subscription<gnss_ros_standardization::msg::GnssSolution>::SharedPtr gga_sub_;
+
+  // GGA uplink (see sendGga)
+  std::string gga_topic_;
+  std::string gga_;  // latest rover position as a GGA sentence; empty until one arrives
+  std::optional<std::chrono::steady_clock::time_point> gga_last_sent_;
+  uint64_t gga_sent_{0}, gga_failed_{0};
 
   // stream/decoder
   stream_t  stream_{};

@@ -29,7 +29,7 @@ uint8 STATUS_DR=7       # dead reckoning (RTKLIB SOLQ_DR): propagated without a 
 
 uint8 num_sats          # number of satellites used
 float32 ratio           # AR ratio: reliability of integer ambiguity resolution
-float32 age_diff        # age of differential corrections [s]
+float32 age_diff        # age of differential corrections [s] (u-blox: upper bound of its age class); NaN when not available
 # DOP values (dilution of precision). Population rules:
 #  * Binary path (SBF DOP, NovAtel PSRDOP, UBX NAV-DOP): the most-recently-parsed
 #    DOP block is cached across PVT epochs. At publish time, the cached DOP is

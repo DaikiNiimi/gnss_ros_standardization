@@ -9,7 +9,9 @@
 /// decoder/driver pairs share one implementation. Receiver-specific framing
 /// and protocol parsing remain in `*_protocol.hpp`.
 
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 // ---- command reply ----
 #include "gnss_ros_standardization/binary_framer.hpp"
 #include <cstdint>
@@ -23,9 +25,8 @@ class CommandReply {
 public:
   CommandReply(Protocol protocol, std::string command)
       : protocol_(protocol), command_(trim(std::move(command))) {}
+  // The first reply decides the result; later bytes only update prompt().
   int feed(uint8_t c) {
-    if (result_ != 0)
-      return result_;
     if (remaining_) {
       --remaining_;
       return result_;
@@ -66,6 +67,12 @@ public:
       ascii(c);
     return result_;
   }
+  // Port named by the last complete prompt (e.g. "USB1"); empty before one.
+  const std::string& prompt() const { return prompt_; }
+  // Non-empty lines after the reply line, e.g. the value of a query.
+  const std::vector<std::string>& lines() const { return lines_; }
+  // A prompt has followed the reply: the response is complete.
+  bool complete() const { return complete_; }
 
 private:
   static std::string trim(std::string s) {
@@ -96,39 +103,68 @@ private:
       line = trim(line.substr(length));
     return line;
   }
+  // A prompt ending the unterminated line, at its start or after a
+  // non-alphanumeric character; returns the port name without '>' or brackets.
+  static std::string trailingPrompt(Protocol protocol, const std::string& line) {
+    for (size_t start = line.size() > 10 ? line.size() - 10 : 0; start < line.size(); ++start) {
+      if (start > 0 && std::isalnum(static_cast<unsigned char>(line[start - 1]))) continue;
+      const std::string tail = line.substr(start);
+      if (promptLength(protocol, tail) != tail.size()) continue;
+      const size_t open = protocol == Protocol::Novatel ? 1 : 0;
+      return tail.substr(open, tail.size() - open - 1);
+    }
+    return {};
+  }
   void ascii(uint8_t c) {
     if (c == '\r' || c == '\n') {
       const auto line = withoutPrompt(trim(line_));
+      int result = 0;
       if (protocol_ == Protocol::Sbf) {
         if (line.rfind("$R?", 0) == 0)
-          result_ = -1;
-        else if (line.rfind("$R:", 0) == 0 && trim(line.substr(3)) == command_)
-          result_ = 1;
+          result = -1;
+        else if (!command_.empty() && line.rfind("$R:", 0) == 0 &&
+                 trim(line.substr(3)) == command_)
+          result = 1;
       } else {
         if (line == "<OK")
-          result_ = 1;
+          result = 1;
         else if (line.rfind("<ERROR", 0) == 0)
-          result_ = -1;
+          result = -1;
       }
+      if (result_ == 0)
+        result_ = result;
+      else if (!line.empty() && lines_.size() < 64)
+        lines_.push_back(line);
       line_.clear();
-    } else if (c >= 32 && c < 127 && line_.size() < 4096)
+    } else if (c >= 32 && c < 127 && line_.size() < 4096) {
       line_ += char(c);
-    else
+      if (c == (protocol_ == Protocol::Sbf ? '>' : ']')) {
+        auto port = trailingPrompt(protocol_, line_);
+        if (!port.empty()) {
+          prompt_ = std::move(port);
+          complete_ = result_ != 0;
+        }
+      }
+    } else
       line_.clear();
   }
   Protocol protocol_;
-  std::string command_, line_;
+  std::string command_, line_, prompt_;
+  std::vector<std::string> lines_;
+  bool complete_{false};
   std::vector<uint8_t> header_;
   size_t remaining_{0};
   int result_{0};
 };
 } // namespace gnss_ros_standardization::wire
+#include <array>
 #include <optional>
 #include <limits>
 #include <chrono>
 #include <thread>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -250,6 +286,122 @@ inline void countSatellite(int sat, SatelliteCount& c) {
   }
 }
 
+/// Receiver text messages (NMEA TXT, UBX-INF): errors and warnings become a
+/// ROS WARN, once per 10 s per distinct text with a repeat count; notices and
+/// other types stay at DEBUG. At most kTexts distinct texts are tracked.
+class ReceiverTextLog {
+public:
+  using Clock = std::chrono::steady_clock;
+  enum Severity { Error = 0, Warning = 1, Notice = 2, Other = 3 };
+
+  void report(const rclcpp::Logger& log, Severity severity, const std::string& raw,
+              Clock::time_point now = Clock::now()) {
+    std::string text;
+    for (char c : raw) {
+      if (text.size() >= kMaxLength) break;
+      if (c >= 32 && c < 127) text += c;
+    }
+    const auto first = text.find_first_not_of(' ');
+    text = first == std::string::npos ? "" : text.substr(first, text.find_last_not_of(' ') - first + 1);
+    if (text.empty()) return;
+    if (severity != Error && severity != Warning) {
+      RCLCPP_DEBUG(log, "Receiver text: %s", text.c_str());
+      return;
+    }
+    Entry* entry = nullptr;
+    for (auto& e : entries_) if (e.used && e.text == text) entry = &e;
+    if (entry && now - entry->logged < kPeriod) {
+      ++entry->repeats;
+      return;
+    }
+    if (!entry) {
+      entry = &entries_[0];
+      for (auto& e : entries_) {
+        if (!e.used) { entry = &e; break; }
+        if (e.logged < entry->logged) entry = &e;
+      }
+      *entry = Entry{true, text, now, 0};
+      RCLCPP_WARN(log, "Receiver reports: %s", text.c_str());
+      return;
+    }
+    if (entry->repeats > 0)
+      RCLCPP_WARN(log, "Receiver reports: %s (%zu more times in %.0f s)", text.c_str(),
+                  entry->repeats + 1, std::chrono::duration<double>(now - entry->logged).count());
+    else
+      RCLCPP_WARN(log, "Receiver reports: %s", text.c_str());
+    entry->logged = now;
+    entry->repeats = 0;
+  }
+
+  /// `$xxTXT,<count>,<number>,<type>,<text>*hh`: type 00 error, 01 warning, 02 notice.
+  /// Returns false for other sentences.
+  bool nmea(const rclcpp::Logger& log, const std::string& sentence, Clock::time_point now = Clock::now()) {
+    if (sentence.size() < 7 || sentence[0] != '$' || sentence.compare(3, 4, "TXT,") != 0) return false;
+    auto line = sentence.substr(0, sentence.find_last_not_of("\r\n") + 1);
+    const auto star = line.find('*');
+    if (star != std::string::npos) line.resize(star);
+    size_t pos = 7;
+    for (int field = 0; field < 2; ++field) {
+      pos = line.find(',', pos);
+      if (pos == std::string::npos) return true;
+      ++pos;
+    }
+    const auto comma = line.find(',', pos);
+    if (comma == std::string::npos) return true;
+    const std::string type = line.substr(pos, comma - pos);
+    const Severity severity = type == "00" ? Error : type == "01" ? Warning : type == "02" ? Notice : Other;
+    report(log, severity, line.substr(comma + 1), now);
+    return true;
+  }
+
+  /// UBX-INF (class 0x04): id 0x00 error, 0x01 warning, 0x02 notice.
+  void inf(const rclcpp::Logger& log, uint8_t id, const std::vector<uint8_t>& payload,
+           Clock::time_point now = Clock::now()) {
+    const Severity severity = id == 0 ? Error : id == 1 ? Warning : id == 2 ? Notice : Other;
+    report(log, severity, std::string(payload.begin(), payload.end()), now);
+  }
+
+private:
+  static constexpr size_t kTexts = 8, kMaxLength = 120;
+  static constexpr std::chrono::seconds kPeriod{10};
+  struct Entry {
+    bool used{false};
+    std::string text;
+    Clock::time_point logged{};
+    size_t repeats{0};
+  };
+  std::array<Entry, kTexts> entries_{};
+};
+
+/// Throttle for the periodic "Published obs" line that also reports the
+/// measured output rate over the interval since the previous line.
+class PublishRateLog {
+public:
+  using Clock = std::chrono::steady_clock;
+  /// Call once per published epoch; true when a line is due (the first epoch,
+  /// then once per interval).
+  bool due(Clock::time_point now = Clock::now()) {
+    ++epochs_;
+    const double span = std::chrono::duration<double>(now - since_).count();
+    if (started_ && span < kPeriodS) return false;
+    if (started_)
+      std::snprintf(rate_, sizeof(rate_), "%.1f Hz (%llu epochs/%.1f s)", epochs_ / span,
+                    static_cast<unsigned long long>(epochs_), span);
+    since_ = now;
+    started_ = true;
+    epochs_ = 0;
+    return true;
+  }
+  const char* rate() const { return rate_; }
+
+private:
+  static constexpr double kPeriodS = 5.0;
+  Clock::time_point since_{};
+  uint64_t epochs_{0};
+  bool started_{false};
+  char rate_[64] = "n/a";
+};
+
 /// Append each channel with a supported satellite/signal identity. Numeric
 /// zero is a measurement value, not evidence that a coded channel is empty.
 inline void appendObservations(const obsd_t& obs,
@@ -341,6 +493,32 @@ inline void finalizeBinarySolutionGeometry(msg::GnssSolution& s) {
   s.vel_ecef.z = vel_ec[2];
 }
 
+/// NMEA GGA for an NTRIP caster that selects or generates the base from the
+/// rover position. False when the solution carries no usable position, so a
+/// caster is never sent an empty GGA. GnssSolution STATUS_* equals RTKLIB
+/// SOLQ_*; a solution without a GPS week is stamped with the host time.
+inline bool solutionToGga(const msg::GnssSolution& s, std::string& out) {
+  if (s.status == msg::GnssSolution::STATUS_NONE || s.status > SOLQ_DR ||
+      !std::isfinite(s.latitude) || !std::isfinite(s.longitude) ||
+      !std::isfinite(s.altitude) || std::abs(s.latitude) > 90.0 ||
+      std::abs(s.longitude) > 180.0)
+    return false;
+  sol_t sol{};
+  sol.time = s.time_week > 0 && std::isfinite(s.time_tow)
+      ? gpst2time(static_cast<int>(s.time_week), s.time_tow)
+      : utc2gpst(timeget());
+  const double llh[3] = {s.latitude * D2R, s.longitude * D2R, s.altitude};
+  pos2ecef(llh, sol.rr);
+  sol.stat = s.status;
+  sol.ns = s.num_sats;
+  sol.age = std::isfinite(s.age_diff) ? s.age_diff : 0.0f;
+  uint8_t buffer[1024];
+  const int n = outnmea_gga(buffer, &sol);
+  if (n <= 0) return false;
+  out.assign(reinterpret_cast<const char*>(buffer), static_cast<size_t>(n));
+  return true;
+}
+
 /// Mask userinfo before reporting a stream URI, including on open failures.
 inline std::string redactStreamUri(std::string uri) {
   const auto scheme = uri.find("://");
@@ -376,12 +554,47 @@ inline bool writeAll(stream_t& stream, const uint8_t* data, size_t size,
 }
 
 
+/// Replace `${VAR}` and `$VAR` in a stream URI from the process environment,
+/// once (a value containing `$` is taken literally). An unset or empty variable
+/// is left in place and named in `missing`. Keeping the variable names in the
+/// ROS parameter keeps credentials out of parameter services and events; the
+/// expanded text must stay local to the code opening the stream.
+inline std::string expandStreamUri(const std::string& uri, std::vector<std::string>& missing) {
+  const auto word = [](char c, bool first) {
+    return c == '_' || std::isalpha(static_cast<unsigned char>(c)) ||
+           (!first && std::isdigit(static_cast<unsigned char>(c)));
+  };
+  std::string out;
+  for (size_t i = 0; i < uri.size();) {
+    size_t name = i + 1, end = name;
+    const bool braced = uri[i] == '$' && name < uri.size() && uri[name] == '{';
+    if (braced) end = ++name;
+    while (end < uri.size() && word(uri[end], end == name)) ++end;
+    if (uri[i] != '$' || end == name || (braced && (end == uri.size() || uri[end] != '}'))) {
+      out += uri[i++];
+      continue;
+    }
+    const std::string variable = uri.substr(name, end - name);
+    const size_t next = end + (braced ? 1 : 0);
+    const char* value = std::getenv(variable.c_str());
+    if (value && *value) {
+      out += value;
+    } else {
+      missing.push_back(variable);
+      out += uri.substr(i, next - i);
+    }
+    i = next;
+  }
+  return out;
+}
+
 /// Open a scheme-prefixed RTKLIB stream path (`tcpcli://` `tcpsvr://`
 /// `serial://` `ntrip://` `file://`) into `s`. A `/dev/` prefix after
 /// `serial://` is stripped (RTKLIB prepends it itself on Linux). Returns false
-/// on failure after logging; `what` names the stream in log lines.
+/// on failure after logging; `what` names the stream in log lines. `$VAR`
+/// references are resolved here (see expandStreamUri).
 inline bool openStreamPath(const rclcpp::Logger& log, stream_t& s,
-                           const std::string& original, int mode,
+                           const std::string& reference, int mode,
                            const char* what) {
   struct Def { std::string_view prefix; int type; };
   static constexpr Def kDefs[] = {
@@ -392,6 +605,15 @@ inline bool openStreamPath(const rclcpp::Logger& log, stream_t& s,
     {"file://",   STR_FILE},
   };
 
+  std::vector<std::string> missing;
+  const std::string original = expandStreamUri(reference, missing);
+  if (!missing.empty()) {
+    std::string names;
+    for (const auto& name : missing) names += (names.empty() ? "" : ", ") + name;
+    RCLCPP_ERROR(log, "%s stream path references unset or empty environment variable(s): %s",
+                 what, names.c_str());
+    return false;
+  }
   std::string path = original;
   int stream_type = 0;
   bool matched = false;
@@ -404,7 +626,7 @@ inline bool openStreamPath(const rclcpp::Logger& log, stream_t& s,
     }
   }
   if (!matched) {
-    RCLCPP_ERROR(log, "Unsupported %s stream path: %s", what, redactStreamUri(original).c_str());
+    RCLCPP_ERROR(log, "Unsupported %s stream path: %s", what, redactStreamUri(reference).c_str());
     return false;
   }
   if (stream_type == STR_SERIAL && path.rfind("/dev/", 0) == 0) {
@@ -422,7 +644,7 @@ inline bool openStreamPath(const rclcpp::Logger& log, stream_t& s,
     return false;
   }
   if (stream_type == STR_NTRIPCLI)
-    RCLCPP_INFO(log, "NTRIP transport: IPv4, HTTP/1.0 request and ICY response; no TLS, v2/chunked decoding or automatic VRS GGA");
+    RCLCPP_INFO(log, "NTRIP transport: IPv4, HTTP/1.0 request and ICY response; no TLS or v2/chunked decoding");
 
   strinit(&s);
   if (!stropen(&s, stream_type, mode, path.c_str())) {
@@ -506,31 +728,116 @@ struct CarriedStreamWriter {
   std::vector<uint8_t> carry_;  // unaccepted remainder awaiting the output stream
 };
 
-// A failed/ambiguous transaction stops configuration: a late response cannot
-// then acknowledge another command. Receiver response output must be enabled.
-template<class Consume>
-void configureAscii(stream_t& stream, wire::Protocol protocol,
-                    const std::string& command, Consume consume) {
+/// Read the receiver stream during configuration: every byte goes to `consume`
+/// (decoder input is preserved), and the loop sleeps only when no byte is
+/// pending, so the read rate is never below the receiver's output rate. A wait
+/// that does not read lets the receiver's transmit buffer back up, and a reply
+/// then queues behind the backlog until its timeout expires.
+/// Returns true as soon as `done()` holds, false at the deadline.
+template<class Consume, class Done>
+bool pumpStream(stream_t& stream, std::chrono::steady_clock::duration timeout,
+                Consume consume, Done done) {
   uint8_t data[4096];
-  // Drain stale replies before sending, preserving measurement input.
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  for (;;) {
+    const int n = strread(&stream, data, sizeof(data));
+    for (int i = 0; i < n; ++i) consume(data[i]);
+    if (done()) return true;
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    if (n <= 0) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+}
+
+/// Keep reading (and decoding) the stream for `duration`, e.g. while a
+/// receiver restarts; replaces a plain sleep that would leave it unread.
+template<class Consume>
+void pumpStreamFor(stream_t& stream, std::chrono::steady_clock::duration duration,
+                   Consume consume) {
+  pumpStream(stream, duration, consume, [] { return false; });
+}
+
+/// Drain stale replies before sending, preserving measurement input.
+template<class Consume>
+void drainStream(stream_t& stream, Consume consume) {
+  uint8_t data[4096];
   for (int count = 0; count < 32; ++count) {
     const int n = strread(&stream, data, sizeof(data));
     if (n <= 0) break;
     for (int i = 0; i < n; ++i) consume(data[i]);
   }
+}
+
+/// Send `request` as is (no line terminator) and wait up to `timeout` for a
+/// port prompt. Returns the prompt's port name, or empty if none arrived.
+/// Receiver output is a FIFO: bytes before the prompt predate the request
+/// (data buffered while nobody read the port) and are discarded; bytes after
+/// it go to `consume`.
+template<class Consume>
+std::string requestPrompt(stream_t& stream, wire::Protocol protocol, const std::string& request,
+                          std::chrono::steady_clock::duration timeout, Consume consume) {
+  drainStream(stream, [](uint8_t) {});
+  if (!writeAll(stream, reinterpret_cast<const uint8_t*>(request.data()), request.size()))
+    throw std::runtime_error("Receiver command write timed out: " + request);
+  wire::CommandReply reply(protocol, {});
+  pumpStream(stream, timeout,
+             [&](uint8_t byte) {
+               if (reply.prompt().empty()) reply.feed(byte);
+               else consume(byte);
+             },
+             [&] { return !reply.prompt().empty(); });
+  return reply.prompt();
+}
+
+/// Send a query command; returns the lines that follow its acknowledgement up
+/// to the next prompt (or 3 s), or nothing when it is not acknowledged.
+template<class Consume>
+std::optional<std::vector<std::string>> queryAscii(stream_t& stream, wire::Protocol protocol,
+                                                   const std::string& command, Consume consume) {
+  drainStream(stream, consume);
   const auto line = command + "\r\n";
   if (!writeAll(stream, reinterpret_cast<const uint8_t*>(line.data()), line.size()))
-    throw std::runtime_error("Receiver command write timed out: " + command);
+    return std::nullopt;
   wire::CommandReply reply(protocol, command);
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-  while (std::chrono::steady_clock::now() < deadline) {
-    const int n = strread(&stream, data, sizeof(data));
-    int result = 0;
-    for (int i = 0; i < n; ++i) { consume(data[i]); result = reply.feed(data[i]); }
-    if (result < 0) throw std::runtime_error("Receiver rejected command: " + command);
-    if (result > 0) return;
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
+  int result = 0;
+  pumpStream(stream, std::chrono::seconds(3),
+             [&](uint8_t byte) { consume(byte); result = reply.feed(byte); },
+             [&] { return reply.complete(); });
+  if (result <= 0) return std::nullopt;
+  return reply.lines();
+}
+
+/// True for streams that carry receiver replies back (serial, TCP); commands
+/// are never sent on others (file, NTRIP).
+inline bool twoWayStream(const stream_t& stream) {
+  return stream.type == STR_SERIAL || stream.type == STR_TCPCLI || stream.type == STR_TCPSVR;
+}
+
+/// One ASCII command transaction: 1 acknowledged, -1 rejected, 0 no reply
+/// within 3 s, -2 write failed.
+template<class Consume>
+int commandAscii(stream_t& stream, wire::Protocol protocol,
+                 const std::string& command, Consume consume) {
+  drainStream(stream, consume);
+  const auto line = command + "\r\n";
+  if (!writeAll(stream, reinterpret_cast<const uint8_t*>(line.data()), line.size()))
+    return -2;
+  wire::CommandReply reply(protocol, command);
+  int result = 0;
+  pumpStream(stream, std::chrono::seconds(3),
+             [&](uint8_t byte) { consume(byte); result = reply.feed(byte); },
+             [&] { return result != 0; });
+  return result;
+}
+
+// A failed/ambiguous transaction stops configuration: a late response cannot
+// then acknowledge another command. Receiver response output must be enabled.
+template<class Consume>
+void configureAscii(stream_t& stream, wire::Protocol protocol,
+                    const std::string& command, Consume consume) {
+  const int result = commandAscii(stream, protocol, command, consume);
+  if (result == -2) throw std::runtime_error("Receiver command write timed out: " + command);
+  if (result < 0) throw std::runtime_error("Receiver rejected command: " + command);
+  if (result > 0) return;
   throw std::runtime_error("Receiver command ACK timed out: " + command);
 }
 

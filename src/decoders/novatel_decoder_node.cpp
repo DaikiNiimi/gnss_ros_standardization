@@ -67,6 +67,7 @@ class NovatelDecoderNode : public rclcpp::Node {
 
   decoder_common::EpochFlushPolicy epoch_flush_;
   wire::ReceiverHealth receiver_health_;
+  decoder_common::PublishRateLog obs_rate_log_;
   void initializeParameters() {
     receiver_health_.configure(5.0);
     receiver_health_.limits(MAXOBS, NFREQ, NEXOBS, MAXPRNCMP);
@@ -263,7 +264,7 @@ class NovatelDecoderNode : public rclcpp::Node {
     }
     if (wire_framer_.rejected() != wire_last_rejected_) {
       wire_last_rejected_ = wire_framer_.rejected();
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      RCLCPP_DEBUG(get_logger(),
           "Rejected binary frame/header count: %llu",
           static_cast<unsigned long long>(wire_last_rejected_));
     }
@@ -772,11 +773,11 @@ class NovatelDecoderNode : public rclcpp::Node {
     obs_pub_->publish(msg);
     receiver_health_.published(msg.week, msg.tow, msg.observations.size());
 
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d)",
+    if (obs_rate_log_.due()) RCLCPP_INFO(get_logger(),
+      "Published obs: week=%d tow=%.3f n=%zu sats(G/R/E/J/C/I/S/U)=(%d/%d/%d/%d/%d/%d/%d/%d) rate=%s",
       week, tow, msg.observations.size(),
       sat_count.gps, sat_count.glo, sat_count.gal, sat_count.qzs,
-      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown);
+      sat_count.bds, sat_count.irn, sat_count.sbs, sat_count.unknown, obs_rate_log_.rate());
   }
 
   // Ephemeris Publishing

@@ -21,7 +21,9 @@ novatel_driver_node:
     # This is used in the LOG command: LOG [receiver_port] [message] ONTIME [interval]
     receiver_port: "THISPORT"
 
-    # Whether to send configuration commands on startup
+    # Apply the output settings below on startup. false leaves the receiver's
+    # settings unchanged; the stored ephemerides are still requested once
+    # (LOG ... ONCE).
     configure_on_startup: true
 
     # Use GPS week/tow for message header stamps instead of system clock.

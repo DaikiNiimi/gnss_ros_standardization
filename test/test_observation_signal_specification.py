@@ -7,6 +7,9 @@ Their input must not create a stale observation. No new upstream signal support.
 OEM preserves the supplied GLO FCN on L3 as well (no FDMA use implied).
 """
 import math
+import os
+import pathlib
+import re
 import struct
 import unittest
 import test_receiver_streams as wire
@@ -42,7 +45,45 @@ def sbf_single(system,sig,tow,antenna=0):
                     53191,-1,180 if sig in (1,2) else 140,10,info,0)
     return spec.sbf_spec(4027,struct.pack('<IH6B',tow,2300,1,20,12,0,0,0)+row,1)+spec.sbf_spec(5922,struct.pack('<IH2x',tow,2300))
 
+def backend_nfreq():
+    # NFREQ of the build under test: GNSS_TEST_NFREQ, else the compile definitions
+    # the build writes next to its executables, else RTKLIB's default 3.
+    if os.environ.get('GNSS_TEST_NFREQ'):return int(os.environ['GNSS_TEST_NFREQ'])
+    path=pathlib.Path(wire.B)/'protocol_compile_definitions.txt'
+    found=re.search(r'^NFREQ=(\d+)$',path.read_text(),re.M) if path.exists() else None
+    return int(found[1]) if found else 3
+
+def sbf_bds3_four_signals(tow):
+    # C30 (BDS-3): B1I as the Type1 sub-block, then B3I, B1C and B2a as Type2
+    # sub-blocks with code offsets of +1, +2 and +3 m and carrier offsets of 0.5 cycles.
+    mm=21000000125
+    master=struct.pack('<BBBBIiHbBHBB',1,28,170,mm>>32,mm&0xffffffff,-1235000,53191,-1,140,10,0,3)
+    slaves=b''.join(struct.pack('<BBBBbBHHH',sig,10,140,0,0,0,offset,500,0)
+                    for sig,offset in ((30,1000),(13,2000),(14,3000)))
+    return (spec.sbf_spec(4027,struct.pack('<IH6B',tow,2300,1,20,12,0,0,0)+master+slaves,1)+
+            spec.sbf_spec(5922,struct.pack('<IH2x',tow,2300)))
+
 class ObservationSignalSpecification(unittest.TestCase):
+    def test_sbf_bds3_b3i_and_b1c_do_not_share_a_backend_slot(self):
+        # RTKLIB places B3I at frequency index 3 and B1C at slot NFREQ: with NFREQ 3
+        # both use slot 3 and one replaces the other.
+        nfreq=backend_nfreq()
+        r=wire.run('signal_sbf_bds3_slots','sbf_decoder_node',[sbf_bds3_four_signals(100000)],spec.PARAMS,chunk_delay=.02)
+        self.assertEqual(len(r['obs']),1)
+        got={o.code_str:o for o in r['obs'][0].observations if o.system=='C' and o.prn==30}
+        if nfreq<4:
+            self.skipTest('build NFREQ=%d: B3I and B1C share backend slot 3 (published %s); '
+                          'needs NFREQ>=4'%(nfreq,sorted(got)))
+        self.assertEqual(sorted(got),['1P','2I','5P','6I'])
+        for code,offset in (('2I',0),('6I',1),('1P',2),('5P',3)):
+            with self.subTest(code=code):
+                o=got[code];p=21000000.125+offset
+                self.assertAlmostEqual(o.p,p,delta=1e-6)
+                phase=-12.345 if code=='2I' else .5
+                self.assertAlmostEqual(o.l,p*frequency('C',code)/299792458+phase,delta=1e-6)
+                self.assertAlmostEqual(o.d,-123.5*frequency('C',code)/frequency('C','2I'),delta=1e-3)
+                self.assertEqual(o.snr,45.)
+
     def test_sbf_all_documented_compiled_signals_and_secondary_antenna_isolation(self):
         frames=[];expected=[]
         for i,(system,sig,code) in enumerate(SBF):

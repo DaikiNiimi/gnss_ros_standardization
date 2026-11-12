@@ -43,6 +43,10 @@ option(ENABLE_QZS "Enable QZSS" ON)
 option(ENABLE_SBS "Enable SBAS" ON)
 option(ENABLE_IRN "Enable IRNSS" ON)
 set(NEXOBS "3" CACHE STRING "Extra observation channels (NEXOBS)")
+set(NFREQ "3" CACHE STRING "Primary carrier frequency slots per observation (RTKLIB NFREQ)")
+if(NOT NFREQ MATCHES "^[0-9]+$" OR NFREQ LESS 3 OR NFREQ GREATER 6)
+  message(FATAL_ERROR "NFREQ must be an integer from 3 to 6 (RTKLIB MAXFREQ), got '${NFREQ}'")
+endif()
 option(BUILD_RTCM_DECODER_NODE "Build rtcm_decoder_node" ON)
 option(BUILD_RINEX_WRITER_TOOL "Build rosbag_to_rinex (ROS bag to RINEX)" ON)
 
@@ -54,6 +58,7 @@ set(_msgs
   msg/GlonassEphemeris.msg
   msg/GnssEphemerides.msg
   msg/GnssSolution.msg
+  msg/GnssBaseStation.msg
 )
 # Message type support is loaded with dlopen at run time, so it must be shared
 # even with BUILD_SHARED_LIBS=OFF (Jazzy's rosidl forces this; Humble's follows
@@ -127,6 +132,7 @@ target_compile_definitions(rtkcore_config INTERFACE
   $<$<BOOL:${ENABLE_QZS}>:ENAQZS>
   $<$<BOOL:${ENABLE_SBS}>:ENASBS>
   $<$<BOOL:${ENABLE_IRN}>:ENAIRN>
+  NFREQ=${NFREQ}
   NEXOBS=${NEXOBS}
 )
 target_include_directories(rtkcore_config INTERFACE
@@ -618,6 +624,16 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test/test_driver_configuration.py"
         --bin-dir "${CMAKE_CURRENT_BINARY_DIR}"
       ENV "PYTHONDONTWRITEBYTECODE=1" TIMEOUT 600)
+    ament_add_test(test_rtcm_gga_uplink
+      GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test/test_rtcm_gga_uplink.py"
+        --bin-dir "${CMAKE_CURRENT_BINARY_DIR}"
+      ENV "PYTHONDONTWRITEBYTECODE=1" TIMEOUT 120)
+    ament_add_test(test_rtcm_base_station
+      GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test/test_rtcm_base_station.py"
+        --bin-dir "${CMAKE_CURRENT_BINARY_DIR}"
+      ENV "PYTHONDONTWRITEBYTECODE=1" TIMEOUT 120)
     ament_add_test(test_receiver_streams
       GENERATE_RESULT_FOR_RETURN_CODE_ZERO
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test/test_receiver_streams.py"

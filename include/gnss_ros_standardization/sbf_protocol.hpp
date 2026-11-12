@@ -123,10 +123,19 @@ constexpr const char* BLOCK_VELCOVCARTESIAN = "VelCovCartesian";
 constexpr const char* BLOCK_DOP = "DOP";
 constexpr const char* BLOCK_EXTSENSORMEAS = "ExtSensorMeas";
 constexpr const char* BLOCK_RECEIVERSTATUS = "ReceiverStatus";
+constexpr const char* BLOCK_GPSION = "GPSIon";
+constexpr const char* BLOCK_GALION = "GALIon";
+constexpr const char* BLOCK_BDSION = "BDSIon";
 
 // SBF Command Strings
 constexpr const char* CMD_SET_SBF_OUTPUT  = "sso"; // setSBFOutput
 constexpr const char* CMD_SET_NMEA_OUTPUT = "sno"; // setNMEAOutput
+constexpr const char* CMD_GET_SBF_OUTPUT  = "getSBFOutput";
+constexpr const char* CMD_GET_NMEA_OUTPUT = "getNMEAOutput";
+constexpr const char* CMD_EXE_SBF_ONCE    = "exeSBFOnce";  // output the stored blocks once
+// Returns a port to command mode (e.g. input mode 'auto' after RTCM input);
+// the receiver answers with its port prompt, e.g. "USB1>".
+constexpr const char* COMMAND_MODE_ESCAPE = "SSSSSSSSSS";
 
 // Stream Type Definition
 struct StreamTypeDef {
@@ -187,6 +196,10 @@ constexpr int PVT_XYZ_OFFSET_VY      = 40;
 constexpr int PVT_XYZ_OFFSET_VZ      = 44;
 constexpr int PVT_XYZ_OFFSET_NRSV    = 66;   // u1
 constexpr int PVT_XYZ_MIN_LEN        = 67;
+
+// PVTGeodetic and PVTCartesian: MeanCorrAge u2 [0.01 s], 65535 = Do-Not-Use
+constexpr int PVT_OFFSET_MEAN_CORR_AGE = 70;
+constexpr uint16_t MEAN_CORR_AGE_NOT_AVAILABLE = 65535;
 
 // PosCovGeodetic body field offsets (variances/covariances in m²; lat≡N, lon≡E, hgt≡U)
 constexpr int POSCOV_GEO_OFFSET_LATLAT = 8;
@@ -282,6 +295,16 @@ inline uint16_t getWeek(const uint8_t* p, size_t len) {
   return read_le<uint16_t>(p + SBF_BODY_OFFSET_WNC);
 }
 
+/// Age of differential corrections [s]; NaN when the block is too short for
+/// the field or the field is Do-Not-Use.
+inline float meanCorrAge(const uint8_t* p, size_t len) {
+  if (len < static_cast<size_t>(PVT_OFFSET_MEAN_CORR_AGE + 2))
+    return std::numeric_limits<float>::quiet_NaN();
+  const uint16_t raw = read_le<uint16_t>(p + PVT_OFFSET_MEAN_CORR_AGE);
+  return raw == MEAN_CORR_AGE_NOT_AVAILABLE ? std::numeric_limits<float>::quiet_NaN()
+                                            : static_cast<float>(raw * 0.01);
+}
+
 // A PVT block with Mode "no PVT" or a non-zero Error is a timed epoch without
 // a solution: it is published as STATUS_NONE (positions become NaN downstream),
 // not dropped. Returns false when the epoch itself is not usable.
@@ -294,6 +317,7 @@ inline bool pvtEpochWithoutSolution(const uint8_t* p, uint32_t tow_ms, uint16_t 
     GNSS_RX_EVENT(GNSS_RX_QUALITY, 1);
     out.status    = gnss_ros_standardization::msg::GnssSolution::STATUS_NONE;
     out.num_sats  = 0;
+    out.age_diff  = std::numeric_limits<float>::quiet_NaN();
     out.time_tow  = static_cast<double>(tow_ms) * 1e-3;
     out.time_week = wnc;
   }
@@ -301,7 +325,7 @@ inline bool pvtEpochWithoutSolution(const uint8_t* p, uint32_t tow_ms, uint16_t 
 }
 
 /// Parse PVTGeodetic body into GnssSolution.
-/// Fills: status, num_sats, time_tow, time_week, latitude, longitude, altitude, vel_enu.
+/// Fills: status, num_sats, age_diff, time_tow, time_week, latitude, longitude, altitude, vel_enu.
 /// Velocity Do-Not-Use leaves the position valid and the velocity NaN.
 inline bool parsePVTGeodetic(const uint8_t* p, size_t len,
                              gnss_ros_standardization::msg::GnssSolution& out) {
@@ -330,6 +354,7 @@ inline bool parsePVTGeodetic(const uint8_t* p, size_t len,
   constexpr double kRad2Deg = 180.0 / 3.14159265358979323846;
   out.status    = mapModeToStatus(mode);
   out.num_sats  = nr_sv;
+  out.age_diff  = meanCorrAge(p, len);
   out.time_tow  = static_cast<double>(tow_ms) * 1e-3;
   out.time_week = wnc;
   out.latitude  = lat_rad * kRad2Deg;
@@ -346,7 +371,7 @@ inline bool parsePVTGeodetic(const uint8_t* p, size_t len,
 }
 
 /// Parse PVTCartesian body into GnssSolution.
-/// Fills: status, num_sats, time_tow, time_week, pos_ecef, vel_ecef.
+/// Fills: status, num_sats, age_diff, time_tow, time_week, pos_ecef, vel_ecef.
 inline bool parsePVTCartesian(const uint8_t* p, size_t len,
                               gnss_ros_standardization::msg::GnssSolution& out) {
   if (len < static_cast<size_t>(PVT_XYZ_MIN_LEN)) return GNSS_RX_REJECT(GNSS_RX_LENGTH);
@@ -372,6 +397,7 @@ inline bool parsePVTCartesian(const uint8_t* p, size_t len,
                       vx != -2e10f && vy != -2e10f && vz != -2e10f;
   out.status     = mapModeToStatus(mode);
   out.num_sats   = nr_sv;
+  out.age_diff   = meanCorrAge(p, len);
   out.time_tow   = static_cast<double>(tow_ms) * 1e-3;
   out.time_week  = wnc;
   out.pos_ecef.x = x;

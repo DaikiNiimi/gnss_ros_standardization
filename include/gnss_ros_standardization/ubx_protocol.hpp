@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <stdexcept>
@@ -35,6 +37,8 @@ constexpr uint8_t CLASS_RXM = 0x02;
 constexpr uint8_t CLASS_ACK = 0x05;
 constexpr uint8_t CLASS_CFG = 0x06;
 constexpr uint8_t CLASS_MON = 0x0A;
+constexpr uint8_t CLASS_INF = 0x04;  // INF-ERROR 0x00, INF-WARNING 0x01, INF-NOTICE 0x02
+constexpr uint8_t CLASS_NMEA = 0xF0;  // standard NMEA sentences in UBX-CFG-MSG
 constexpr uint8_t CLASS_ESF = 0x10;  // External Sensor Fusion (ZED-F9R / IMU-enabled)
 constexpr uint8_t CLASS_HNR = 0x28;  // High Navigation Rate (legacy F9R)
 
@@ -209,13 +213,15 @@ constexpr uint8_t ID_MON_VER = 0x04;
 constexpr uint8_t ID_RXM_SFRBX = 0x13;
 constexpr uint8_t ID_RXM_RAWX  = 0x15;
 
-// CFG (Legacy Gen 9)
+// CFG (legacy UBX-CFG messages; CFG-VALSET below)
+constexpr uint8_t ID_CFG_PRT   = 0x00;
 constexpr uint8_t ID_CFG_MSG   = 0x01;
 constexpr uint8_t ID_CFG_RST   = 0x04;
 constexpr uint8_t ID_CFG_RATE  = 0x08;
 constexpr uint8_t ID_CFG_NAV5  = 0x24;
 constexpr uint8_t ID_CFG_GNSS  = 0x3E;
 constexpr uint8_t ID_CFG_VALSET = 0x8A;
+constexpr uint8_t ID_CFG_VALGET = 0x8B;
 
 // NMEA Message IDs (Class 0xF0)
 constexpr uint8_t NMEA_GGA = 0x00;
@@ -277,12 +283,12 @@ constexpr uint32_t CFG_SIGNAL_NAVIC_L5_ENA = 0x1031001D;
 // QZSS
 constexpr uint32_t CFG_SIGNAL_QZSS_ENA      = 0x10310024;
 constexpr uint32_t CFG_SIGNAL_QZSS_L1CA_ENA = 0x10310012;
-constexpr uint32_t CFG_SIGNAL_QZSS_L1S_ENA  = 0x10310014;  // L1S (CLAS)
+constexpr uint32_t CFG_SIGNAL_QZSS_L1S_ENA  = 0x10310014;  // L1S (SLAS augmentation, not decoded)
 constexpr uint32_t CFG_SIGNAL_QZSS_L2C_ENA  = 0x10310015;
 constexpr uint32_t CFG_SIGNAL_QZSS_L5_ENA   = 0x10310017;
 
 // --- Output Message Rate (per-port) ---
-// Base addresses (I2C = offset 0). Add port offset for UART1(+1), UART2(+2), USB(+3).
+// Base addresses (I2C = offset 0). Add port offset for UART1(+1), UART2(+2), USB(+3), SPI(+4).
 constexpr uint32_t CFG_MSGOUT_UBX_RXM_RAWX_I2C  = 0x209102A4;
 constexpr uint32_t CFG_MSGOUT_UBX_RXM_SFRBX_I2C = 0x20910231;
 constexpr uint32_t CFG_MSGOUT_UBX_NAV_PVT_I2C     = 0x20910006;
@@ -317,6 +323,70 @@ constexpr int PORT_I2C  = 0;
 constexpr int PORT_UART1 = 1;
 constexpr int PORT_UART2 = 2;
 constexpr int PORT_USB   = 3;
+constexpr int PORT_SPI   = 4;
+constexpr int PORT_COUNT = 5;
+/// "THISPORT": the port the commands arrive on, identified at startup.
+constexpr int PORT_THIS  = -1;
+
+/// receiver_port name -> port number (= CFG-PRT portID, CFG-MSG rate index and
+/// CFG-MSGOUT key offset), or PORT_THIS.
+inline int parseReceiverPort(const std::string& name) {
+  if (name == "THISPORT") return PORT_THIS;
+  if (name == "I2C")   return PORT_I2C;
+  if (name == "UART1") return PORT_UART1;
+  if (name == "UART2") return PORT_UART2;
+  if (name == "USB")   return PORT_USB;
+  if (name == "SPI")   return PORT_SPI;
+  throw std::invalid_argument("receiver_port must be THISPORT, USB, UART1, UART2, I2C or SPI");
+}
+
+inline const char* portName(int port) {
+  switch (port) {
+    case PORT_I2C: return "I2C";
+    case PORT_UART1: return "UART1";
+    case PORT_UART2: return "UART2";
+    case PORT_USB: return "USB";
+    case PORT_SPI: return "SPI";
+  }
+  return "THISPORT";
+}
+
+/// Text after `key` ("PROTVER", "FWVER", "MOD") in the UBX-MON-VER extension
+/// strings (30 bytes each after swVersion[30] and hwVersion[10]); "" if absent.
+/// Firmware writes either "KEY=value" or, on older protocol versions, "KEY value".
+inline std::string monVerField(const std::vector<uint8_t>& payload, const std::string& key) {
+  for (size_t off = 40; off + 30 <= payload.size(); off += 30) {
+    const char* text = reinterpret_cast<const char*>(payload.data() + off);
+    const std::string ext(text, strnlen(text, 30));
+    if (ext.size() > key.size() && ext.compare(0, key.size(), key) == 0 &&
+        (ext[key.size()] == '=' || ext[key.size()] == ' '))
+      return ext.substr(key.size() + 1);
+  }
+  return {};
+}
+
+/// Protocol version from UBX-MON-VER, or 0 when the receiver does not report it.
+inline double monVerProtocolVersion(const std::vector<uint8_t>& payload) {
+  const std::string value = monVerField(payload, "PROTVER");
+  if (value.empty()) return 0.0;
+  char* end = nullptr;
+  const double version = std::strtod(value.c_str(), &end);
+  return end != value.c_str() && std::isfinite(version) && version > 0.0 ? version : 0.0;
+}
+
+/// Protocol 27 (u-blox generation 9) introduced the CFG-VALSET configuration
+/// interface. Later firmware (e.g. ZED-F9R HPS 1.40, protocol 33.40) NAKs the
+/// legacy CFG-GNSS/RATE/NAV5, so every receiver that has CFG-VALSET uses it.
+constexpr double PROTVER_VALSET = 27.0;
+
+/// UBX-RXM-SFRBX carrying a signal whose subframes RTKLIB does not decode as
+/// navigation data: QZSS L1S (gnssId 5, sigId 1) is SLAS augmentation, and
+/// firmware sends it as 8 words where RTKLIB's L1S branch expects 9, so
+/// input_ubx would report every frame as an error.
+inline bool isUndecodedSfrbx(uint8_t cls, uint8_t id, const std::vector<uint8_t>& payload) {
+  return cls == 0x02 && id == ID_RXM_SFRBX && payload.size() >= 3 &&
+         payload[0] == 5 && payload[2] == 1;
+}
 
 // CFG-RST Payload Constants
 constexpr uint16_t RST_BBR_HOTSTART = 0x0000;
@@ -428,6 +498,7 @@ constexpr int NAV_PVT_OFFSET_VELE    = 52;
 constexpr int NAV_PVT_OFFSET_VELD    = 56;
 constexpr int NAV_PVT_OFFSET_SACC    = 68;
 constexpr int NAV_PVT_OFFSET_PDOP    = 76;
+constexpr int NAV_PVT_OFFSET_FLAGS3  = 78;  // X2: bits 4..1 lastCorrectionAge class
 
 // UBX fixType values
 constexpr uint8_t FIX_NONE       = 0;
@@ -464,8 +535,21 @@ inline T read_le(const uint8_t* p) {
   return v;
 }
 
+/// Age of differential corrections from NAV-PVT flags3 lastCorrectionAge:
+/// the upper bound of the class in seconds (120 for class 12 and above), NaN
+/// when not available (class 0) or the payload ends before flags3.
+inline float lastCorrectionAge(const uint8_t* p, size_t len) {
+  if (len < static_cast<size_t>(NAV_PVT_OFFSET_FLAGS3 + 2))
+    return std::numeric_limits<float>::quiet_NaN();
+  static constexpr float kUpper[] = {0.f, 1.f, 2.f, 5.f, 10.f, 15.f, 20.f, 30.f, 45.f, 60.f, 90.f, 120.f};
+  const unsigned code = (read_le<uint16_t>(p + NAV_PVT_OFFSET_FLAGS3) >> 1) & 0x0F;
+  if (code == 0) return std::numeric_limits<float>::quiet_NaN();
+  return code >= 12 ? 120.f : kUpper[code];
+}
+
 /// Parse UBX-NAV-PVT payload into a GnssSolution.
-/// Fills: time_tow (from iTOW), status, num_sats, latitude, longitude, altitude,
+/// Fills: time_tow (from iTOW), status, num_sats, age_diff (NaN without a fix),
+/// latitude, longitude, altitude,
 /// vel_enu (NED→ENU), pos_enu_cov diagonal (from hAcc/vAcc), vel_enu_cov diagonal
 /// (from sAcc), pdop. time_week is left untouched (filled later from system time).
 /// Returns false if payload too short or fix invalid.
@@ -520,6 +604,8 @@ inline bool parseNavPvt(const uint8_t* p, size_t len,
 
   out.status    = status;
   out.num_sats  = num_sv;
+  out.age_diff  = status == gnss_ros_standardization::msg::GnssSolution::STATUS_NONE
+                      ? std::numeric_limits<float>::quiet_NaN() : lastCorrectionAge(p, len);
   out.time_tow  = static_cast<double>(itow_ms) * 1e-3;
   out.latitude  = static_cast<double>(lat_e7) * 1e-7;
   out.longitude = static_cast<double>(lon_e7) * 1e-7;
