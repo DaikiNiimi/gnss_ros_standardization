@@ -1,0 +1,135 @@
+# PPC dataset, Tokyo routes: EKF on the RTK solution; lever arm from the dataset (FLU).
+gnss_imu_kalman_filter:
+  ros__parameters:
+    # ENU local origin: "auto" = first usable GNSS solution | "fixed" = pos below
+    local_origin:
+      mode: "auto"
+      postype: "llh"                # "llh" | "ecef"
+      pos: [0.0, 0.0, 0.0]          # llh: [lat_deg, lon_deg, h_m]; ecef: [x, y, z] m
+
+    # Topic Names
+    topics:
+      gnss_solution: "/gnss/solution"
+      imu_raw: "/gnss/imu/data_raw"
+      wheel_speed: "/can_twist"
+      solution: "/gnss/fusion/ekf_solution"
+
+    # EKF Parameters
+    ekf:
+      # Process noise spectral densities [x, y, z]
+      sigma_acc:      [0.3, 0.3, 0.3]               # [m/s²/√Hz]
+      sigma_gyr:      [0.01, 0.01, 0.01]            # [rad/s/√Hz]
+      sigma_acc_bias: [1.0e-4, 1.0e-4, 1.0e-4]     # [m/s²/√s]
+      sigma_gyr_bias: [1.0e-5, 1.0e-5, 1.0e-5]     # [rad/s/√s]
+
+      # Initial state covariance (1σ standard deviations) [x, y, z]
+      init_pos_std:      [5.0, 5.0, 10.0]           # [m]
+      init_vel_std:      [0.3, 0.3, 0.3]            # [m/s]
+      init_att_std:      [0.1, 0.1, 3.14159]        # [rad] (yaw = π: fully unknown)
+      init_acc_bias_std: [0.1, 0.1, 0.1]            # [m/s²]
+      init_gyr_bias_std: [0.01, 0.01, 0.01]         # [rad/s]
+
+      # Store-and-rewind alignment for late GNSS/wheel measurements (see README).
+      # false = immediate update; imu_buffer_duration_s must exceed worst GNSS latency.
+      time_align_to_gnss: true
+      imu_buffer_duration_s: 2.0                    # [s] IMU/state snapshot retention
+
+      gnss_offset_window_s: 60.0                    # [s] tow_auto_offset window
+
+    # GNSS epoch used for IMU pairing: header or tow_auto_offset.
+    time:
+      gnss_epoch_source: "header"
+
+    gnss:
+      # GNSS solution update mode
+      # "fix_only" | "fix_float" | "all" (never STATUS_DR). fix_float recommended:
+      # fix_only starves the filter during RTK dropouts, drift snaps back (see README).
+      update_mode: "fix_float"
+
+      # Continuous yaw aid from GNSS Doppler course (forward-motion model; see
+      # README). Code default false; this ground-vehicle demo opts in.
+      use_doppler_heading: true
+      heading_min_speed_mps: 0.5                   # [m/s] min speed to init/update yaw
+
+      # *_cov_source: "message" = use the reported covariance (default; yaml sigma
+      # below as the degenerate fallback) | "config" = always use the yaml sigma.
+      pos_cov_source: "message"                    # "message" | "config"
+      vel_cov_source: "message"                    # "message" | "config"
+      pos_sigma_default_fix:   [0.05, 0.05, 0.10]  # [m] RTK FIX
+      pos_sigma_default_float: [1.0, 1.0, 3.0]     # [m] RTK FLOAT
+      pos_sigma_default_other: [10.0, 10.0, 30.0]  # [m] DGPS/SBAS/SINGLE/PPP
+      cov_min_var: 1.0e-6                          # [m²]
+      vel_sigma_default: 0.2                       # [m/s]
+
+    # CSV Log Output
+    csv:
+      dir: ""                                    # output directory ("" = cwd)
+      sensors_log_enabled: false                  # raw sensor data log (IMU/GNSS/wheel speed) at IMU rate
+      sensors_log_filename: "ekf_sensors_log.csv"
+      state_log_enabled: false                   # EKF estimated state + diagonal covariance log
+      state_log_filename: "ekf_state_log.csv"
+
+    # Wheel Speed (Optional)
+    wheel:
+      enable: false
+      topic_type: "twist_with_covariance"   # "twist_with_covariance" | "twist"
+      mode: "longitudinal_only"             # "longitudinal_only" | "3d"
+      sigma_mps: 0.1                        # default velocity noise [m/s]
+
+      # Non-holonomic constraint (NHC): also constrain body lateral/vertical velocity ≈ 0.
+      nhc:
+        enable: false
+        sigma_lat_mps: 0.3                  # [m/s]
+        sigma_vert_mps: 0.3                 # [m/s]
+
+    # Accelerometer Leveling (gravity-reference roll/pitch update)
+    # Bounds roll/pitch; noise inflates with kinematic accel & rate, applied at
+    # most once per window (see README).
+    leveling:
+      enable: true
+      window_s: 0.3        # [s] specific-force averaging window AND min update spacing
+      sigma_min_deg: 1.0   # [deg] 1-sigma floor (quasi-static)
+      acc_gain: 15.0       # [deg per m/s^2] sigma inflation vs linear accel
+      gyr_gain: 30.0       # [deg per rad/s] sigma inflation vs ||omega||
+      max_acc: 0.5         # [m/s^2] skip the update above this (systematic accel bias)
+
+    # Zero-Velocity Update (ZUPT)
+    # v=0 update, gated on a fresh measured stop (speed + std-dev + mean gates).
+    # Without a speed reference it fires only if allow_imu_only (see README).
+    zupt:
+      enable: true
+      allow_imu_only: false # apply v=0 with no fresh speed reference (risky; see README)
+      window_s: 0.5        # [s] detection window
+      max_acc_std: 0.15 # [m/s^2] max acc std-dev in window
+      max_gyr_std: 0.02 # [rad/s] max gyro std-dev in window
+      max_gyr_mean_rps: 0.05 # [rad/s] reject if |mean(gyr)-bias| exceeds (turning)
+      max_acc_mean_mps2: 0.5 # [m/s^2] reject if | ||mean(acc)-bias|| - g | exceeds
+      sigma_mps: 0.05          # [m/s] 1-sigma of the v=0 observation
+      min_interval_s: 0.2  # [s] rate limit between ZUPT updates
+      max_speed_mps: 0.5    # [m/s] a fresh reference at/below this means "stopped"
+      speed_timeout_s: 1.5 # [s]   max age of the measured-speed reference to trust
+
+    # Initialization
+    init:
+      imu_duration_s: 1.0   # [s] duration to average initial IMU data for roll/pitch
+      # true: use yaw_deg immediately | false: wait for Doppler heading first.
+      use_yaw: false
+      yaw_deg: 0.0          # [deg] initial yaw when use_yaw is true
+
+    # IMU Installation & Lever-Arm
+    # Which position the EKF outputs. "imu": IMU | "gnss": GNSS antenna.
+    output_reference_frame: "imu"
+
+    # Body-frame lever arm [x,y,z] [m], FROM output_reference_frame's origin TO
+    # the other sensor's origin. Verify the sign (see README).
+    lever_arm: [0.31, 0.0, 0.55]
+
+    # IMU axis orientation relative to body frame [roll, pitch, yaw] [rad]
+    imu_orientation: [0.0, 0.0, 0.0]
+
+    # Output Frames
+    # world: Odometry/GnssSolution frame_id ("map": GNSS can jump, not odom-safe).
+    # child: Odometry.child_frame_id; "" auto-derives from output_reference_frame.
+    frames:
+      world: "map"
+      child: ""
