@@ -43,10 +43,26 @@ def topic_metadata(**fields):
 def write_bag(path, messages, compressed=False):
     """messages: (topic, type, message, seconds)."""
     if compressed:
-        writer = rosbag2_py.SequentialCompressionWriter(
-            rosbag2_py.CompressionOptions('zstd', rosbag2_py.CompressionMode.FILE))
-    else:
-        writer = rosbag2_py.SequentialWriter()
+        # Humble's rosbag2_py cannot configure a compressing writer, but
+        # bag_rewrite (ros2 bag convert) can in both distributions. The plain
+        # bag lives elsewhere so the destination's parent holds only `path`.
+        # Humble selects every topic with `all`, Jazzy with `all_topics`;
+        # each ignores the other key.
+        with tempfile.TemporaryDirectory() as directory:
+            plain = pathlib.Path(directory) / 'plain'
+            write_bag(plain, messages)
+            config = pathlib.Path(directory) / 'convert.yaml'
+            config.write_text('output_bags:\n'
+                              f'- uri: {json.dumps(str(path))}\n'
+                              '  storage_id: sqlite3\n'
+                              '  all: true\n'
+                              '  all_topics: true\n'
+                              '  compression_mode: file\n'
+                              '  compression_format: zstd\n')
+            rosbag2_py.bag_rewrite([rosbag2_py.StorageOptions(uri=str(plain), storage_id='sqlite3')],
+                                   str(config))
+        return
+    writer = rosbag2_py.SequentialWriter()
     writer.open(rosbag2_py.StorageOptions(uri=str(path), storage_id='sqlite3'),
                 rosbag2_py.ConverterOptions('cdr', 'cdr'))
     seen = set()

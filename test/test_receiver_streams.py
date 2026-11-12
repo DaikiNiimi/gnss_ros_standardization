@@ -79,9 +79,16 @@ def _run(node,executor,label,exe,data,extra,*,file_input,disconnect,chunk_delay)
         subs.append(subscriptions[key])
     server=socket.socket(); server.bind(('127.0.0.1',0)); server.listen(); server.settimeout(5)
     source=f'tcpcli://127.0.0.1:{server.getsockname()[1]}'
+    gated=file_input=='gated'
     if file_input:
+        # True: a regular file, read to EOF at once, possibly before discovery
+        # completes. 'gated': the same file:// stream on a FIFO; the node's
+        # reads wait until its publishers are matched and the fixture written.
+        payload=b''.join(data) if isinstance(data,list) else data
         path=pathlib.Path(TEMP.name)/(label+'.sbf')
-        path.write_bytes(b''.join(data) if isinstance(data,list) else data)
+        path.unlink(missing_ok=True)
+        if gated: os.mkfifo(path)
+        else: path.write_bytes(payload)
         source='file://'+str(path)
     args=[B+exe,'--ros-args','-p',f'stream_path:={source}','-p','topics.solution:=/review/sol','-p','topics.imu_raw:=/review/raw']
     if exe.startswith('rtcm'):
@@ -93,55 +100,76 @@ def _run(node,executor,label,exe,data,extra,*,file_input,disconnect,chunk_delay)
     if extra: args+=extra
     args=[arg.replace('/review/',topic_prefix) for arg in args]
     args+=['-r','__node:='+receiver_name,'--log-level',receiver_name+':=debug']
+    def match_publishers(proc,log):
+        # Sending a finite fixture after an arbitrary sleep can lose every
+        # sample before DDS discovery completes. Match this node (not a
+        # previous case's publisher) before supplying input bytes.
+        required=set()
+        for key,param in [('obs','topics.observation'),('nav','topics.ephemeris'),
+                          ('sol','topics.solution'),('raw','topics.imu_raw'),('imu','topics.imu')]:
+            if param+':='+topic_prefix+key in args: required.add(key)
+        end=time.monotonic()+10.0
+        while True:
+            ready=all(
+                # Subscription.get_publisher_count is not in Humble's rclpy.
+                (subscriptions[key].get_publisher_count()
+                 if hasattr(subscriptions[key],'get_publisher_count')
+                 else node.count_publishers(topic_prefix+key))>0 and
+                any(info.node_name==receiver_name for info in
+                    node.get_publishers_info_by_topic(topic_prefix+key))
+                for key in required)
+            if ready: break
+            if proc.poll() is not None or time.monotonic()>=end:
+                raise AssertionError(f'{label}: DDS publishers not matched: {sorted(required)}\n'
+                                     +pathlib.Path(log.name).read_text())
+            executor.spin_once(timeout_sec=.05)
     with open(TEMP.name+'/'+label+'.log','w') as log:
+        # O_RDWR never blocks on a FIFO and keeps a writer present, so the
+        # node's fopen returns and its reads wait for data instead of EOF.
+        fifo=os.open(path,os.O_RDWR) if gated else None
         proc=subprocess.Popen(args,stdout=log,stderr=log)
         client=None
         conn=None
         try:
             conn=None if file_input else server.accept()[0]
-            if file_input:
+            if file_input and not gated:
                 end=time.monotonic()+1.0
                 while time.monotonic()<end: executor.spin_once(timeout_sec=.05)
             else:
-                # Sending a finite fixture after an arbitrary sleep can lose
-                # every sample before DDS discovery completes. Match this node
-                # (not a previous case's publisher) before supplying TCP bytes.
-                required=set()
-                for key,param in [('obs','topics.observation'),('nav','topics.ephemeris'),
-                                  ('sol','topics.solution'),('raw','topics.imu_raw'),('imu','topics.imu')]:
-                    if param+':='+topic_prefix+key in args: required.add(key)
-                end=time.monotonic()+10.0
-                while True:
-                    ready=all(
-                        # Subscription.get_publisher_count is not in Humble's rclpy.
-                        (subscriptions[key].get_publisher_count()
-                         if hasattr(subscriptions[key],'get_publisher_count')
-                         else node.count_publishers(topic_prefix+key))>0 and
-                        any(info.node_name==receiver_name for info in
-                            node.get_publishers_info_by_topic(topic_prefix+key))
-                        for key in required)
-                    if ready: break
-                    if proc.poll() is not None or time.monotonic()>=end:
-                        raise AssertionError(f'{label}: DDS publishers not matched: {sorted(required)}\n'
-                                             +pathlib.Path(log.name).read_text())
-                    executor.spin_once(timeout_sec=.05)
-                # A local match alone is not proof that the other participant
-                # has discovered us. Complete a real ROS request/reply with this
-                # uniquely named node before sending the finite input fixture.
-                client=node.create_client(GetParameters,'/'+receiver_name+'/get_parameters')
-                if not client.wait_for_service(timeout_sec=5.0):
-                    raise AssertionError(f'{label}: parameter service unavailable')
-                future=client.call_async(GetParameters.Request(names=['stream_path']))
-                executor.spin_until_future_complete(future,timeout_sec=5.0)
-                if not future.done() or future.result().values[0].string_value!=source:
-                    raise AssertionError(f'{label}: receiver ROS handshake failed: '
-                                         f'done={future.done()}, result={future.result() if future.done() else None}, expected={source}')
+                match_publishers(proc,log)
+                # A gated node's single-threaded executor is blocked reading the
+                # empty FIFO, so it cannot answer the parameter service.
+                if not gated:
+                    # A local match alone is not proof that the other participant
+                    # has discovered us. Complete a real ROS request/reply with this
+                    # uniquely named node before sending the finite input fixture.
+                    client=node.create_client(GetParameters,'/'+receiver_name+'/get_parameters')
+                    if not client.wait_for_service(timeout_sec=5.0):
+                        raise AssertionError(f'{label}: parameter service unavailable')
+                    future=client.call_async(GetParameters.Request(names=['stream_path']))
+                    executor.spin_until_future_complete(future,timeout_sec=5.0)
+                    if not future.done() or future.result().values[0].string_value!=source:
+                        raise AssertionError(f'{label}: receiver ROS handshake failed: '
+                                             f'done={future.done()}, result={future.result() if future.done() else None}, expected={source}')
                 # Local reader matching can precede discovery at the remote
                 # writer. Retain the settling interval after (not instead of)
                 # matching. Per-case topics prevent stale previous endpoints
                 # from satisfying the readiness check.
                 end=time.monotonic()+1.0
                 while time.monotonic()<end: executor.spin_once(timeout_sec=.05)
+            if gated:
+                # The fixture exceeds the pipe buffer and this process holds a
+                # read end, so a blocking write would hang if the node died.
+                os.set_blocking(fifo,False)
+                view=memoryview(payload); end=time.monotonic()+20.0
+                while view:
+                    try: view=view[os.write(fifo,view):]
+                    except BlockingIOError:
+                        if proc.poll() is not None or time.monotonic()>=end:
+                            raise AssertionError(f'{label}: receiver did not read the FIFO\n'
+                                                 +pathlib.Path(log.name).read_text())
+                        executor.spin_once(timeout_sec=.01)
+                os.close(fifo); fifo=None  # EOF, as at the end of a regular file
             chunks=[] if file_input else data if isinstance(data,list) else [data]
             for chunk in chunks:
                 if callable(chunk):
@@ -167,15 +195,19 @@ def _run(node,executor,label,exe,data,extra,*,file_input,disconnect,chunk_delay)
                 while time.monotonic()<end: executor.spin_once(timeout_sec=.01)
             if disconnect and conn is not None:
                 conn.close();conn=None
-            # Q1: diagnostics use the production five-second cadence. File
-            # EOF tests inspect counters; delivery before discovery is not assumed.
-            drain=max(MIN_DRAIN_SECONDS,5.1 if file_input else 1.1)
+            # Q1: diagnostics use the production five-second cadence. Ungated
+            # file EOF tests inspect counters; delivery before discovery is not
+            # assumed. Gated input was matched first and drains like TCP.
+            drain=max(MIN_DRAIN_SECONDS,5.1 if file_input and not gated else 1.1)
             end=time.monotonic()+drain
             while time.monotonic()<end: executor.spin_once(timeout_sec=.05)
             if conn is not None: conn.close()
         except (TimeoutError, ConnectionError) as exc:
             raise AssertionError(f'{label}: receiver connection failed\n'+pathlib.Path(log.name).read_text()) from exc
         finally:
+            # Close the FIFO first: a node still blocked reading it gets EOF
+            # and can then handle SIGINT.
+            if fifo is not None: os.close(fifo)
             proc.send_signal(signal.SIGINT)
             try: proc.wait(timeout=4)
             except subprocess.TimeoutExpired: proc.kill(); proc.wait()

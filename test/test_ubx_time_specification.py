@@ -75,7 +75,7 @@ class UbxTimeSpecification(unittest.TestCase):
         for n in range(6000):
             data+=raw_esf(5000+n*258,(n,0,0,0,0,0))
             if n%10==9:data+=rawx(100.+(n+1)*0.01)
-        for mode,file_input in (('file',True),('socket',False)):
+        for mode,file_input in (('file','gated'),('socket',False)):
             for node in ('decoder','driver'):
                 with self.subTest(mode=mode,node=node):
                     params=['-p','use_gps_timestamp:=true','-p','topics.observation:=/review/obs']
