@@ -119,6 +119,36 @@ class LaunchSettings(unittest.TestCase):
         with self.assertRaises(pipeline.PipelineError):
             pipeline.validate_base_position([0.,0.,0.],'ecef','command line',allow_zero_llh=True)
 
+    def test_rtcm_base_position_follows_station_records_for_rtk_only(self):
+        root=pathlib.Path(__file__).resolve().parents[1]
+        with patch.object(pipeline,'config',side_effect=lambda name:str(root/'config'/name)):
+            self._check_rtcm_base_position()
+
+    def _check_rtcm_base_position(self):
+        ntrip='ntrip://u:p@caster:2101/MNT'
+        settings=self.resolve(pipeline='rtk',rover_source='serial:///dev/ttyACM0:115200',
+                              base_source=ntrip,base_position_type='rtcm')
+        deployment=pipeline.resolve_estimator_deployment('rtk',settings)
+        with patch.object(pipeline,'Node',side_effect=lambda **kw:kw),\
+             patch.object(pipeline,'executable_available',return_value=True):
+            rtk=pipeline.estimator_node('rtk',deployment)['parameters'][-1]
+            nodes,_=pipeline.source_nodes(settings)
+        self.assertEqual(rtk['ant2.postype'],'rtcm')
+        self.assertNotIn('ant2.pos',rtk)
+        self.assertEqual(rtk['topics.base_station'],'/base/gnss/station')
+        self.assertEqual(nodes[-1]['parameters'][-1]['topics.station'],'/base/gnss/station')
+        self.assertEqual(pipeline.estimator_summary_rows(deployment)[1][1],'from RTCM 1005/1006')
+        # The RTK stage feeding the EKF is the same estimator.
+        pipeline.resolve_estimator_deployment('rtk',self.resolve(pipeline='ekf',base_source=ntrip,
+            base_position_type='rtcm'),own_params_file=False)
+        for kind,cli in [('gnss_fgo',{}),('gnss_imu_fgo',{}),
+                         ('rtk',{'base_receiver':'ubx'}),('rtk',{'base_position':'35,139,10'})]:
+            with self.subTest(kind=kind,cli=cli),self.assertRaises(pipeline.PipelineError):
+                pipeline.resolve_estimator_deployment(kind,self.resolve(pipeline=kind,base_source=ntrip,
+                    base_position_type='rtcm',**cli))
+        self.assertIn('/base/gnss/station',pipeline.record_topics(with_base=True,base_station=True))
+        self.assertNotIn('/base/gnss/station',pipeline.record_topics(with_base=True))
+
     def test_parameter_yaml_selects_node_and_namespace(self):
         with tempfile.TemporaryDirectory() as directory:
             path=pathlib.Path(directory)/'nodes.yaml'
@@ -194,6 +224,47 @@ real_time_kinematic:
         with self.assertRaises(pipeline.PipelineError):
             pipeline._resolve_rovers([{'name':'east\n','receiver':'ubx','source':'file://a'}],'test',False)
 
+    def test_stream_credentials_reach_nodes_as_variable_names(self):
+        reference='ntrip://${GRS_U}:${GRS_P}@caster:2101/MNT'
+        secrets={'GRS_U':'canaryuser','GRS_P':'canarypass','GRS_URI':'ntrip://u:canarypass@caster:2101/M'}
+        with tempfile.TemporaryDirectory() as directory,patch.dict('os.environ',secrets):
+            path=pathlib.Path(directory)/'site.yaml'
+            for source in [reference,'${GRS_URI}']:
+                path.write_text('base:\n  source: "%s"\n'%source)
+                loaded,_=pipeline.load_site(str(path))
+                self.assertIn('canarypass',loaded['base']['source'])  # validated expanded
+                with patch.object(pipeline,'Node',side_effect=lambda **kw:kw):
+                    node=pipeline.receiver_node('base','rtcm','decoder',loaded['base']['source'],
+                                                gga_topic='/gnss/nmea_solution')
+                params=node['parameters'][-1]
+                self.assertEqual(params['stream_path'],source)
+                self.assertNotIn('canary',str(params))
+                self.assertEqual(params['gga.solution_topic'],'/gnss/nmea_solution')
+
+    def test_ntrip_base_reports_rover_position_as_gga(self):
+        ntrip='ntrip://u:p@caster:2101/MNT'
+        def base_params(site=None,**cli):
+            with patch.object(pipeline,'Node',side_effect=lambda **kw:kw):
+                nodes,_=pipeline.source_nodes(self.resolve(site,pipeline='logging',**cli))
+            return nodes[-1]['parameters'][-1]
+        self.assertEqual(base_params(rover_receiver='ubx',rover_source='serial:///dev/ttyACM0:115200',
+                                     base_source=ntrip)['gga.solution_topic'],'/gnss/nmea_solution')
+        # No rover position (rtcm rover), or no caster to report to (file/tcp base).
+        self.assertNotIn('gga.solution_topic',base_params(rover_receiver='rtcm',rover_source=ntrip,
+                                                          base_source=ntrip))
+        for source in ['file://base.rtcm3','tcpcli://localhost:9000']:
+            self.assertNotIn('gga.solution_topic',base_params(rover_receiver='ubx',
+                             rover_source='serial:///dev/ttyACM0:115200',base_source=source))
+        multi=base_params({'rovers':[{'name':'east','receiver':'rtcm','source':ntrip},
+                                     {'name':'west','receiver':'sbf','source':'serial:///dev/ttyUSB0:115200'}],
+                           'base':{'source':ntrip}})
+        self.assertEqual(multi['gga.solution_topic'],'/west/gnss/nmea_solution')
+        settings=self.resolve(pipeline='onboard_rtk',rover_receiver='ubx',
+                              rover_source='serial:///dev/ttyACM0:115200',base_source=ntrip)
+        with patch.object(pipeline,'Node',side_effect=lambda **kw:kw),patch.object(launch_file,'TimerAction',side_effect=lambda **kw:kw):
+            actions,_,_,_=launch_file.build_onboard_rtk(settings)
+        self.assertEqual(actions[-1]['actions'][0]['parameters'][-1]['gga.solution_topic'],'/gnss/nmea_solution')
+
     # A-22: a historical RTCM base log needs its GPS week (MSM carries none).
     def test_historical_rtcm_base_receives_reference_week(self):
         settings=self.resolve({'base':{'source':'file://base.rtcm3','reference_week':1709,
@@ -237,7 +308,7 @@ real_time_kinematic:
         # rtk and the recorder both read the observations and rover ephemerides;
         # topics nobody reads (here the IMU) are not waited for.
         self.assertEqual(waits,{('/gnss/ephemeris=2','/gnss/nmea_solution=1','/gnss/observation=2'),
-                                ('/base/gnss/ephemeris=1','/base/gnss/observation=2')})
+                                ('/base/gnss/ephemeris=1','/base/gnss/observation=2','/base/gnss/station=1')})
         for p in plays: self.assertTrue(p['cmd'][2].endswith('rover.ubx') or p['cmd'][2].endswith('base.rtcm3'))
         # RTKLIB file options keep RTKLIB's own file stream
         self.assertEqual(pipeline.playback_source('file://x.ubx::T','decoder',{}),'file://x.ubx::T')
@@ -251,6 +322,31 @@ real_time_kinematic:
             with self.subTest(kind=kind),patch.object(pipeline,'config',side_effect=lambda name:str(root/'config'/name)),patch.object(pipeline,'executable_available',return_value=True),patch.object(pipeline,'Node',side_effect=lambda **kw:kw),patch.object(launch_file,'TimerAction',side_effect=lambda **kw:kw):
                 actions,_,_,_=launch_file.BUILDERS[kind](settings)
                 self.assertTrue(actions)
+
+    def test_ekf_on_receiver_pvt_uses_every_solution_status(self):
+        root=pathlib.Path(__file__).resolve().parents[1]
+        def ekf(**overrides):
+            settings=self.resolve(pipeline='ekf',rover_source='file://rover.ubx',
+                base_source='file://base.rtcm3',base_position='35,139,100',**overrides)
+            with patch.object(pipeline,'config',side_effect=lambda name:str(root/'config'/name)),patch.object(pipeline,'executable_available',return_value=True),patch.object(pipeline,'Node',side_effect=lambda **kw:kw),patch.object(launch_file,'TimerAction',side_effect=lambda **kw:kw):
+                actions,rows,_,_=launch_file.BUILDERS['ekf'](settings)
+            node=next(a for a in actions if isinstance(a,dict) and a.get('executable')=='gnss_imu_kalman_filter')
+            merged={}
+            for block in evaluate_parameters(LaunchContext(),normalize_parameters(node['parameters'])):
+                merged.update(block)
+            return merged,node['parameters'][-1],rows
+        merged,override,rows=ekf(ekf_solution_source='receiver')
+        self.assertEqual(merged['gnss.update_mode'],'all')
+        self.assertIn(('update mode:','gnss.update_mode all','ekf_solution_source receiver'),rows)
+        merged,override,_=ekf(ekf_solution_source='rtk')
+        self.assertNotIn('gnss.update_mode',override)
+        self.assertEqual(merged['gnss.update_mode'],'fix_float')  # packaged YAML
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/'ekf.yaml'
+            path.write_text('gnss_imu_kalman_filter:\n  ros__parameters: {gnss: {update_mode: fix_only}}\n')
+            merged,override,_=ekf(ekf_solution_source='receiver',params_file=str(path))
+        self.assertNotIn('gnss.update_mode',override)
+        self.assertEqual(merged['gnss.update_mode'],'fix_only')
 
     def test_terminal_ctrl_c_reaches_the_recorder_once(self):
         # A terminal Ctrl-C signals the whole process group and launch forwards a

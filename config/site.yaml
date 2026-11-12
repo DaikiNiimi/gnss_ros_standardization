@@ -34,7 +34,9 @@ run:
 
   # pipeline ekf only - where the EKF's GNSS solution comes from:
   #   rtk       also run real_time_kinematic and feed the EKF its solution
-  #   receiver  feed the EKF the receiver's own PVT; needs no base at all
+  #   receiver  feed the EKF the receiver's own PVT; needs no base at all. The
+  #             EKF then uses every solution status (gnss.update_mode: all)
+  #             unless estimator.params_file is given.
   ekf_solution_source: rtk
 
   # true = start no receiver nodes; `ros2 bag play` feeds the estimator. For
@@ -42,16 +44,19 @@ run:
   # gnss_imu_fgo / ekf.
   replay: false
 
-  # Run the gnss_visualizer dashboard alongside.
+  # Run the gnss_visualizer dashboard alongside (http://127.0.0.1:8765/).
   visualize: false
 
 rover:
   # ubx | sbf | novatel | rtcm
   receiver: ubx
 
-  # decoder = passive; take the receiver exactly as it is already configured.
-  # driver  = send configuration commands on startup, from the receiver's YAML
-  #           in this directory (ubx_driver.yaml / sbf_driver.yaml / ...).
+  # decoder = sends no commands; use it for files, one-way streams, and
+  #           receivers another program controls.
+  # driver  = owns the two-way link; applies the receiver's YAML in this
+  #           directory (ubx_driver.yaml / sbf_driver.yaml / ...) on startup, or,
+  #           with configure_on_startup: false in that YAML, leaves the settings
+  #           alone and only requests the stored ephemerides once.
   mode: decoder
 
   # RTKLIB stream URI: serial:// tcpcli:// tcpsvr:// ntrip:// file://
@@ -91,9 +96,15 @@ base:
   # the receiver's PVT; every other pipeline needs it.
   #
   # ${VAR} and $VAR are expanded from the environment, so credentials need not
-  # be written here. An unset or empty variable is a startup error, not a
-  # silently broken URI. Export them once, e.g. in ~/.bashrc:
+  # be written here, and the node resolves them itself, so they do not appear
+  # in ROS parameters. An unset or empty variable is a startup error, not a
+  # silently broken URI. Keep them in a private file (chmod 600) and source it
+  # in the terminal that runs the launch:
   #     export NTRIP_USER=... NTRIP_PASSWORD=... NTRIP_CASTER=... NTRIP_MOUNTPOINT=...
+  #
+  # An ntrip:// source is sent the rover's receiver position as GGA every 5 s,
+  # which casters that pick the base from the rover position (ichimill, VRS)
+  # require before they send anything.
   source: ""
   # source: "ntrip://${NTRIP_USER}:${NTRIP_PASSWORD}@${NTRIP_CASTER}:2101/${NTRIP_MOUNTPOINT}"
 
@@ -141,17 +152,17 @@ estimator:
   #
   # An error here translates the entire trajectory, so a pipeline refuses to
   # start if neither this nor the estimator YAML gives a usable position.
-  # "rtcm" is not a valid type: RTCM 1005/1006 station information is parsed but
-  # never republished to topics, so it would leave the position at zero.
-  base_position: []          # [lat_deg, lon_deg, height_m] or ECEF [x, y, z]
-  base_position_type: ""     # llh | ecef
-
-  # IMU body to GNSS antenna, metres. Leave empty to use the estimator YAML.
   #
-  # NOTE the frame differs by estimator: gnss_imu_fgo takes FLU (x forward,
-  # y left, z up) and the EKF takes FRD (x forward, y right, z down), so the
-  # same physical offset has y and z negated between them. If you run both from
-  # one site file, leave this empty and set each estimator's own YAML instead.
+  # "rtcm" takes the position from the rtcm base stream (RTCM 1005/1006) and
+  # follows base station changes (ichimill, VRS); leave base_position empty.
+  # rtk pipeline (and ekf on rtk) only.
+  base_position: []          # [lat_deg, lon_deg, height_m] or ECEF [x, y, z]
+  base_position_type: ""     # llh | ecef | rtcm
+
+  # IMU body to GNSS antenna, metres, in the IMU body axes after
+  # imu_orientation (the same value for gnss_imu_fgo and the EKF). Leave empty
+  # to use the estimator YAML. The EKF applies it only with
+  # output_reference_frame=imu.
   lever_arm: []
 
 relay:

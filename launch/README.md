@@ -33,6 +33,8 @@ base:
 ```
 
 - `${VAR}` / `$VAR` are taken from the environment; an unset variable is an error.
+  Variables in a stream URI are resolved by the node, so their values do not appear
+  in ROS parameters.
 - `config/site.local.yaml` (git-ignored) is used instead of `config/site.yaml` when
   it exists. Other setups go in `config/site_<name>.yaml` and are selected with
   `site:=<name>`.
@@ -43,8 +45,10 @@ base:
 
 ## Receivers
 
-`rover.mode` / `base.mode`: `decoder` reads the receiver as configured, `driver`
-configures it from [`config/<receiver>_driver.yaml`](../config/).
+`rover.mode` / `base.mode`: `decoder` sends no commands (files, one-way streams, receivers
+another program controls); `driver` owns the two-way link and applies
+[`config/<receiver>_driver.yaml`](../config/) on startup, or with `configure_on_startup: false`
+leaves the settings alone and only requests the stored ephemerides once.
 
 | `receiver` | Executables | Example `source` |
 |---|---|---|
@@ -57,12 +61,20 @@ Sources are stream URIs (`serial://`, `tcpcli://`, `tcpsvr://`, `ntrip://`, `fil
 see [decoders](../src/decoders/README.md#stream-uri-stream_path). A `file://` source
 replays a recorded receiver log.
 
+An `ntrip://` base sends the rover's receiver solution (`/gnss/nmea_solution`) to the
+caster as GGA every 5 s, as services such as ichimill and VRS require
+([details](../src/decoders/README.md#ntrip-services-that-need-the-rover-position-gga)).
+With `rovers:`, the first rover that is not `rtcm` is reported.
+
 ## Topics
 
 | Role | Observations | Ephemerides | Receiver solution | Raw IMU |
 |---|---|---|---|---|
 | Rover | `/gnss/observation` | `/gnss/ephemeris` | `/gnss/nmea_solution` | `/gnss/imu/data_raw` |
 | Base | `/base/gnss/observation` | `/base/gnss/ephemeris` | `/base/gnss/nmea_solution` | — |
+
+An `rtcm` base also publishes its station records (position, antenna) on
+`/base/gnss/station`, which are recorded with it.
 
 Base ephemerides are recorded but not used; `base.merge_ephemeris: true` publishes
 them on `/gnss/ephemeris` (for a rover without navigation data). The estimator
@@ -86,7 +98,7 @@ Each argument overrides one site key for a single run (`--show-args` lists them)
 | `use_imu` | `imu.enabled` | publish `/gnss/imu/data_raw` |
 | `use_gps_timestamp` | `imu.use_gps_timestamp` | GNSS time (UTC) header stamps |
 | `params_file` | `estimator.params_file` | estimator YAML (default: the packaged one) |
-| `base_position`, `base_position_type` | `estimator.base_position`, `estimator.base_position_type` | base position `"lat,lon,height"` (`llh`) or ECEF (`ecef`) |
+| `base_position`, `base_position_type` | `estimator.base_position`, `estimator.base_position_type` | base position `"lat,lon,height"` (`llh`) or ECEF (`ecef`); `rtcm` = from the base stream (rtk only) |
 | `lever_arm` | `estimator.lever_arm` | IMU to antenna, metres |
 | `relay_port` | `relay.port` | on-chip RTK correction port (`0`: 5556 ubx, 5557 sbf, 5558 novatel) |
 | `novatel_relay_output` | `relay.novatel_output` | NovAtel dedicated correction port device |
@@ -152,6 +164,14 @@ Both need `base.source` and a base position (from the estimator YAML or
 `estimator.base_position`). The [config/ppc/](../config/ppc/) files reproduce the
 PPC dataset settings.
 
+With an `rtcm` base, `rtk` can take the base position from the stream itself
+(RTCM 1005/1006), following base station changes:
+
+```yaml
+estimator:
+  base_position_type: rtcm
+```
+
 ## `gnss_imu_fgo` and EKF
 
 ```bash
@@ -161,7 +181,8 @@ ros2 launch gnss_ros_standardization pipeline.launch.py pipeline:=ekf ekf_soluti
 ```
 
 `ekf_solution_source: rtk` runs RTK and feeds its solution to the EKF;
-`receiver` uses the receiver's own solution and needs no base.
+`receiver` uses the receiver's own solution and needs no base; the EKF then uses every
+solution status (`gnss.update_mode: all`) unless an estimator params file is given.
 
 Raw IMU messages enabled on the receiver (`driver` mode does this automatically):
 

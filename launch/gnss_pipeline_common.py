@@ -187,9 +187,8 @@ def config(name):
 def executable_available(name):
     """True when `name` was actually built into this install.
 
-    `gnss_visualizer` builds only with OpenCV/cv_bridge/image_transport, and the
-    FGO nodes only with -DBUILD_FGO_NODES=ON, so a pipeline has to be
-    able to ask before it adds the node.
+    The FGO nodes build only with -DBUILD_FGO_NODES=ON, so a pipeline has to
+    be able to ask before it adds the node.
     """
     return os.path.isfile(os.path.join(get_package_prefix(PACKAGE), 'lib', PACKAGE, name))
 
@@ -214,6 +213,13 @@ SITE_SCHEMA = {
     'relay': ('port', 'novatel_output'),
     'record': ('enabled', 'output', 'storage', 'compress'),
 }
+
+# Site keys holding stream URIs. They are expanded here for validation, but a
+# node receives the original text and resolves the variables itself, so that
+# credentials never become ROS parameters (a launch params file, the parameter
+# services, /parameter_events).
+STREAM_URI_KEYS = {'rover.source', 'base.source', 'rovers.source', 'relay.novatel_output'}
+_STREAM_REFERENCES = {}
 
 _ENV_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)')
 
@@ -315,7 +321,10 @@ def _expand_site(node, path, trail=''):
     if isinstance(node, list):
         return [_expand_site(v, path, trail) for v in node]
     if isinstance(node, str):
-        return expand_env(node, '{} key "{}"'.format(path, trail))
+        expanded = expand_env(node, '{} key "{}"'.format(path, trail))
+        if trail in STREAM_URI_KEYS and expanded != node:
+            _STREAM_REFERENCES[expanded] = node
+        return expanded
     return node
 
 
@@ -685,17 +694,21 @@ def _dotted(params, dotted_key):
     return params.get(first)
 
 
-def validate_base_position(pos, postype, origin, allow_zero_llh=False):
-    """Reject the two ways a base position silently ruins a whole trajectory."""
-    require(postype != 'rtcm',
-            'base position type is "rtcm" ({}), which cannot work in this '
-            'architecture: RTCM 1005/1006 station information is parsed by '
-            'rtcm_decoder_node but never republished to topics, and '
-            'GnssObservations carries no station position, so the base position '
-            'would stay at zero and translate the whole trajectory. Set an '
-            'explicit llh or ecef position instead.'.format(origin))
+def validate_base_position(pos, postype, origin, allow_zero_llh=False, allow_rtcm=False):
+    """Reject the two ways a base position silently ruins a whole trajectory.
+
+    `rtcm` takes the position from the base stream's station records instead
+    (RTCM 1005/1006, published by rtcm_decoder_node); only the RTK estimator
+    follows them.
+    """
+    if postype == 'rtcm':
+        require(allow_rtcm,
+                'base position type "rtcm" ({}) is supported by the RTK estimator '
+                'only (pipeline rtk, or ekf with ekf_solution_source rtk). '
+                'gnss_fgo and gnss_imu_fgo need an llh or ecef base position.'.format(origin))
+        return
     require(postype in ('llh', 'ecef'),
-            'base position type "{}" ({}) must be "llh" or "ecef"'.format(postype, origin))
+            'base position type "{}" ({}) must be "llh", "ecef" or "rtcm"'.format(postype, origin))
     require(pos is not None, "base position is missing ({})".format(origin))
     values = parse_triplet(pos, "base position ({})".format(origin))
     if postype == 'llh':
@@ -741,7 +754,14 @@ def resolve_estimator_deployment(kind, settings, own_params_file=True):
         'lever_arm': None,
         'lever_arm_source': None,
         'lever_arm_value': None,
+        'gnss_update_mode': None,
     }
+
+    # A receiver without corrections reports only standalone solutions, which
+    # the packaged fix_float setting would never use. A user params file decides.
+    if (kind == 'ekf' and settings.get('ekf_solution_source') == 'receiver'
+            and not use_settings_file):
+        out['gnss_update_mode'] = 'all'
 
     if spec['base_keys'] is not None:
         postype_key, pos_key = spec['base_keys']
@@ -761,8 +781,19 @@ def resolve_estimator_deployment(kind, settings, own_params_file=True):
                 out['base_position_type'] = settings['base_position_type']
                 postype = settings['base_position_type']
                 origin = '{} + {}'.format(yaml_label, settings.source('base_position_type'))
+        if postype == 'rtcm':
+            require(kind == 'rtk' and settings.get('base_receiver') == 'rtcm',
+                    'base position type "rtcm" ({}) needs base.receiver rtcm: only '
+                    'rtcm_decoder_node publishes RTCM station records'.format(origin))
+            require(not settings.specified('base_position'),
+                    'base_position is set ({}) but base_position_type is "rtcm", '
+                    'which takes the position from the base stream - remove one'
+                    .format(settings.source('base_position')))
+            pos = None
+            out['base_position_type'] = 'rtcm'
         validate_base_position(pos, postype, origin,
-                               allow_zero_llh=settings.specified('base_position'))
+                               allow_zero_llh=settings.specified('base_position'),
+                               allow_rtcm=kind == 'rtk')
         out['base_position_value'] = pos
         out['base_position_source'] = origin
 
@@ -803,6 +834,7 @@ def topic_map(role, merge_base_ephemeris=False, name=None):
             'observation': prefix + '/gnss/observation',
             'ephemeris': prefix + '/gnss/ephemeris',
             'solution': prefix + '/gnss/nmea_solution',
+            'station': prefix + '/gnss/station',
             'imu_raw': prefix + '/gnss/imu/data_raw',
             'imu': prefix + '/gnss/imu/data',
             'frame_id': '{}_gnss_link'.format(name) if name else 'gnss_link',
@@ -814,6 +846,7 @@ def topic_map(role, merge_base_ephemeris=False, name=None):
         # no navigation data of its own.
         'ephemeris': '/gnss/ephemeris' if merge_base_ephemeris else '/base/gnss/ephemeris',
         'solution': '/base/gnss/nmea_solution',
+        'station': '/base/gnss/station',
         'imu_raw': '/base/gnss/imu/data_raw',
         'imu': '/base/gnss/imu/data',
         'frame_id': 'base_gnss_link',
@@ -873,7 +906,7 @@ def stream_consumers(settings, has_base, estimator_topic=''):
         consumers[rover['imu_raw']] += 1
     if on_receiver_pvt:
         consumers[rover['solution']] += 1
-    if settings.get('visualize') and executable_available('gnss_visualizer'):
+    if settings.get('visualize'):
         if settings.rovers:
             named = topic_map('rover', name=settings.rovers[0]['name'])
             shown = [named['observation'], named['ephemeris'], named['solution']]
@@ -886,7 +919,8 @@ def stream_consumers(settings, has_base, estimator_topic=''):
         for topic in record_topics(with_base=has_base, with_imu=settings.get('use_imu'),
                                    estimator_topic=estimator_topic,
                                    merge_base_ephemeris=settings.get('merge_base_ephemeris'),
-                                   rovers=settings.rovers, estimator_kind=kind):
+                                   rovers=settings.rovers, estimator_kind=kind,
+                                   base_station=has_base and settings.get('base_receiver') == 'rtcm'):
             consumers[topic] += 1
     return consumers
 
@@ -942,12 +976,15 @@ def load_params_dict(params_file, node_name=None, namespace=''):
 def receiver_node(role, receiver, mode, source, params_file='', relay_listen='',
                   relay_forward='', use_imu=False, use_gps_timestamp=None,
                   merge_base_ephemeris=False, novatel_relay_output='', name=None,
-                  reference_time=None):
+                  reference_time=None, gga_topic=''):
     """Build the driver or decoder node for one role.
 
     Only parameters the chosen executable actually declares are emitted, because
     the four decoders do not share a parameter surface: `rtcm_decoder_node`
     declares six parameters and has no frame_id, solution or IMU topics at all.
+
+    `gga_topic` is the rover position an rtcm base reports to its NTRIP caster
+    (see gga_topic_for); it is wired only for an ntrip:// source.
     """
     validate_receiver(receiver, mode, role)
     require(bool(source),
@@ -963,7 +1000,9 @@ def receiver_node(role, receiver, mode, source, params_file='', relay_listen='',
         'topics.ephemeris': topics['ephemeris'],
     }
 
-    if receiver != 'rtcm':
+    if receiver == 'rtcm':
+        params['topics.station'] = topics['station']
+    else:
         params['frame_id'] = topics['frame_id']
         params['topics.solution'] = topics['solution']
         params['topics.imu_raw'] = topics['imu_raw']
@@ -1005,6 +1044,15 @@ def receiver_node(role, receiver, mode, source, params_file='', relay_listen='',
                 'relay_forward is an rtcm_decoder_node feature (it forwards the '
                 'raw source bytes on); got receiver "{}"'.format(receiver))
         params['rtcm_output.destination'] = relay_forward
+
+    # Casters that pick the base from the rover position (ichimill, VRS) send
+    # nothing without a GGA; a fixed-mountpoint caster simply ignores it.
+    if gga_topic and receiver == 'rtcm' and params['stream_path'].startswith('ntrip://'):
+        params['gga.solution_topic'] = gga_topic
+
+    for key in ('stream_path', 'rtcm_input.receiver_stream'):
+        if key in params:
+            params[key] = _STREAM_REFERENCES.get(params[key], params[key])
 
     if name:
         # One of several rovers: its own namespace, so two receivers of the same
@@ -1074,9 +1122,13 @@ def estimator_node(kind, deployment, gnss_solution_topic=None):
             params[pos_key] = list(deployment['base_position'])
         if deployment['base_position_type'] is not None:
             params[postype_key] = deployment['base_position_type']
+        if deployment['base_position_type'] == 'rtcm':
+            params['topics.base_station'] = base['station']
 
     if spec['needs_imu'] and deployment['lever_arm'] is not None:
         params['lever_arm'] = list(deployment['lever_arm'])
+    if deployment.get('gnss_update_mode') is not None:
+        params['gnss.update_mode'] = deployment['gnss_update_mode']
 
     parameters = [load_params_dict(deployment['params_file'], executable), params]
     return Node(package=PACKAGE, executable=executable, name=executable,
@@ -1084,10 +1136,8 @@ def estimator_node(kind, deployment, gnss_solution_topic=None):
 
 
 def visualizer_node(sol_topic=SOLUTION_TOPIC, obs_topic='/gnss/observation',
-                    nav_topic='/gnss/ephemeris'):
-    """The dashboard node, or None when it was not built."""
-    if not executable_available('gnss_visualizer'):
-        return None
+                    nav_topic='/gnss/ephemeris', imu_topic='/gnss/imu/data_raw'):
+    """The dashboard node."""
     return Node(
         package=PACKAGE, executable='gnss_visualizer', name='gnss_visualizer',
         output='screen',
@@ -1095,6 +1145,7 @@ def visualizer_node(sol_topic=SOLUTION_TOPIC, obs_topic='/gnss/observation',
             'topics.observation': obs_topic,
             'topics.ephemeris': nav_topic,
             'topics.solution': sol_topic,
+            'topics.imu': imu_topic,
         }])
 
 
@@ -1103,8 +1154,13 @@ def visualizer_node(sol_topic=SOLUTION_TOPIC, obs_topic='/gnss/observation',
 # --------------------------------------------------------------------------
 
 def record_topics(with_base=False, with_imu=False, estimator_topic='',
-                  merge_base_ephemeris=False, rovers=None, estimator_kind=""):
-    """The topic list a pipeline records, built from what is actually running."""
+                  merge_base_ephemeris=False, rovers=None, estimator_kind="",
+                  base_station=False):
+    """The topic list a pipeline records, built from what is actually running.
+
+    `base_station`: the base is an RTCM stream, which also publishes station
+    records (position, antenna) that make its observations reusable later.
+    """
     if rovers:
         topics = []
         for rover in rovers:
@@ -1120,6 +1176,8 @@ def record_topics(with_base=False, with_imu=False, estimator_topic='',
     if with_base:
         base = topic_map('base', merge_base_ephemeris)
         topics += [base['observation']]
+        if base_station:
+            topics.append(base['station'])
         if not merge_base_ephemeris:
             topics.append(base['ephemeris'])
     if estimator_topic:
@@ -1182,7 +1240,7 @@ ARGUMENTS = [
      'Skip the receiver nodes and let `ros2 bag play` feed the estimator. '
      '[site: run.replay]'),
     ('visualize', '',
-     'Run gnss_visualizer. Skipped with a log line when it was not built. '
+     'Run gnss_visualizer, the live dashboard shown in a web browser. '
      '[site: run.visualize]'),
 
     # the receivers
@@ -1365,11 +1423,15 @@ def estimator_summary_rows(deployment):
     rows = [('config:', os.path.basename(deployment['params_file']),
              deployment['params_file_source'])]
     if deployment['base_position_source'] is not None:
-        rows.append(('base position:', triplet(deployment['base_position_value'] or []),
-                     deployment['base_position_source']))
+        value = ('from RTCM 1005/1006' if deployment['base_position_type'] == 'rtcm'
+                 else triplet(deployment['base_position_value'] or []))
+        rows.append(('base position:', value, deployment['base_position_source']))
     if deployment['lever_arm_source'] is not None:
         rows.append(('lever arm:', triplet(deployment['lever_arm_value'] or [0.0, 0.0, 0.0]),
                      deployment['lever_arm_source']))
+    if deployment.get('gnss_update_mode') is not None:
+        rows.append(('update mode:', 'gnss.update_mode ' + deployment['gnss_update_mode'],
+                     'ekf_solution_source receiver'))
     return rows
 
 
@@ -1381,6 +1443,14 @@ def base_reference_time(settings):
                 'base reference_tow is set without reference_week')
         return None
     return int(week), float(settings.get('base_reference_tow') or 0.0)
+
+
+def gga_topic_for(receiver, name=None):
+    """The rover position topic an NTRIP base reports as GGA, or '' if none.
+
+    An rtcm rover has no position of its own to report.
+    """
+    return '' if receiver == 'rtcm' else topic_map('rover', name=name)['solution']
 
 
 def source_nodes(settings, relay_listen='', relay_forward='',
@@ -1422,7 +1492,8 @@ def source_nodes(settings, relay_listen='', relay_forward='',
             relay_forward=relay_forward, reference_time=base_reference_time(settings),
             use_gps_timestamp=(settings['use_gps_timestamp']
                                if settings.specified('use_gps_timestamp') or settings.get('use_gps_timestamp') else None),
-            merge_base_ephemeris=settings.get('merge_base_ephemeris')))
+            merge_base_ephemeris=settings.get('merge_base_ephemeris'),
+            gga_topic=gga_topic_for(receiver)))
     return nodes, has_base
 
 
@@ -1442,12 +1513,15 @@ def _multi_rover_nodes(settings):
 
     # One base for everyone: it is the same correction stream, and a second
     # login to the same NTRIP mountpoint is often refused by the caster anyway.
+    # Its GGA reports the first rover that has a position of its own.
     has_base = bool(settings.get('base_source'))
     if has_base:
+        gga_topic = next((gga_topic_for(rover['receiver'], rover['name'])
+                          for rover in settings.rovers if rover['receiver'] != 'rtcm'), '')
         nodes.append(receiver_node(
             'base', settings.get('base_receiver'), 'decoder',
             settings.get('base_source'), use_gps_timestamp=gps_ts,
-            reference_time=base_reference_time(settings)))
+            reference_time=base_reference_time(settings), gga_topic=gga_topic))
     return nodes, has_base
 
 
@@ -1463,18 +1537,13 @@ def tail_actions(settings, has_base, estimator_topic=''):
             named = topic_map('rover', name=first)
             node = visualizer_node(sol_topic=named['solution'],
                                    obs_topic=named['observation'],
-                                   nav_topic=named['ephemeris'])
-            if node is not None:
-                actions.append(LogInfo(msg='gnss_visualizer shows rover "{}" - the '
-                                           'first in the rovers list.'.format(first)))
+                                   nav_topic=named['ephemeris'],
+                                   imu_topic=named['imu_raw'])
+            actions.append(LogInfo(msg='gnss_visualizer shows rover "{}" - the '
+                                       'first in the rovers list.'.format(first)))
         else:
             node = visualizer_node(sol_topic=estimator_topic or topic_map('rover')['solution'])
-        if node is None:
-            actions.append(LogInfo(msg='gnss_visualizer is not in this install '
-                                       '(it needs OpenCV, cv_bridge and '
-                                       'image_transport) - skipping it.'))
-        else:
-            actions.append(node)
+        actions.append(node)
 
     if settings.get('record'):
         bag_out = settings.get('bag_out') or default_bag_name(settings['pipeline'])
@@ -1483,7 +1552,8 @@ def tail_actions(settings, has_base, estimator_topic=''):
                                estimator_topic=estimator_topic,
                                merge_base_ephemeris=settings.get('merge_base_ephemeris'),
                                rovers=settings.rovers,
-                               estimator_kind=settings["pipeline"])
+                               estimator_kind=settings["pipeline"],
+                               base_station=has_base and settings.get('base_receiver') == 'rtcm')
         actions.append(LogInfo(msg='Recording {} topic(s) to {}'.format(
             len(topics), bag_out)))
         actions.append(record_action(topics, bag_out,

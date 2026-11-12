@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from gnss_pipeline_common import (  # noqa: E402
     EKF_SOLUTION_TOPIC, RECEIVERS, SOLUTION_TOPIC, PipelineError, config,
-    base_reference_time, estimator_node, estimator_summary_rows, launch_arguments, receiver_node,
+    base_reference_time, estimator_node, gga_topic_for, estimator_summary_rows, launch_arguments, receiver_node,
     playback_actions, require, resolve_estimator_deployment, resolve_settings, source_nodes,
     stream_consumers, summary_actions, tail_actions, take_playbacks, topic_map,
 )
@@ -178,7 +178,8 @@ def build_onboard_rtk(settings):
         relay_forward='tcpcli://127.0.0.1:{}'.format(port),
         use_gps_timestamp=gps_ts,
         merge_base_ephemeris=settings.get('merge_base_ephemeris'),
-        reference_time=base_reference_time(settings))
+        reference_time=base_reference_time(settings),
+        gga_topic=gga_topic_for(receiver))
 
     actions = [
         rover,
