@@ -71,11 +71,16 @@ jobs:
           ASAN_OPTIONS=detect_leaks=1 /tmp/protocol-test
 
   fgo:
+    name: FGO (${{ matrix.ros_distro }})
     env:
       MAKEFLAGS: -j2
       CMAKE_BUILD_PARALLEL_LEVEL: 2
     runs-on: ubuntu-24.04
-    container: osrf/ros:jazzy-desktop
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distro: [humble, jazzy]
+    container: osrf/ros:${{ matrix.ros_distro }}-desktop
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,7 +89,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y libeigen3-dev libboost-all-dev curl
-          . /opt/ros/jazzy/setup.sh
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
           rosdep update
           rosdep install --from-paths . --ignore-src -r -y
       - name: Build pinned GTSAM
@@ -92,13 +97,13 @@ jobs:
           bash cmake/build_fgo_dependency.sh /tmp/fgo-dependency 2
       - name: Build and test FGO
         run: |
-          . /opt/ros/jazzy/setup.sh
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
           colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_FGO_NODES=ON -DGTSAM_DIR=/tmp/fgo-dependency/install/lib/cmake/GTSAM
           . install/setup.sh
           colcon test --packages-select gnss_ros_standardization
           colcon test-result --verbose
       - name: Installed C++ and Python consumer with FGO build
         run: |
-          . /opt/ros/jazzy/setup.sh
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
           . install/setup.sh
           bash test/check_install.sh "$PWD/install/gnss_ros_standardization"

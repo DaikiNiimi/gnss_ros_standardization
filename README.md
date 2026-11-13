@@ -151,9 +151,10 @@ ros2 bag play /path/to/PPC-Dataset-ROS2/bags/tokyo_run1
 | Using the installed package from another package | [installed API](docs/INSTALLED_API.md) |
 | Tests | [tests](test/README.md) |
 | ROS 2 bags of the PPC dataset | [dataset](#dataset) |
+| Questions, issues and pull requests | [contributing](CONTRIBUTING.md) |
 
 ## License
 
 MIT, see [LICENSE](LICENSE) (includes the RTKLIB notice, and a BSD-3-Clause notice
-for the parts of `src/positioning/fgo` derived from inuex35/tightly-coupled-gnss-imu-fgo).
+for the parts of `src/positioning/fgo` developed based on inuex35/tightly-coupled-gnss-imu-fgo).
 GTSAM, when used, has its own license. Maintainer: Daiki Niimi (`daiki.niimi@ruri.waseda.jp`).

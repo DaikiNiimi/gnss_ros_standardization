@@ -21,7 +21,7 @@ BIN=pathlib.Path(args.bin_dir).resolve()
 resource.setrlimit(resource.RLIMIT_CORE,(0,0))
 
 PUBLIC = [ROOT / name for name in (
-    'README.md', 'docs/TOPIC_DATA_CONTRACT.md', 'docs/PARAMETER_NAMES.md',
+    'README.md', 'CONTRIBUTING.md', 'docs/TOPIC_DATA_CONTRACT.md', 'docs/PARAMETER_NAMES.md',
     'docs/INSTALLED_API.md', 'msg/README.md', 'test/README.md')]
 
 PUBLIC += list((ROOT / 'src/positioning').rglob('README.md'))
