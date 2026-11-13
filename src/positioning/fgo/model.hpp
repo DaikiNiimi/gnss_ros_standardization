@@ -46,7 +46,6 @@ struct Config {
   std::array<bool, 2> snrmask_enable{false, false};
   std::array<std::array<double, 9>, 3> snrmask{};
   double snr_ref_dbhz = 42.0;
-  int varerr_enable = 1;
   double err_a = 0.001;
   double err_b = 0.001;
   double err_eratio_pr = 100.0;
@@ -55,46 +54,25 @@ struct Config {
   double fde_cp = 0.5;
   double fde_max_frac = 0.5;
   int fde_enable = 1;
-  int ddpr_sanity_enable = 1;
-  double sanity_pose_replace_thresh = 5.0;
   double varholdamb = 0.001;
   double pim_break_trans_sigma = 1.0;
   double thres_slip = 0.15;
-  int doppler_adaptive_sigma = 1;
   double doppler_fde_k = 4.0;
-  int doppler_snr_weight = 1;
-  int doppler_require_dd = 1;
   double doppler_sd_sigma = 0.5;
   double doppler_huber = 1.0;
   int min_dd_for_solve = 4;
   double propagate_pose_sigma = 1.0;
   double propagate_vel_sigma = 1.0;
   double propagate_bias_sigma = 0.1;
-  int recov_cp_hold = 5;
-  double sanity_max_median_ratio = 5.0;
-  int sanity_max_median_min_sats = 6;
-  double main_ddpr_res_thresh = 3.0;
-  int ddpr_sanity_persist = 3;
   double ddpr_max_res = 2.0;
-  double main_ddpr_res_catastrophic = 15.0;
-  double ddpr_fast_worst_sat_min = 30.0;
   double per_sat_res_thresh = 3.0;
-  double gravity = 9.81;
   double imu_integ_cov = 0.001;
-  double accel_noise = 0.00284;
-  double gyro_noise = 0.00401;
+  double accel_noise = 6e-4;
+  double gyro_noise = 2e-4;
   double accel_bias_sigma = 0.000314;
-  double gyro_bias_sigma = 9.7e-06;
-  double bias_between_acc_sigma = 0.0003;
-  double bias_between_gyro_sigma = 3e-05;
-  double bias_prior_acc_sigma = 0.003;
-  double bias_prior_gyro_sigma = 0.0003;
-  int bias_prior_mode = 2;
+  double gyro_bias_sigma = 2.4e-6;
   double init_pitch_deg = std::numeric_limits<double>::quiet_NaN();
   int ar_mode = 3;
-  int ar_starve_reset = 50;
-  double ar_starve_max_res = 2.0;
-  double ar_gdop_max = 8.0;
   double ar_thresar = 3.0;
   int ar_minfixsats = 4;
   int exclude_bds_geo = 1;
@@ -111,12 +89,8 @@ struct Config {
   double zupt_max_acc_std = 0.55;
   double zupt_max_gyro_std = 0.03;
   double zupt_max_gyro_median = 0.02;
-  double zupt_g_dev_thr = 0.0;
   int zupt_min_samples = 5;
-  double zupt_sigma_zero_velocity = 0.5;
-  double zupt_sigma_zero_rotation = 0.01;
-  double zupt_anchor_sigma_translation = 1.0;
-  double zupt_anchor_sigma_rotation = 0.1;
+  double zupt_sigma_zero_velocity = 0.05;
   double fls_lag = 1.0;
   int isam2_relinearize_skip = 10;
   double isam2_relinearize_threshold = 0.05;
@@ -132,9 +106,6 @@ struct Config {
     check(el_mask_deg, "el_mask_deg", false);
     check(elmin_deg, "elmin_deg", false);
     check(snr_ref_dbhz, "snr_ref_dbhz", false);
-    check(varerr_enable, "varerr_enable", false);
-    if (varerr_enable > 1)
-      throw std::invalid_argument("varerr_enable must be 0 or 1");
     check(err_a, "err_a", false);
     check(err_b, "err_b", false);
     check(err_eratio_pr, "err_eratio_pr", false);
@@ -145,55 +116,26 @@ struct Config {
     check(fde_enable, "fde_enable", false);
     if (fde_enable > 1)
       throw std::invalid_argument("fde_enable must be 0 or 1");
-    check(ddpr_sanity_enable, "ddpr_sanity_enable", false);
-    if (ddpr_sanity_enable > 1)
-      throw std::invalid_argument("ddpr_sanity_enable must be 0 or 1");
-    check(sanity_pose_replace_thresh, "sanity_pose_replace_thresh", false);
     check(varholdamb, "varholdamb", true);
     check(pim_break_trans_sigma, "pim_break_trans_sigma", true);
     check(thres_slip, "thres_slip", false);
-    check(doppler_adaptive_sigma, "doppler_adaptive_sigma", true);
-    if (doppler_adaptive_sigma > 1)
-      throw std::invalid_argument("doppler_adaptive_sigma must be 0 or 1");
     check(doppler_fde_k, "doppler_fde_k", false);
-    check(doppler_snr_weight, "doppler_snr_weight", false);
-    if (doppler_snr_weight > 1)
-      throw std::invalid_argument("doppler_snr_weight must be 0 or 1");
-    check(doppler_require_dd, "doppler_require_dd", false);
-    if (doppler_require_dd > 1)
-      throw std::invalid_argument("doppler_require_dd must be 0 or 1");
     check(doppler_sd_sigma, "doppler_sd_sigma", false);
     check(doppler_huber, "doppler_huber", false);
     check(min_dd_for_solve, "min_dd_for_solve", false);
     check(propagate_pose_sigma, "propagate_pose_sigma", true);
     check(propagate_vel_sigma, "propagate_vel_sigma", true);
     check(propagate_bias_sigma, "propagate_bias_sigma", true);
-    check(recov_cp_hold, "recov_cp_hold", false);
-    check(sanity_max_median_ratio, "sanity_max_median_ratio", false);
-    check(sanity_max_median_min_sats, "sanity_max_median_min_sats", false);
-    check(main_ddpr_res_thresh, "main_ddpr_res_thresh", false);
-    check(ddpr_sanity_persist, "ddpr_sanity_persist", false);
     check(ddpr_max_res, "ddpr_max_res", false);
-    check(main_ddpr_res_catastrophic, "main_ddpr_res_catastrophic", false);
-    check(ddpr_fast_worst_sat_min, "ddpr_fast_worst_sat_min", false);
     check(per_sat_res_thresh, "per_sat_res_thresh", false);
-    check(gravity, "gravity", true);
     check(imu_integ_cov, "imu_integ_cov", true);
     check(accel_noise, "accel_noise", true);
     check(gyro_noise, "gyro_noise", true);
     check(accel_bias_sigma, "accel_bias_sigma", true);
     check(gyro_bias_sigma, "gyro_bias_sigma", true);
-    check(bias_between_acc_sigma, "bias_between_acc_sigma", true);
-    check(bias_between_gyro_sigma, "bias_between_gyro_sigma", true);
-    check(bias_prior_acc_sigma, "bias_prior_acc_sigma", true);
-    check(bias_prior_gyro_sigma, "bias_prior_gyro_sigma", true);
-    check(bias_prior_mode, "bias_prior_mode", false);
     if (!std::isnan(init_pitch_deg) && !std::isfinite(init_pitch_deg))
       throw std::invalid_argument("invalid initial pitch");
     check(ar_mode, "ar_mode", false);
-    check(ar_starve_reset, "ar_starve_reset", false);
-    check(ar_starve_max_res, "ar_starve_max_res", false);
-    check(ar_gdop_max, "ar_gdop_max", false);
     check(ar_thresar, "ar_thresar", true);
     check(ar_minfixsats, "ar_minfixsats", true);
     check(exclude_bds_geo, "exclude_bds_geo", false);
@@ -215,12 +157,8 @@ struct Config {
     check(zupt_max_acc_std, "zupt_max_acc_std", false);
     check(zupt_max_gyro_std, "zupt_max_gyro_std", false);
     check(zupt_max_gyro_median, "zupt_max_gyro_median", false);
-    check(zupt_g_dev_thr, "zupt_g_dev_thr", false);
     check(zupt_min_samples, "zupt_min_samples", true);
     check(zupt_sigma_zero_velocity, "zupt_sigma_zero_velocity", true);
-    check(zupt_sigma_zero_rotation, "zupt_sigma_zero_rotation", true);
-    check(zupt_anchor_sigma_translation, "zupt_anchor_sigma_translation", true);
-    check(zupt_anchor_sigma_rotation, "zupt_anchor_sigma_rotation", true);
     check(fls_lag, "fls_lag", true);
     check(isam2_relinearize_skip, "isam2_relinearize_skip", true);
     check(isam2_relinearize_threshold, "isam2_relinearize_threshold", true);
@@ -229,8 +167,6 @@ struct Config {
       throw std::invalid_argument("invalid observation/collection limits");
     if (ar_mode != 0 && ar_mode != 3)
       throw std::invalid_argument("pos2.armode must be 0 (off) or 3 (fix and hold)");
-    if (bias_prior_mode > 2)
-      throw std::invalid_argument("imu.bias_prior_mode must be 0, 1 or 2");
     for (const auto &band : snrmask)
       for (double v : band)
         check(v, "pos1.snrmask", false);
@@ -331,7 +267,7 @@ struct EpochState {
   std::set<SF> visible, seeded, consumed;
   std::map<SF, int> accepted;
   std::map<int, int> references;
-  bool finalized = false, cp_suppressed = false;
+  bool finalized = false;
   void finalize(SatelliteStates &states, bool fixed) {
     if (finalized)
       throw std::logic_error("epoch finalized twice");
@@ -366,7 +302,8 @@ struct Solution {
   std::string failure;
 };
 // One epoch of edited rover/base observations with satellite states
-// (Preprocessor::prepare output).
+// (Preprocessor::prepare output). A missing or edited code or carrier phase
+// is 0; a missing or edited Doppler is NaN (0 Hz is a valid Doppler).
 struct SatelliteObservation {
   int sat = 0, system = 0, prn = 0;
   double elevation = 0, sat_clock_drift = 0;
@@ -374,7 +311,8 @@ struct SatelliteObservation {
        sat_velocity = Vec3::Zero();
   Vec3 pr = Vec3::Zero(), pr_base = Vec3::Zero(), phase = Vec3::Zero(),
        phase_base = Vec3::Zero();
-  Vec3 doppler = Vec3::Zero(), snr = Vec3::Zero(), wavelength = Vec3::Zero();
+  Vec3 doppler = Vec3::Constant(std::numeric_limits<double>::quiet_NaN());
+  Vec3 snr = Vec3::Zero(), wavelength = Vec3::Zero();
   Vec3 doppler_wavelength = Vec3::Zero(), doppler_snr = Vec3::Zero();
   Eigen::Vector3i lli = Eigen::Vector3i::Zero();
 };
@@ -405,32 +343,52 @@ inline double ddSigma(const Config &c, bool code, double er, double ej,
                d = 299792458. * c.err_sclkstab * std::abs(dt);
   return std::sqrt(2. * (2. * (a * a + b * b / (sinel * sinel)) + d * d));
 }
-class NhcFactor final : public gtsam::NoiseModelFactor {
+// Mounting pitch angle theta [rad] of the vehicle travel axis in the IMU
+// frame: one constant scalar per IMU graph, estimated by the NHC.
+inline Key boreKey() { return gtsam::Symbol('m', 0); }
+// Non-holonomic constraint with the mounting pitch (pose, velocity, theta):
+// the vehicle moves along its travel axis, which may be pitched against the
+// IMU x axis. u = R^T v + omega x lever is the velocity of the constraint
+// point in the IMU frame; the vehicle-frame velocity is u_veh = Ry(-theta) u,
+// i.e. the travel axis in the IMU frame is Ry(theta) e_x = (cos theta, 0,
+// -sin theta): theta > 0 turns it from the IMU x axis towards -z. No yaw
+// angle: with the heading aligned to the direction of travel a yaw mounting
+// angle is not separable from the heading. Residual u_veh - (speed, 0, 0)
+// with sigmas (1e3, sigma_lat, sigma_vert): the forward component is free.
+// Pose/velocity Jacobians are those of the constraint without the angle
+// left-multiplied by Ry(-theta); the angle Jacobian is analytic.
+class NhcBoreFactor final : public gtsam::NoiseModelFactor {
 public:
   Vec3 omega, lever;
   double speed;
-  NhcFactor(Key pose, Key velocity, const Vec3 &w, const Vec3 &arm, double sp,
-            const Config &cfg)
-      : gtsam::NoiseModelFactor(
-            gtsam::noiseModel::Diagonal::Sigmas(
-                Vec3(1e3, cfg.nhc_sigma_lat, cfg.nhc_sigma_vert)),
-            gtsam::KeyVector{pose, velocity}),
+  NhcBoreFactor(Key pose, Key velocity, Key bore, const Vec3 &w,
+                const Vec3 &arm, double sp, double sigma_lat,
+                double sigma_vert)
+      : gtsam::NoiseModelFactor(gtsam::noiseModel::Diagonal::Sigmas(
+                                    Vec3(1e3, sigma_lat, sigma_vert)),
+                                gtsam::KeyVector{pose, velocity, bore}),
         omega(w), lever(arm), speed(sp) {}
   gtsam::Vector
   unwhitenedError(const gtsam::Values &values,
                   gtsam::OptionalMatrixVecType H = nullptr) const override {
     const Mat3 R = values.at<gtsam::Pose3>(keys_[0]).rotation().matrix();
-    const Vec3 v = R.transpose() * values.at<gtsam::Vector3>(keys_[1]);
+    const Vec3 vb = R.transpose() * values.at<gtsam::Vector3>(keys_[1]);
+    const double theta = values.at<double>(keys_[2]);
+    const double ct = std::cos(theta), st = std::sin(theta);
+    const Vec3 u = vb + omega.cross(lever);
+    Mat3 Ry; // Ry(-theta)
+    Ry << ct, 0, -st, 0, 1, 0, st, 0, ct;
     if (H) {
-      H->resize(2);
+      H->resize(3);
       (*H)[0] = gtsam::Matrix::Zero(3, 6);
-      (*H)[0].leftCols(3) = gtsam::skewSymmetric(v);
-      (*H)[1] = R.transpose();
+      (*H)[0].leftCols(3) = Ry * gtsam::skewSymmetric(vb);
+      (*H)[1] = Ry * R.transpose();
+      (*H)[2] = Vec3(-st * u.x() - ct * u.z(), 0, ct * u.x() - st * u.z());
     }
-    return v + omega.cross(lever) - Vec3(speed, 0, 0);
+    return Ry * u - Vec3(speed, 0, 0);
   }
   gtsam::NonlinearFactor::shared_ptr clone() const override {
-    return std::make_shared<NhcFactor>(*this);
+    return std::make_shared<NhcBoreFactor>(*this);
   }
 };
 class SdDopplerFactor final : public gtsam::NoiseModelFactor {
@@ -502,8 +460,68 @@ struct ImuSample {
   Vec3 acc = Vec3::Zero(), gyro = Vec3::Zero();
   std::optional<double> predecessor;
 };
-inline auto imuParams(const Config &c) {
-  auto p = gtsam::PreintegrationCombinedParams::MakeSharedU(c.gravity);
+// WGS84 ellipsoid and Earth rotation rate.
+constexpr double kWgs84A = 6378137., kWgs84F = 1. / 298.257223563,
+                 kWgs84E2 = kWgs84F * (2. - kWgs84F),
+                 kWgs84B = kWgs84A * (1. - kWgs84F),
+                 kWgs84GM = 3.986004418e14, kEarthRate = 7.2921151467e-5;
+// Geodetic latitude [rad], longitude [rad] and ellipsoidal height [m] of the
+// ECEF point p (WGS84).
+inline Vec3 geodeticWgs84(const Vec3 &p) {
+  const double r = p.head<2>().norm(), lon = std::atan2(p.y(), p.x());
+  double lat = std::atan2(p.z(), r * (1. - kWgs84E2)), h = 0;
+  for (int i = 0; i < 10; ++i) {
+    const double s = std::sin(lat),
+                 n = kWgs84A / std::sqrt(1. - kWgs84E2 * s * s);
+    h = std::abs(lat) < M_PI / 4 ? r / std::cos(lat) - n
+                                 : p.z() / s - n * (1. - kWgs84E2);
+    lat = std::atan2(p.z(), r * (1. - kWgs84E2 * n / (n + h)));
+  }
+  return {lat, lon, h};
+}
+// WGS84 normal gravity [m/s^2] at geodetic latitude `lat` [rad] and
+// ellipsoidal height `h` [m]: Somigliana's closed formula on the ellipsoid
+//   g0 = ge (1 + k sin^2 lat) / sqrt(1 - e^2 sin^2 lat),
+//   ge = 9.7803253359, k = (b gp) / (a ge) - 1 = 0.00193185265241,
+// with the second-order free-air term (NIMA TR8350.2 eq. 4-3)
+//   g = g0 [1 - 2/a (1 + f + m - 2 f sin^2 lat) h + 3 h^2 / a^2],
+//   m = omega^2 a^2 b / GM.
+inline double normalGravity(double lat, double h) {
+  constexpr double ge = 9.7803253359, k = 0.00193185265241;
+  const double s2 = std::sin(lat) * std::sin(lat);
+  const double g0 = ge * (1. + k * s2) / std::sqrt(1. - kWgs84E2 * s2);
+  const double m =
+      kEarthRate * kEarthRate * kWgs84A * kWgs84A * kWgs84B / kWgs84GM;
+  return g0 * (1. - 2. / kWgs84A * (1. + kWgs84F + m - 2. * kWgs84F * s2) * h +
+               3. * h * h / (kWgs84A * kWgs84A));
+}
+// Ellipsoidal normal (local up) at the ECEF point p, ECEF.
+inline Vec3 ellipsoidUp(const Vec3 &p) {
+  const Vec3 g = geodeticWgs84(p);
+  return {std::cos(g.x()) * std::cos(g.y()), std::cos(g.x()) * std::sin(g.y()),
+          std::sin(g.x())};
+}
+// Gravity vector -normalGravity * up at the ECEF point p, in the ENU frame
+// whose ENU-to-ECEF rotation is R.
+inline Vec3 localGravity(const Vec3 &p, const Mat3 &R) {
+  const Vec3 g = geodeticWgs84(p);
+  return -normalGravity(g.x(), g.z()) * (R.transpose() * ellipsoidUp(p));
+}
+// Earth rotation rate vector in the ENU frame whose ENU-to-ECEF rotation is R:
+// R^T (0, 0, W) = W (0, cos lat, sin lat) at that frame's latitude.
+inline Vec3 earthRate(const Mat3 &R) {
+  return R.transpose() * Vec3(0, 0, kEarthRate);
+}
+// Navigation frame of one preintegration: the gravity vector and the angular
+// rate of the frame (an Earth-fixed ENU frame turns with the Earth), both in
+// that frame.
+struct ImuFrame {
+  Vec3 gravity = Vec3::Zero(), rotation = Vec3::Zero();
+};
+inline auto imuParams(const Config &c, const ImuFrame &frame) {
+  auto p = std::make_shared<gtsam::PreintegrationCombinedParams>(frame.gravity);
+  // The rotating-frame (Coriolis) terms of the prediction.
+  p->omegaCoriolis = frame.rotation;
   // Logmap error chart for the IMU factor (requires a GTSAM that provides
   // ImuFactorErrorMode::Logmap; see CMakeLists.txt).
   p->setImuFactorErrorMode(gtsam::ImuFactorErrorMode::Logmap);
@@ -525,17 +543,19 @@ struct IntegratedImu {
   gtsam::PreintegratedCombinedMeasurements pim;
   Vec3 mean_gyro = Vec3::Zero();
   std::size_t count = 0;
-  IntegratedImu(const Config &c, const gtsam::imuBias::ConstantBias &b)
-      : pim(imuParams(c), b) {}
+  IntegratedImu(const Config &c, const gtsam::imuBias::ConstantBias &b,
+                const ImuFrame &frame)
+      : pim(imuParams(c, frame), b) {}
 };
 inline IntegratedImu integrateImu(const Config &cfg,
                                   const gtsam::imuBias::ConstantBias &bias,
                                   const std::vector<ImuSample> &samples,
-                                  double start, double end) {
+                                  double start, double end,
+                                  const ImuFrame &frame) {
   if (samples.empty() || !std::isfinite(start) || !std::isfinite(end) ||
       end <= start)
     throw ImuIntervalError("empty or reversed IMU interval");
-  IntegratedImu out(cfg, bias);
+  IntegratedImu out(cfg, bias, frame);
   double previous = start;
   for (const auto &s : samples) {
     const double raw = s.gpst - s.predecessor.value_or(previous);
@@ -595,13 +615,16 @@ inline std::size_t leadingStillSamples(const std::vector<ImuSample> &samples,
   }
   return still;
 }
-// Zero when the receiver does not start still: a mean over motion is not a
-// bias.
+// stationaryBias needs more leading still samples than this.
+constexpr std::size_t kStillBiasSamples = 100;
+// Mean of the leading still samples, the accelerometer part less `gravity`
+// along the mean specific force. Zero when the receiver does not start still:
+// a mean over motion is not a bias.
 inline gtsam::imuBias::ConstantBias
 stationaryBias(const std::vector<ImuSample> &samples, std::size_t count,
                double gravity) {
   count = leadingStillSamples(samples, count);
-  if (count <= 100)
+  if (count <= kStillBiasSamples)
     return {};
   Vec3 a = Vec3::Zero(), g = Vec3::Zero();
   for (std::size_t i = 0; i < count; ++i) {

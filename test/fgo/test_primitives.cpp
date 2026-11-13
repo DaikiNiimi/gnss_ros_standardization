@@ -10,12 +10,9 @@
 #include <fstream>
 #include <functional>
 #include <gtsam/base/numericalDerivative.h>
-#include <gtsam/linear/HessianFactor.h>
 #include <gtsam/linear/JacobianFactor.h>
 #include <gtsam/navigation/GPSFactor.h>
 #include <iostream>
-#include <random>
-#include <tuple>
 using namespace gnss_fgo;
 void require(bool ok, const char *why) {
   if (!ok)
@@ -66,6 +63,35 @@ DdExpected ddReference(const gtsam::Pose3 &ecef_T_nav, const gtsam::Pose3 &pose,
   out.H << lever.cross(gb).transpose(), gb.transpose();
   return out;
 }
+// ECEF of geodetic (lat, lon [deg], h [m]) and the ECEF unit vector of
+// (azimuth, elevation [deg]) there, through RTKLIB.
+Vec3 geodetic(double lat, double lon, double h) {
+  const double pos[3] = {lat * D2R, lon * D2R, h};
+  Vec3 r;
+  pos2ecef(pos, r.data());
+  return r;
+}
+Vec3 lineOfSight(const Vec3 &receiver, double az, double el) {
+  double pos[3];
+  ecef2pos(receiver.data(), pos);
+  const double enu[3] = {std::sin(az * D2R) * std::cos(el * D2R),
+                         std::cos(az * D2R) * std::cos(el * D2R),
+                         std::sin(el * D2R)};
+  Vec3 e;
+  enu2ecef(pos, enu, e.data());
+  return e;
+}
+namespace gnss_fgo {
+struct EngineTestAccess {
+  // Engine::ddprPosition seeded at the antenna `seed` (ECEF, no lever arm).
+  static DdPosition ddpr(Engine &e, const ObservationEpoch &obs,
+                         const Vec3 &seed) {
+    return e.ddprPosition(
+        obs, gtsam::Pose3(gtsam::Rot3(), e.R_.transpose() * (seed - e.base_)),
+        Vec3::Zero());
+  }
+};
+} // namespace gnss_fgo
 int main() {
   // Receiving the equal-time IMU does not admit a rover ahead of its
   // equal-time base callback; the later IMU is only a trigger, not input data.
@@ -135,35 +161,37 @@ int main() {
   st.clearHold();
   require(!st.seed_pending && !st.last_held, "reset removes seed");
   const double t = 604800. * 2300 + 604799.98;
+  // Any preintegration frame does for the interval checks below.
+  const ImuFrame level{Vec3(0, 0, -9.81), Vec3::Zero()};
   std::vector<ImuSample> imu;
   for (int i = 1; i <= 4; ++i)
     imu.push_back(
         {t + .01 * i, Vec3(0, 0, 9.81), Vec3::Zero(), t + .01 * (i - 1)});
-  auto pim = integrateImu(c, {}, imu, t, t + .04);
+  auto pim = integrateImu(c, {}, imu, t, t + .04, level);
   require(std::abs(pim.pim.deltaTij() - .04) < 1e-12,
           "week boundary integration");
   require(pim.count == 4, "IMU count");
   throws([&] {
     auto bad = imu;
     bad[1].gpst = bad[0].gpst;
-    integrateImu(c, {}, bad, t, t + .04);
+    integrateImu(c, {}, bad, t, t + .04, level);
   });
   throws([&] {
     auto bad = imu;
     bad[1].gpst = t - .01;
-    integrateImu(c, {}, bad, t, t + .04);
+    integrateImu(c, {}, bad, t, t + .04, level);
   });
   throws([&] {
     auto bad = imu;
     bad[0].predecessor = t - .2;
-    integrateImu(c, {}, bad, t, t + .04);
+    integrateImu(c, {}, bad, t, t + .04, level);
   });
   // The interval end may lie up to one sample interval (kImuMaxSampleInterval)
   // after the last sample, not more.
   const auto intervalError = [&](const std::vector<ImuSample> &samples,
                                  double end) {
     try {
-      integrateImu(c, {}, samples, t, end);
+      integrateImu(c, {}, samples, t, end, level);
     } catch (const ImuIntervalError &) {
       return true;
     }
@@ -181,14 +209,14 @@ int main() {
     for (int i = 1; i <= 5; ++i)
       imu50.push_back({t + .02 * i, acc, gyro, t + .02 * (i - 1)});
     const double end = t + .1 + .015;
-    const auto held = integrateImu(c, {}, imu50, t, end);
+    const auto held = integrateImu(c, {}, imu50, t, end, level);
     // GPS times near 1.4e9 s carry 2.4e-7 s rounding; integrateImu rounds the
     // intervals to 0.1 ms.
     require(std::abs(held.pim.deltaTij() - .115) < 1e-12 &&
                 std::abs(held.pim.deltaTij() - (end - t)) < 1e-6,
             "50 Hz interval with a 15 ms tail: preintegrated time");
     // Five 20 ms sample intervals and the 15 ms tail.
-    gtsam::PreintegratedCombinedMeasurements expected(imuParams(c), {});
+    gtsam::PreintegratedCombinedMeasurements expected(imuParams(c, level), {});
     for (int i = 0; i < 5; ++i)
       expected.integrateMeasurement(acc, gyro, .02);
     expected.integrateMeasurement(acc, gyro, .015);
@@ -478,10 +506,16 @@ int main() {
     gtsam::Values values;
     values.insert(poseKey(1), pose);
     values.insert(velKey(1), Vec3(2, -.1, .3));
+    // At zero mounting pitch the NHC with the mounting pitch is the plain
+    // constraint of the oracle (residual, pose and velocity Jacobians); its
+    // angle Jacobian is checked numerically below.
+    values.insert(boreKey(), 0.);
     while (fixture >> name) {
       std::shared_ptr<gtsam::NoiseModelFactor> f;
       if (name == "nhc")
-        f = std::make_shared<NhcFactor>(poseKey(1), velKey(1), omega, lever, 2., c);
+        f = std::make_shared<NhcBoreFactor>(poseKey(1), velKey(1), boreKey(),
+                                            omega, lever, 2., c.nhc_sigma_lat,
+                                            c.nhc_sigma_vert);
       else if (name == "gps")
         f = std::make_shared<gtsam::GPSFactorArm>(
             poseKey(1), Vec3(19, 11, 2), lever, gtsam::noiseModel::Unit::Create(3));
@@ -493,6 +527,8 @@ int main() {
             gtsam::noiseModel::Unit::Create(1));
       std::vector<gtsam::Matrix> H(f->keys().size());
       auto error = f->unwhitenedError(values, &H);
+      if (name == "nhc")
+        H.resize(2);
       for (double e : error) {
         fixture >> expected;
         if (std::abs(e - expected) >= 1e-10)
@@ -534,7 +570,15 @@ int main() {
     require(bool(fixture), "IMU oracle missing");
     gtsam::imuBias::ConstantBias b(Vec3(.01, .02, -.03),
                                    Vec3(.001, -.002, .003));
-    gtsam::PreintegratedCombinedMeasurements p(imuParams(c), b);
+    // The oracle was generated with these noise densities and a constant
+    // 9.81 m/s^2 gravity in a non-rotating frame; it checks the
+    // preintegration arithmetic, not the defaults.
+    Config oracle = c;
+    oracle.accel_noise = .00284;
+    oracle.gyro_noise = .00401;
+    oracle.gyro_bias_sigma = 9.7e-6;
+    gtsam::PreintegratedCombinedMeasurements p(
+        imuParams(oracle, ImuFrame{Vec3(0, 0, -9.81), Vec3::Zero()}), b);
     for (int i = 0; i < 20; ++i)
       p.integrateMeasurement(Vec3(.1 + .01 * i, .2 - .003 * i, 9.8),
                              Vec3(.02, .01 + .001 * i, -.03), .01);
@@ -590,89 +634,171 @@ int main() {
     }
   }
   {
-    // marginalWithout against the covariance form: the kept keys' information
-    // is the inverse of their block of the full covariance, their mean the kept
-    // part of the full mean, and the minimum error is unchanged.
-    const Key pose = poseKey(0), vel = velKey(0), amb1 = ambKey({2, 1}),
-              amb2 = ambKey({2, 2});
-    std::mt19937 rng(20261112);
-    std::normal_distribution<double> normal;
-    Eigen::MatrixXd A(11, 11);
-    for (int i = 0; i < A.size(); ++i)
-      A.data()[i] = normal(rng);
-    Eigen::MatrixXd G = A * A.transpose() + 11. * Eigen::MatrixXd::Identity(11, 11);
-    Eigen::VectorXd g(11);
-    for (int i = 0; i < 11; ++i)
-      g[i] = normal(rng);
-    gtsam::Values point;
-    point.insert(pose, gtsam::Pose3(gtsam::Rot3::RzRyRx(.1, -.2, .3),
-                                    Vec3(1, 2, 3)));
-    point.insert(vel, Vec3(.4, -.5, .6));
-    point.insert(amb1, 7.);
-    point.insert(amb2, -3.);
-    const auto container = [&](const Eigen::MatrixXd &info,
-                               const Eigen::VectorXd &linear, double constant) {
-      Eigen::MatrixXd augmented(12, 12);
-      augmented << info, linear, linear.transpose(), constant;
-      const gtsam::HessianFactor h(
-          gtsam::KeyVector{pose, vel, amb1, amb2},
-          gtsam::SymmetricBlockMatrix(std::vector<std::size_t>{6, 3, 1, 1, 1},
-                                      augmented));
-      return gtsam::LinearContainerFactor(h, point);
+    // hydrostaticDelay is RTKLIB's tropmodel (zenith, humidity 0) times
+    // tropmapf at the satellite's azimuth/elevation (rtkpos.c zdres).
+    const double t = 1.4e9;
+    gtime_t time = gpst2time(0, 0);
+    time.time += time_t(t);
+    const double zenith[] = {0., 90. * D2R};
+    std::map<double, double> at40, at105;
+    for (const double h : {40., 105.})
+      for (const double el : {15., 30., 70.}) {
+        const Vec3 rx = geodetic(35.1, 136.9, h);
+        const Vec3 sat = rx + 2.2e7 * lineOfSight(rx, 120., el);
+        const double pos[3] = {35.1 * D2R, 136.9 * D2R, h},
+                     azel[2] = {120. * D2R, el * D2R};
+        const double expected = tropmodel(time, pos, zenith, 0.) *
+                                tropmapf(time, pos, azel, nullptr);
+        const double delay = hydrostaticDelay(rx, sat, t);
+        require(expected > 2. && std::abs(delay - expected) < 1e-6,
+                "hydrostatic delay is RTKLIB's tropmodel * tropmapf");
+        (h == 40. ? at40 : at105)[el] = delay;
+      }
+    // 65 m of height at 15 deg elevation: about 1.8 cm zenith times 3.8.
+    const double low = at40[15.] - at105[15.];
+    require(low > .05 && low < .08, "hydrostatic delay height difference");
+    require(at40[15.] > at40[30.] && at40[30.] > at40[70.],
+            "hydrostatic delay decreases with elevation");
+    const Vec3 rx = geodetic(35.1, 136.9, 40.);
+    require(hydrostaticDelay(rx, rx + 2.2e7 * lineOfSight(rx, 0., -5.), t) == 0,
+            "no hydrostatic delay below the horizon");
+    const Vec3 high = geodetic(35.1, 136.9, 2e4);
+    require(hydrostaticDelay(high, high + 2.2e7 * lineOfSight(high, 0., 40.),
+                             t) == 0,
+            "no hydrostatic delay out of the model's height range");
+  }
+  {
+    // Code DDs of a rover 65 m below the base (7 km baseline) whose
+    // pseudoranges contain each receiver's hydrostatic delay: ddprPosition
+    // removes it and recovers the rover. Without the delay in the
+    // observations the same subtraction moves the solution by centimetres,
+    // so the tolerance resolves the correction.
+    const double t = 1.4e9;
+    const Vec3 base = geodetic(35.1, 136.9, 105.),
+               rover = geodetic(35.145, 136.966, 40.);
+    const double sky[8][2] = {{0, 80},   {45, 50},  {100, 30}, {160, 15},
+                              {210, 40}, {260, 20}, {300, 60}, {330, 25}};
+    const auto observations = [&](bool delayed) {
+      ObservationEpoch obs;
+      obs.gpst = obs.base_gpst = t;
+      for (int i = 0; i < 8; ++i) {
+        SatelliteObservation s;
+        s.sat = s.prn = i + 1;
+        s.system = 0;
+        s.elevation = sky[i][1] * D2R;
+        s.rover_sat = s.base_sat =
+            base + 2.02e7 * lineOfSight(base, sky[i][0], sky[i][1]);
+        s.pr[0] = range(s.rover_sat, rover) +
+                  (delayed ? hydrostaticDelay(rover, s.rover_sat, t) : 0.);
+        s.pr_base[0] = range(s.base_sat, base) +
+                       (delayed ? hydrostaticDelay(base, s.base_sat, t) : 0.);
+        obs.sats.push_back(s);
+      }
+      return obs;
     };
-    // Marginal of (info, linear, constant) on its first 9 entries, from the
-    // inverse of `info`.
-    const auto expected = [](const Eigen::MatrixXd &info,
-                             const Eigen::VectorXd &linear, double constant) {
-      const Eigen::MatrixXd cov = info.inverse();
-      const Eigen::VectorXd mean = cov * linear;
-      const Eigen::MatrixXd kept = cov.topLeftCorner(9, 9).inverse();
-      const Eigen::VectorXd kept_linear = kept * mean.head(9);
-      return std::make_tuple(kept, kept_linear,
-                             constant - linear.dot(mean) +
-                                 kept_linear.dot(mean.head(9)));
+    // Seeded 3.6 m off horizontally (the delays are taken at the seed).
+    const Vec3 seed = rover + 3. * lineOfSight(rover, 90., 0.) -
+                      2. * lineOfSight(rover, 0., 0.);
+    for (const bool delayed : {true, false}) {
+      Engine e(Config{}, seed, base, Vec3::Zero());
+      const auto dd = EngineTestAccess::ddpr(e, observations(delayed), seed);
+      require(dd.position.has_value() && dd.active == 7,
+              "DD code solution with hydrostatic delays");
+      const double error = (*dd.position - rover).norm();
+      std::cout << "DD code solution error, observations "
+                << (delayed ? "with" : "without")
+                << " hydrostatic delay: " << error << " m\n";
+      require(delayed ? error < 1e-3 : error > .01,
+              "DD code solution does not remove the hydrostatic delay");
+    }
+  }
+  {
+    // Earth rotation rate in the ENU frame of latitude lat: W (0, cos lat,
+    // sin lat), from the frame's ENU-to-ECEF rotation.
+    const auto enuToEcef = [](double lat, double lon) {
+      Mat3 R;
+      R << -std::sin(lon), -std::sin(lat) * std::cos(lon),
+          std::cos(lat) * std::cos(lon), std::cos(lon),
+          -std::sin(lat) * std::sin(lon), std::cos(lat) * std::sin(lon), 0,
+          std::cos(lat), std::sin(lat);
+      return R;
     };
-    const auto check = [&](const gtsam::LinearContainerFactor &f,
-                           const std::tuple<Eigen::MatrixXd, Eigen::VectorXd,
-                                            double> &want,
-                           const char *why) {
-      const auto out = std::dynamic_pointer_cast<gtsam::LinearContainerFactor>(
-          marginalWithout(f, {amb1, amb2}));
-      require(bool(out), why);
-      require(out->keys() == gtsam::KeyVector{pose, vel}, why);
-      require(out->linearizationPoint() &&
-                  out->linearizationPoint()->size() == 2 &&
-                  out->linearizationPoint()->at<gtsam::Pose3>(pose).equals(
-                      point.at<gtsam::Pose3>(pose), 0) &&
-                  out->linearizationPoint()->at<Vec3>(vel) == point.at<Vec3>(vel),
-              why);
-      const gtsam::HessianFactor h(*out->factor());
-      const auto &[info, linear, constant] = want;
-      const double scale = info.cwiseAbs().maxCoeff();
-      require((h.information() - info).cwiseAbs().maxCoeff() < 1e-10 * scale &&
-                  (h.linearTerm() - linear).cwiseAbs().maxCoeff() <
-                      1e-10 * scale &&
-                  std::abs(h.constantTerm() - constant) <
-                      1e-10 * std::max(1., std::abs(constant)),
-              why);
-    };
-    const double constant = 5. + g.dot(G.inverse() * g);
-    check(container(G, g, constant), expected(G, g, constant),
-          "marginal of a full-rank factor");
-    // amb2 without information or coupling: the result is the marginal over
-    // amb1 alone.
-    Eigen::MatrixXd G1 = G;
-    Eigen::VectorXd g1 = g;
-    G1.row(10).setZero();
-    G1.col(10).setZero();
-    g1[10] = 0;
-    check(container(G1, g1, constant),
-          expected(G1.topLeftCorner(10, 10), g1.head(10), constant),
-          "marginal with an undetermined dropped direction");
-    // Nothing to drop, or nothing to keep: no factor.
-    const auto f = container(G, g, constant);
-    require(!marginalWithout(f, {ambKey({2, 3})}), "nothing dropped");
-    require(!marginalWithout(f, {pose, vel, amb1, amb2}), "nothing kept");
+    for (const double lat_deg : {0., 35.7, -60.})
+      for (const double lon_deg : {0., 139.7}) {
+        const double lat = lat_deg * M_PI / 180., lon = lon_deg * M_PI / 180.;
+        const Vec3 expected = kEarthRate * Vec3(0, std::cos(lat), std::sin(lat));
+        require((earthRate(enuToEcef(lat, lon)) - expected).norm() < 1e-18,
+                "Earth rate in ENU");
+      }
+    // WGS84 normal gravity: the equator and pole values of the ellipsoid
+    // (NIMA TR8350.2), Somigliana's formula at 45 deg, and the free-air
+    // decrease with height (first order, 2 g / a (1 + f + m - 2 f sin^2)).
+    require(std::abs(normalGravity(0., 0.) - 9.7803253359) < 1e-10 &&
+                std::abs(normalGravity(M_PI / 2, 0.) - 9.8321849378) < 1e-9,
+            "normal gravity at the equator and the pole");
+    const double s2 = .5, e2 = 6.69437999014e-3, f = 1. / 298.257223563,
+                 m = .00344978650684;
+    const double g45 = 9.7803253359 * (1. + .00193185265241 * s2) /
+                       std::sqrt(1. - e2 * s2);
+    require(std::abs(normalGravity(M_PI / 4, 0.) - g45) < 1e-9,
+            "normal gravity at 45 deg");
+    const double h = 1000., g45h = g45 * (1. - 2. / 6378137. *
+                                                   (1. + f + m - 2. * f * s2) * h);
+    require(std::abs(normalGravity(M_PI / 4, h) - g45h) < 1e-6 &&
+                normalGravity(M_PI / 4, 0.) - normalGravity(M_PI / 4, h) > 3e-3,
+            "normal gravity 1000 m above the ellipsoid");
+    // The gravity vector is -g along the local up: (0, 0, -g) in the ENU
+    // frame of the point itself.
+    for (const double lat_deg : {0., 35.7, 89.}) {
+      const double lat = lat_deg * M_PI / 180., lon = 2.4, hh = 120.;
+      double pos[3] = {lat, lon, hh}, ecef[3];
+      pos2ecef(pos, ecef);
+      const Vec3 g = localGravity(Vec3(ecef[0], ecef[1], ecef[2]),
+                                  enuToEcef(lat, lon));
+      require((g - Vec3(0, 0, -normalGravity(lat, hh))).norm() < 1e-9,
+              "local gravity vector");
+    }
+  }
+  {
+    // NhcBoreFactor Jacobians against central differences (pose retract,
+    // velocity, mounting pitch) at a non-zero pitch and a turning body.
+    const NhcBoreFactor f(poseKey(1), velKey(1), boreKey(), Vec3(.02, -.05, .3),
+                          Vec3(1.2, -.4, .7), 9., .3, .2);
+    gtsam::Values values;
+    values.insert(poseKey(1), gtsam::Pose3(gtsam::Rot3::RzRyRx(.05, -.08, 1.1),
+                                           Vec3(3, -2, 1)));
+    values.insert(velKey(1), Vec3(4.5, 7.2, -.3));
+    values.insert(boreKey(), -.06);
+    std::vector<gtsam::Matrix> H(3);
+    f.unwhitenedError(values, &H);
+    constexpr double step = 1e-6;
+    for (std::size_t key = 0; key < 3; ++key) {
+      const int dim = key == 0 ? 6 : key == 1 ? 3 : 1;
+      gtsam::Matrix numeric(3, dim);
+      for (int k = 0; k < dim; ++k) {
+        gtsam::Values plus = values, minus = values;
+        if (key == 0) {
+          const gtsam::Vector6 d = gtsam::Vector6::Unit(k) * step;
+          plus.update(poseKey(1), values.at<gtsam::Pose3>(poseKey(1)).retract(d));
+          minus.update(poseKey(1),
+                       values.at<gtsam::Pose3>(poseKey(1)).retract(-d));
+        } else if (key == 1) {
+          const Vec3 d = Vec3::Unit(k) * step;
+          plus.update(velKey(1), Vec3(values.at<Vec3>(velKey(1)) + d));
+          minus.update(velKey(1), Vec3(values.at<Vec3>(velKey(1)) - d));
+        } else {
+          plus.update(boreKey(), values.at<double>(boreKey()) + step);
+          minus.update(boreKey(), values.at<double>(boreKey()) - step);
+        }
+        numeric.col(k) =
+            (f.unwhitenedError(plus) - f.unwhitenedError(minus)) / (2 * step);
+      }
+      const double scale = std::max(1., H[key].cwiseAbs().maxCoeff());
+      require(H[key].rows() == 3 && H[key].cols() == dim &&
+                  (H[key] - numeric).cwiseAbs().maxCoeff() <= 1e-6 * scale,
+              "NhcBoreFactor Jacobian");
+    }
+    require(H[2].cwiseAbs().maxCoeff() > 1., "mounting-pitch Jacobian exercised");
   }
   std::cout << "state, time, factor and IMU checks passed\n";
 }

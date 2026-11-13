@@ -130,6 +130,25 @@ int main() {
   require(std::abs(g->wavelength[1] - 299792458. / 1227.60e6) < 1e-12 &&
               g->doppler_wavelength[1] == g->wavelength[1] && g->doppler_snr[1] == 45,
           "Doppler uses the selected signal of its band");
+  require(g->doppler[0] == -1000 && std::isnan(g->doppler[2]),
+          "Doppler decoded; a band not decoded has no Doppler (NaN)");
+  {
+    // A finite 0 Hz Doppler is a measurement; NaN in the message is missing.
+    auto measured = rover_obs;
+    for (auto &row : measured.observations)
+      if (row.system == "G" && row.code_str == "1C")
+        row.d = 0;
+      else if (row.system == "G" && row.code_str == "2W")
+        row.d = std::numeric_limits<double>::quiet_NaN();
+    gnss_utils::SignalSelection selection;
+    const auto choice = gnss_utils::selectSignals(
+        measured, &base_obs, policy.frequencies, selection);
+    const auto decoded = decodeObservation(measured, 1, policy, choice);
+    const auto *d = find(decoded, satelliteId("G", 1).second);
+    require(d && d->doppler[0] == 0 && std::isnan(d->doppler[1]) &&
+                d->pr[1] != 0,
+            "0 Hz Doppler kept, missing Doppler NaN");
+  }
   require(cb26->signals[0] == "L2I" && cb26->signals[1] == "L7I",
           "BDS slots follow the RTKLIB frequency index");
   require(er->signals[0] == "L1C" && eb->signals[0] == "L1X",
@@ -236,6 +255,7 @@ int main() {
         r.phase = Vec3(1.2e8, 9e7, 0);
         r.wavelength = Vec3(.19, .24, 0);
         r.snr = Vec3(45, 45, 0);
+        r.doppler = Vec3(0, 50, 50);
         RawSatellite b = r;
         const auto singleBand = [](RawSatellite &s) {
           s.pr[1] = s.phase[1] = s.snr[1] = 0;
@@ -281,6 +301,12 @@ int main() {
     require(!findSat(first, "J", 194),
             "unhealthy QZSS satellite excluded, LEX-only health kept");
     usual(first, "admitted satellites keep the bands they have");
+    // Doppler: a 0 Hz measurement is kept; an edited band has none (NaN).
+    const auto *g1 = findSat(first, "G", 1), *g6 = findSat(first, "G", 6);
+    require(g1 && g6 && g1->doppler[0] == 0 && g1->doppler[1] == 50 &&
+                std::isnan(g1->doppler[2]) && g6->doppler[0] == 0 &&
+                std::isnan(g6->doppler[1]),
+            "Doppler of admitted and edited bands");
     // (b) one seen band below the mask rejects the satellite in this epoch.
     const auto masked = epoch(*bench, [](const std::string &system, int prn,
                                          RawSatellite &r, RawSatellite &) {

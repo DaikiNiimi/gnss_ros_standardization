@@ -140,7 +140,12 @@ inline RawEpoch decodeObservation(const rosmsg::GnssObservations &m,
       s.wavelength[f] = s.doppler_wavelength[f] = wavelength(r.system, code);
       s.pr[f] = o.P[f];
       s.phase[f] = o.L[f];
-      s.doppler[f] = o.D[f];
+      // convertObs maps a missing Doppler to 0, which is also a valid
+      // Doppler; the message's NaN marks a missing one.
+      s.doppler[f] = std::isfinite(r.d) &&
+                             std::abs(r.d) <= std::numeric_limits<float>::max()
+                         ? double(o.D[f])
+                         : std::numeric_limits<double>::quiet_NaN();
       s.snr[f] = s.doppler_snr[f] = o.SNR[f];
       s.lli[f] = o.LLI[f] & 3;
       if (choice.switched.count({o.sat, f}))

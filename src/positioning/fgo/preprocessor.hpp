@@ -21,9 +21,11 @@ struct SatelliteMotion {
 } // namespace gnss_fgo
 
 namespace gnss_fgo {
+// Missing code or carrier phase is 0, a missing Doppler NaN (0 Hz is valid).
 struct RawSatellite {
   int sat = 0, system = 0, prn = 0;
-  Vec3 pr = Vec3::Zero(), phase = Vec3::Zero(), doppler = Vec3::Zero(),
+  Vec3 pr = Vec3::Zero(), phase = Vec3::Zero(),
+       doppler = Vec3::Constant(std::numeric_limits<double>::quiet_NaN()),
        snr = Vec3::Zero(), wavelength = Vec3::Zero();
   Vec3 doppler_wavelength = Vec3::Zero(), doppler_snr = Vec3::Zero();
   Eigen::Vector3i lli = Eigen::Vector3i::Zero();

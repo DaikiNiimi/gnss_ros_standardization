@@ -3,7 +3,6 @@
 #include "ambiguity.hpp"
 #include "model.hpp"
 #include <gtsam/nonlinear/IncrementalFixedLagSmoother.h>
-#include <gtsam/nonlinear/LinearContainerFactor.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
 #include <cstdint>
@@ -24,6 +23,10 @@ struct ArDecision {
   // (reference, target) of every accepted DD integer N_ref - N_target =
   // fixed[ref] - fixed[target]; Engine::hold constrains these pairs.
   std::vector<std::pair<SF, SF>> fixed_pairs;
+  // The fix came from the search on the held arcs alone and only confirms
+  // the existing holds: it sets the output, but no hold, arc or fix-streak
+  // state changes with it.
+  bool held_only = false;
 };
 // One DD factor appended by Engine::buildDd. The official GTSAM DD factors
 // carry no satellite ids, so the readers (FDE, residuals) look them up here;
@@ -39,14 +42,28 @@ struct DdPosition {
   int active = 0;
   double rms = std::numeric_limits<double>::infinity();
 };
-// The linear factor `f` (a marginal factor of the fixed-lag smoother) with the
-// variables in `drop` integrated out (Schur complement; directions of them `f`
-// does not determine carry no information and are skipped), linearized at the
-// kept keys' part of f's linearization point. Null when `f` has none of them
-// or nothing else.
-gtsam::NonlinearFactor::shared_ptr
-marginalWithout(const gtsam::LinearContainerFactor &f,
-                const std::set<Key> &drop);
+// Hydrostatic slant delay [m] of `satellite` (ECEF) at `receiver` (ECEF) and
+// GPST `gpst` [s], as RTKLIB relative positioning (rtkpos.c zdres) adds it to
+// each receiver's modelled range: Saastamoinen zenith delay of the standard
+// atmosphere without humidity times the NMF hydrostatic mapping function. 0
+// where RTKLIB gives 0 (height out of range, elevation at or below 0).
+inline double hydrostaticDelay(const Vec3 &receiver, const Vec3 &satellite,
+                               double gpst) {
+  if (!std::isfinite(gpst))
+    return 0.;
+  // GPST seconds to gtime_t the way the Preprocessor converts PreciseTime.
+  const double seconds = std::floor(gpst);
+  gtime_t time = gpst2time(0, 0);
+  time.time += time_t(seconds);
+  time.sec = gpst - seconds;
+  const double zenith[] = {0., 90. * D2R};
+  double pos[3], e[3], azel[2];
+  ecef2pos(receiver.data(), pos);
+  if (geodist(satellite.data(), receiver.data(), e) <= 0.)
+    return 0.;
+  satazel(pos, e, azel);
+  return tropmodel(time, pos, zenith, 0.) * tropmapf(time, pos, azel, nullptr);
+}
 class Engine {
 public:
   Engine(const Config &config, const Vec3 &initial, const Vec3 &base,
@@ -98,9 +115,25 @@ private:
   // Estimation error allowed on top of the travelled distance (a regular
   // update can move the estimate by several hundred metres in one epoch):
   static constexpr double kMaxStepMargin = 1000.;
-  // ZUPT speed gate [m/s] on the previous posterior velocity: the IMU
-  // statistics alone also pass at steady driving speed.
+  // ZUPT speed gate [m/s] on the epoch's Doppler-only speed (dopplerVelocity
+  // of the rows addDoppler used): the IMU statistics alone also pass at
+  // steady driving speed, and the Doppler-only speed does not inherit an
+  // error of the posterior velocity.
+  static constexpr double kZuptDopplerSpeed = .3;
+  // ZUPT speed gate [m/s] on the previous posterior velocity, when the epoch
+  // forms no Doppler-only velocity.
   static constexpr double kZuptMaxSpeed = .5;
+  // Sigmas of the zero relative motion between consecutive epochs at rest:
+  // translation [m] and rotation [rad].
+  static constexpr double kZuptTranslationSigma = .005;
+  static constexpr double kZuptRotationSigma = 2e-4;
+  // Prior sigma [deg] of the NHC mounting pitch (boreKey) at its creation in
+  // an IMU graph.
+  static constexpr double kMountingPitchSigmaDeg = 5.;
+  // Gyroscope sigma [rad/s] of the switch window's bias priors when the
+  // initial bias is the mean of the leading still samples (a measured bias;
+  // the accelerometer part keeps its loose sigma).
+  static constexpr double kStillBiasGyroSigma = 1e-4;
   // Switch gate (updateSwitchWindow): the Doppler-only horizontal velocity
   // must agree with the posterior velocity of the motion graph.
   // Largest direction difference [deg].
@@ -125,17 +158,47 @@ private:
   // velocity and the body x axis (both horizontal) at kSwitchForwardSpeed or
   // more.
   static constexpr double kIntegrityMaxHeadingDiffDeg = 45.;
-  // Time [s] a violation (heading, or a sanity recovery in every GNSS epoch)
-  // must last before the IMU graph is declared invalid; a longer gap between
-  // counting epochs restarts it.
+  // Time [s] a heading violation must last before the IMU graph is declared
+  // invalid; a longer gap between counting epochs restarts it.
   static constexpr double kIntegrityTime = 2.;
+  // Huber threshold (in sigmas) of the code DD factors: a gross code error
+  // (multipath, NLOS) pulls the position with a bounded weight instead of
+  // its squared error, so no code DD needs to be rejected.
+  static constexpr double kCodeHuber = 1.345;
+  // Fewest fixed DD pairs a fix needs: below this the ratio test passes on
+  // too small an integer set to rule out wrong fixes.
+  static constexpr int kMinFixPairs = 8;
+  // Fewer held arcs than this among the epoch's search arcs (searchArcs): no
+  // established integer set (the stricter fix minimum and, in gnss_fgo, the
+  // float restart apply).
+  static constexpr int kFewHeldArcs = 8;
+  // Fewest fixed pairs of a new fix at rest with few held arcs: a static
+  // receiver's float ambiguities see no geometry change, so a wrong
+  // candidate can pass the ratio test for many epochs in a row.
+  static constexpr int kStationaryMinFixPairs = 10;
+  // Receiver speed [m/s] (Doppler-only, else posterior) below which the
+  // stricter minimum applies.
+  static constexpr double kStationarySpeed = .3;
+  // Age [GNSS epochs] from which an arc enters the partial retry: a young
+  // arc's float value is still dominated by its code-minus-carrier start.
+  static constexpr int kMatureArcEpochs = 25;
+  // Fewest fixed pairs of a fix from the held arcs alone (output only).
+  static constexpr int kHeldSetMinPairs = 10;
+  // A hold whose (N_j - N_r) at the estimate is farther than this [cycles]
+  // from its integer contradicts the carrier data and is dropped.
+  static constexpr double kHoldRejectCycles = .25;
+  // gnss_fgo: consecutive GNSS epochs without a fix (with few held arcs)
+  // after which every un-held arc restarts from code minus carrier, so a
+  // float solution biased by old arcs can converge anew.
+  static constexpr int kFloatRestartEpochs = 25;
   using Smoother = gtsam::IncrementalFixedLagSmoother;
   using Graph = gtsam::NonlinearFactorGraph;
   using Values = gtsam::Values;
   Config cfg_;
   GraphObserver graph_observer_;
   // Outcome of the last runAr call (read by the regression tests): Zero = the
-  // integer search fixed nothing (also when it could not be posed), MinPairs =
+  // integer search fixed nothing (also when it could not be posed, and for a
+  // held-only fix, which changes no state), MinPairs =
   // only one DD pair could be formed, NotCalled = neither (AR off, an
   // exception, or a fix).
   enum class ArOutcome { NotCalled, MinPairs, Zero };
@@ -150,7 +213,7 @@ private:
   std::unique_ptr<Smoother> p2_;
   // gnss_fgo: always 2 (its only graph, the motion graph). gnss_imu_fgo: 1 in
   // the motion stage, 2 after the switch to the IMU graph.
-  int phase_ = 1, input_epoch_ = 0, graph_epoch_ = -1, cp_hold_ = 0;
+  int phase_ = 1, input_epoch_ = 0, graph_epoch_ = -1;
   bool healthy_ = true;
   double graph_time_ = 0, dt_ = .2, current_gpst_ = 0;
   std::optional<double> last_gpst_, graph_gpst_;
@@ -166,11 +229,37 @@ private:
   void fillCovariance(Solution &out) const;
   std::map<int, double> per_sat_res_;
   std::map<int, double> ar_per_sat_res_;
-  double main_res_ = 0, actual_lag_ = 1;
-  int bad_count_ = 0;
+  double actual_lag_ = 1;
   bool pim_break_ = false;
+  // GNSS epochs processed so far and that count at the creation of each live
+  // ambiguity key (buildDd): an arc's age in GNSS epochs is the difference.
+  int gnss_epochs_ = 0;
+  std::map<Key, int> arc_created_;
+  // Age of the arc of `key` in GNSS epochs; -1 when unknown.
+  int arcAge(Key key) const {
+    const auto it = arc_created_.find(key);
+    return it == arc_created_.end() ? -1 : gnss_epochs_ - it->second;
+  }
+  // Set by phase2 when a GNSS epoch completed its ambiguity resolution and
+  // hold update: whether a fix updated the holds (reset by process() and
+  // phase2). gnss_fgo's float restart counts the epochs without one.
+  std::optional<bool> epoch_hold_fix_;
+  int fixless_epochs_ = 0;
+  // Set by phase2 in a GNSS epoch, before its ambiguity resolution: the held
+  // arcs among searchArcs (the count the stationary fix minimum uses).
+  int epoch_held_arcs_ = 0;
+  // The float position of the epoch whose output fix came from the held-arc
+  // search (reset by process() and phase2); finalize() gives the switch
+  // window and the fix streaks the float epoch.
+  std::optional<Vec3> held_only_float_;
   gtsam::imuBias::ConstantBias bias_, initial_bias_;
-  std::optional<gtsam::Pose3> zupt_anchor_;
+  // Body rotation (FLU to base ENU) of the last committed IMU-graph state
+  // (phase2, transition(), IMU-stage warmReset()): the recovery paths keep
+  // the attitude instead of restarting from an unlevelled guess.
+  std::optional<gtsam::Rot3> last_rotation_;
+  // Last estimate of the NHC mounting pitch (boreKey); the initial value of
+  // the key in the next IMU graph.
+  std::optional<double> last_bore_;
   // Switch window (gnss_imu_fgo motion stage): the last consecutive epochs
   // that satisfy the switch condition (updateSwitchWindow), oldest first.
   struct WindowEpoch {
@@ -237,23 +326,72 @@ private:
   // prior. A (system, band) group that starts in this call also gets one gauge
   // prior on its reference key (not a DD row).
   int buildDd(Graph &graph, DdRows &rows, Values &values,
-              const ObservationEpoch &obs, Key pose, const Vec3 &lever,
-              bool skip_cp = false);
+              const ObservationEpoch &obs, Key pose, const Vec3 &lever);
   // Arc bookkeeping before and after buildDd in phase2.
   void continueArcs(const Values &estimate);
   void endUnusedArcs();
   DdPosition ddprPosition(const ObservationEpoch &obs,
                           const gtsam::Pose3 &initial, const Vec3 &lever);
+  // hydrostaticDelay of each satellite of `obs` (index order): {at the rover
+  // antenna `rover` with rover_sat, at base_ with base_sat}. buildDd and
+  // ddprPosition subtract them from the raw DD measurements.
+  std::vector<std::array<double, 2>>
+  slantDelays(const ObservationEpoch &obs, const Vec3 &rover) const;
   // `slots` are the smoother slots of `graph`'s factors, in order (from the
   // ISAM2 result of the update that added them; slots are reused).
   // `rows` are the DD rows buildDd produced for `graph`.
+  // Carrier DD rows only; the code DDs carry a Huber loss instead.
   Values fde(Smoother &sm, const Graph &graph, const DdRows &rows,
              const gtsam::FactorIndices &slots, Values estimate, Key pose);
+  // Removes (one smoother update) every hold whose |(N_j - N_r) - integer|
+  // at `estimate` exceeds kHoldRejectCycles; a satellite/band left in no hold
+  // record loses its hold (key and arc stay, no seed). Returns the estimate
+  // after the removal (`estimate` itself when nothing is removed).
+  Values rejectHolds(Smoother &sm, Values estimate, Key pose);
+  // The ambiguities eligible for this epoch's integer search: a live key that
+  // `estimate` has, a carrier DD this epoch, not seeded this epoch. Defined
+  // whether or not a search runs (AR off, too few pairs).
+  std::vector<SF> searchArcs(const ObservationEpoch &obs,
+                             const Values &estimate) const;
+  // How many of `arcs` are held.
+  int heldArcs(const std::vector<SF> &arcs) const;
+  // Integer search over the eligible ambiguities: the full set; when it fails,
+  // one retry on the mature arcs (held or kMatureArcEpochs old); when that
+  // fails, the held arcs alone (output only, ArDecision::held_only).
   ArDecision resolve(Smoother &sm, const Values &estimate, Key pose,
                      const ObservationEpoch &obs);
   ArDecision runAr(Smoother &sm, const Values &estimate, Key pose,
                    const ObservationEpoch &obs);
   void hold(Smoother &sm, const ArDecision &ar);
+  // The DD pairs of the eligible ambiguities `keys` selected by `mask` (all
+  // when null): each (system, band) group's lowest satellite against the
+  // others. D, Q, y and the integer search only with at least 2 pairs.
+  struct ArSearch {
+    std::vector<std::pair<SF, SF>> pairs;
+    Eigen::MatrixXd D, Q;
+    Eigen::VectorXd y;
+    ar::Result res;
+  };
+  ArSearch arSearch(const std::vector<SF> &keys,
+                    const std::map<int, const SatelliteObservation *> &present,
+                    const std::map<SF, int> &index, const Eigen::VectorXd &x,
+                    const Eigen::MatrixXd &cov,
+                    const std::vector<char> *mask) const;
+  // Whether the receiver is at rest for the fix minimum: the Doppler-only
+  // speed (the rows addDoppler used this epoch, else dopplerRows at the
+  // estimate), else the posterior speed, below kStationarySpeed.
+  bool stationary(const ObservationEpoch &obs, const Values &estimate,
+                  Key pose);
+  // True when every pair (r, j) of `pairs` has N_j - N_r = -integers[i]
+  // (within .5 cycle) through the hold records (either direction, chained
+  // through shared keys) and the records involved are mutually consistent.
+  bool heldIntegersAgree(const std::vector<std::pair<SF, SF>> &pairs,
+                         const Eigen::VectorXd &integers) const;
+  // gnss_fgo, once per GNSS epoch after its last solve: counts the epochs
+  // without a fix while fewer than kFewHeldArcs of the epoch's search arcs
+  // are held (epoch_held_arcs_) and, after kFloatRestartEpochs of them, ends
+  // every un-held arc without a seed.
+  void restartFloatArcs();
   // gnss_imu_fgo motion stage, once per epoch from finalize: extends or
   // restarts the switch window with this epoch and calls transition() when it
   // spans kSwitchWindowTime and the direction of travel is known. A failed
@@ -268,6 +406,10 @@ private:
     Mat3 rotation = Mat3::Identity();
     double roll = 0, pitch = 0;
     bool level = false;
+    // Where b0 comes from: zero (the session did not start still), the mean
+    // of the leading still samples (stationaryBias), or an IMU-graph
+    // estimate (fallback()).
+    enum class Bias { Zero, Still, Graph } source = Bias::Zero;
   };
   // After the first switch: the levelling it used (the samples it came from
   // are pruned in the IMU stage), with b0 replaced at a fallback by the last
@@ -290,16 +432,15 @@ private:
     void clear() { start.reset(), last.reset(); }
     double length() const { return start ? *last - *start : 0.; }
   };
-  IntegrityTimer heading_timer_, recovery_timer_;
+  IntegrityTimer heading_timer_;
   // IMU stage: phase2 completed a regular update (not a reset) this epoch;
-  // sanity() returned a recovery this epoch; the angular rate the Doppler
-  // factors used.
-  bool integrity_epoch_ = false, sanity_recovery_ = false;
+  // the angular rate the Doppler factors used.
+  bool integrity_epoch_ = false;
   Vec3 epoch_omega_ = Vec3::Zero();
-  // Fallbacks so far and the cause of the last one (1 heading, 2 recovery).
+  // Fallbacks so far and the cause of the last one (1 heading).
   int n_fallback_ = 0, fallback_cause_ = 0;
-  // IMU stage, after phase2: the two integrity checks; the fallback to a
-  // fresh motion stage when either fails (cause 1 heading, 2 recovery).
+  // IMU stage, after phase2: the heading integrity check; the fallback to a
+  // fresh motion stage when it fails (cause 1).
   int integrity(bool gnss);
   Solution fallback(const ObservationEpoch &obs, bool gnss, int cause);
   // Builds the IMU graph from window_ and switches to it; on failure nothing
@@ -308,9 +449,22 @@ private:
   void transition(bool reverse = false);
   Solution phase2(const ObservationEpoch &obs, bool gnss);
   std::vector<ImuSample> collectImu(double until);
-  void addPseudo(Graph &graph, int index, const gtsam::Pose3 &previous,
-                 const Vec3 &velocity, const std::vector<ImuSample> &samples,
-                 const Vec3 &gyro);
+  // Preintegration frame of an IMU-graph interval starting at the body
+  // position `body` (base ENU): the Earth rotation rate and the gravity that
+  // complements GTSAM's rotating-frame terms (normal gravity along the
+  // ellipsoidal normal at the body, less the centrifugal part GTSAM adds for
+  // the offset from the base), both in base ENU.
+  ImuFrame imuFrame(const Vec3 &body) const;
+  // Normal gravity magnitude [m/s^2] at the ECEF point `ecef`.
+  double gravityAt(const Vec3 &ecef) const;
+  // Rotation from the local ENU frame at the ECEF point `ecef` to base ENU.
+  Mat3 localToBase(const Vec3 &ecef) const;
+  // NHC (with the mounting pitch) and ZUPT factors of IMU-graph epoch
+  // `index`. `bore_live`: the mounting-pitch key is already in the smoother;
+  // otherwise the first NHC factor inserts it into `values` with its prior.
+  void addPseudo(Graph &graph, Values &values, int index, const Vec3 &velocity,
+                 const std::vector<ImuSample> &samples, const Vec3 &gyro,
+                 bool bore_live);
   // The Doppler rows addDoppler turns into factors (none when fewer than 2).
   std::optional<DopplerRows> dopplerRows(const ObservationEpoch &obs,
                                          const gtsam::NavState &pred);
@@ -326,12 +480,9 @@ private:
   gtsam::FactorIndices flsUpdate(const Graph &graph, const Values &values,
                                  int index, const std::vector<Key> &keep);
   void warmReset(const Vec3 &body_position, const gtsam::Rot3 &rotation);
-  void resetAmbiguities();
-  std::pair<double, std::map<int, double>>
-  residuals(const Graph &graph, const DdRows &rows, const Values &values) const;
-  std::optional<Solution> sanity(const Graph &graph, const DdRows &rows,
-                                 const gtsam::Pose3 &pose,
-                                 const gtsam::NavState &pred, int index);
+  // Largest code DD residual [m] of each satellite (without the Huber loss).
+  std::map<int, double> residuals(const Graph &graph, const DdRows &rows,
+                                  const Values &values) const;
   Vec3 antenna(const gtsam::Pose3 &pose, const Vec3 &lever) const {
     return base_ +
            R_ * (pose.translation() + pose.rotation().matrix() * lever);

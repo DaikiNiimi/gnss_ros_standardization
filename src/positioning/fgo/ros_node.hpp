@@ -345,15 +345,11 @@ private:
       number("motion.acceleration_psd", c.motion_acceleration_psd);
       return;
     }
-    number("imu.gravity_mps2", c.gravity);
     number("imu.sigma_acc", c.accel_noise);
     number("imu.sigma_gyr", c.gyro_noise);
     number("imu.integration_covariance", c.imu_integ_cov);
     number("imu.sigma_acc_bias", c.accel_bias_sigma);
     number("imu.sigma_gyr_bias", c.gyro_bias_sigma);
-    number("imu.bias_prior_sigma_acc_mps2", c.bias_prior_acc_sigma);
-    number("imu.bias_prior_sigma_gyr_rps", c.bias_prior_gyro_sigma);
-    integer("imu.bias_prior_mode", c.bias_prior_mode);
     flag("nhc.enable", c.nhc_enable);
     number("nhc.sigma_lat_mps", c.nhc_sigma_lat);
     number("nhc.sigma_vert_mps", c.nhc_sigma_vert);

@@ -23,6 +23,28 @@ ros2 run gnss_ros_standardization gnss_imu_fgo --ros-args \
 with the default `[0, 0, 0]`. Settings for the PPC dataset routes are in
 [config/ppc/](../../../config/ppc/).
 
+## Algorithm
+
+Each rover epoch is paired with the latest base observation and adds its states and
+factors to the smoother:
+
+- **Observations**: DD code and carrier factors per satellite pair and band, and
+  between-satellite Doppler factors. The hydrostatic tropospheric delay (Saastamoinen
+  zenith delay, NMF mapping) is removed from the rover and base observations. The
+  code and Doppler factors use a Huber loss.
+- **Ambiguity resolution**: after the update, the float ambiguities and their
+  covariance go to the integer search. A fix needs the ratio test (`pos2.arthres`)
+  and at least 8 fixed pairs. The search runs on all ambiguities; when that fails, on
+  the held ambiguities plus those at least 25 epochs old; then on the held
+  ambiguities alone (partial ambiguity resolution).
+- **Hold**: each fixed pair gets a hold factor. A hold is removed when the float
+  estimate leaves its integer by more than 0.25 cycle.
+- **Output**: the FIX position is the estimate conditioned on the fixed integers.
+
+`gnss_imu_fgo` integrates the IMU with the Earth rotation rate and the normal gravity
+at the estimated position. For ground vehicles it can add a non-holonomic constraint,
+which estimates the pitch mounting angle of the IMU, and a zero-velocity update.
+
 ## Factor graphs
 
 "From" tells whether the factor class is GTSAM's or defined in this package
@@ -43,7 +65,7 @@ State per epoch: a `Pose3` (antenna position; its rotation is held at identity b
 | DD pseudorange | `DoubleDifferencePseudorangeFactorArm` | GTSAM | pose |
 | DD carrier phase | `DoubleDifferenceCarrierPhaseFactorArm` | GTSAM | pose, reference and target ambiguity |
 | between-satellite Doppler | `SdDopplerFactor` | this package | pose, velocity |
-| ambiguity prior (where its arc starts; after a hold release, at the held value) | `PriorFactor<double>` | GTSAM | one ambiguity |
+| ambiguity prior (where its arc starts) | `PriorFactor<double>` | GTSAM | one ambiguity |
 | ambiguity gauge prior (where a constellation/band group starts) | `PriorFactor<double>` | GTSAM | reference ambiguity of the group |
 | hold (`hold.variance_cycles2`) | `BetweenFactor<double>` | GTSAM | the two ambiguities of each fixed pair |
 
@@ -57,22 +79,21 @@ DD factor; the next arc gets a new variable. No factor links two arcs.
 
 | Factor | Class | From | Connects |
 |---|---|---|---|
-| IMU preintegration | `CombinedImuFactor` | GTSAM | pose, velocity, bias of consecutive epochs |
-| bias between | `BetweenFactor<imuBias::ConstantBias>` | GTSAM | bias of consecutive epochs |
-| bias prior (`imu.bias_prior_mode`) | `PriorFactor<imuBias::ConstantBias>` | GTSAM | bias |
+| IMU preintegration with bias random walk | `CombinedImuFactor` | GTSAM | pose, velocity, bias of consecutive epochs |
 | start (switch window epochs) | `PriorFactor`, `GPSFactorArm` | GTSAM | pose, velocity, bias |
 | prediction prior (GNSS epoch with fewer than 4 DD factors) | `PriorFactor` | GTSAM | pose, velocity, bias |
+| bias prior (epoch without GNSS) | `PriorFactor<imuBias::ConstantBias>` | GTSAM | bias |
 | DD pseudorange (with lever arm) | `DoubleDifferencePseudorangeFactorArm` | GTSAM | pose |
 | DD carrier phase (with lever arm) | `DoubleDifferenceCarrierPhaseFactorArm` | GTSAM | pose, reference and target ambiguity |
 | between-satellite Doppler (with lever arm) | `SdDopplerFactor` | this package | pose, velocity |
-| non-holonomic constraint (`nhc.enable`) | `NhcFactor` | this package | pose, velocity |
-| zero velocity (`zupt.enable`, stationary, previous speed below 0.5 m/s) | `PriorFactor<Vector3>`, `BetweenFactor<Pose3>`, `PriorFactor<Pose3>` | GTSAM | velocity; consecutive poses; pose |
+| non-holonomic constraint (`nhc.enable`) | `NhcBoreFactor`, `PriorFactor<double>` | this package, GTSAM | pose, velocity, mounting pitch |
+| zero velocity (`zupt.enable`, stationary) | `PriorFactor<Vector3>`, `BetweenFactor<Pose3>` | GTSAM | velocity; consecutive poses |
 | ambiguity prior, gauge prior, hold | as in `gnss_fgo` | GTSAM | ambiguities |
 
 `gnss_imu_fgo` runs the `gnss_fgo` graph, and publishes its solution, until the IMU graph starts:
 - Start: 1 s of consecutive GNSS epochs with at least 4 DD factors, horizontal speed ≥ 1 m/s, yaw rate < 3 deg/s, and a Doppler-only velocity within 20 deg and max(0.5 m/s, 30 %) of the estimated velocity.
 - Initial attitude: heading from the velocity direction, roll and pitch from the accelerometer; forward when the GNSS and accelerometer speed changes (each ≥ 0.5 m/s) have the same sign, reverse when not, otherwise forward when ≥ 5 m/s throughout.
-- Return to a new `gnss_fgo` graph: for 2 s, the body x axis more than 45 deg off the Doppler-only velocity (at ≥ 5 m/s), or the DD code residual check resetting the ambiguities in every GNSS epoch.
+- Return to a new `gnss_fgo` graph: for 2 s, the body x axis more than 45 deg off the Doppler-only velocity (at ≥ 5 m/s).
 
 ## Topics
 
@@ -115,23 +136,21 @@ The odometry is the body pose in ENU (origin `local_origin.*`), `frame_id` `map`
 | `graph.lag_s` | `1.0` | smoother window, seconds (the IMU graph uses at least the switch window plus one epoch interval) |
 | `hold.variance_cycles2` | `0.001` | variance of a hold factor, cycles² |
 | `ambiguity.exclude_bds_geo` | `true` | leave BeiDou GEO satellites (C01–C05, C59–C63) out of the DD factors |
-| `fde.enable` / `fde.pseudorange_m` / `fde.carrier_m` | `true` / `4.0` / `0.5` | remove DD factors whose residual exceeds the threshold, metres |
+| `fde.enable` / `fde.carrier_m` | `true` / `0.5` | remove carrier DD factors whose residual exceeds the threshold, metres |
+| `fde.pseudorange_m` | `4.0` | outlier threshold of the DD code position that starts a graph, metres |
 | `motion.acceleration_psd` (`gnss_fgo`) | `9.0` | white-acceleration density, m²/s³ |
 | **IMU** (`gnss_imu_fgo`) | | |
-| `imu.gravity_mps2` | `9.81` | gravity magnitude |
-| `imu.sigma_acc` | `0.00284` | accelerometer noise density, m/s²/√Hz |
-| `imu.sigma_gyr` | `0.00401` | gyroscope noise density, rad/s/√Hz |
+| `imu.sigma_acc` | `6e-4` | accelerometer noise density, m/s²/√Hz |
+| `imu.sigma_gyr` | `2e-4` | gyroscope noise density, rad/s/√Hz |
 | `imu.integration_covariance` | `0.001` | GTSAM preintegration `integrationCovariance` (diagonal) |
 | `imu.sigma_acc_bias` | `0.000314` | accelerometer bias random walk, m/s²/√s |
-| `imu.sigma_gyr_bias` | `9.7e-06` | gyroscope bias random walk, rad/s/√s |
-| `imu.bias_prior_sigma_acc_mps2` / `imu.bias_prior_sigma_gyr_rps` | `0.003` / `0.0003` | per-epoch bias prior |
-| `imu.bias_prior_mode` | `2` | prior mean: `0` none, `1` initial bias, `2` latest estimate |
+| `imu.sigma_gyr_bias` | `2.4e-06` | gyroscope bias random walk, rad/s/√s |
 | `nhc.enable` | `false` | non-holonomic constraint (ground vehicles) |
 | `nhc.sigma_lat_mps` / `nhc.sigma_vert_mps` | `0.3` / `0.2` | constraint sigma |
 | `nhc.lever_arm` | `[0,0,0]` | IMU to the point where the constraint holds, body axes, metres |
 | `zupt.enable` | `false` | zero-velocity update (ground vehicles) |
-| `zupt.max_acc_std` / `zupt.max_gyr_std` | `0.55` / `0.03` | stationary detection: standard deviation of the epoch's IMU samples, m/s² / rad/s |
-| `zupt.sigma_mps` | `0.5` | zero-velocity sigma |
+| `zupt.max_acc_std` / `zupt.max_gyr_std` | `0.55` / `0.03` | stationary detection: standard deviation of the epoch's IMU samples, m/s² / rad/s; the Doppler-only speed must also be below 0.3 m/s |
+| `zupt.sigma_mps` | `0.05` | zero-velocity sigma |
 | `init.pitch_deg` | `NaN` | initial pitch, degrees (`NaN`: from the accelerometer) |
 | **Debug** | | |
 | `debug.trace_directory` | `""` | directory for `intake-trace.jsonl` (base observation paired with each rover epoch) and, at the end marker, `intake-summary.json` and `solver-completed` |
@@ -150,8 +169,10 @@ stops it at startup.
 - The header time scale (UTC or GPST) follows the rover observations; IMU stamps
   must be on the same clock (receiver GNSS time stamps, `use_gps_timestamp: true`).
 - IMU samples must be at most 0.1 s apart.
-- Solution status: FIX when the epoch's integer search is accepted, FLOAT for another
-  GNSS update, DR when the epoch adds no DD factor and the motion model or the IMU
-  carries the state, NONE (NaN position) when there is no estimate.
+- Solution status: FIX when the epoch's integer search passes the ratio test with at
+  least 8 fixed pairs, on all ambiguities or on a subset (partial ambiguity
+  resolution); FLOAT for another GNSS update; DR when the epoch adds no DD factor and
+  the motion model or the IMU carries the state; NONE (NaN position) when there is no
+  estimate.
 - A rover, base or IMU clock that steps back more than 5 s starts a new time line.
 - On shutdown the node prints a summary of received, solved and dropped inputs.

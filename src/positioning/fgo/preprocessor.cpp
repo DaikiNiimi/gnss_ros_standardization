@@ -195,8 +195,10 @@ ObservationEpoch Preprocessor::prepare(const RawEpoch &rover,
       v.phase_base = b.phase;
       v.doppler = s.doppler;
       for (int f = 0; f < 3; ++f) {
-        if (uqc.edited[f])
-          v.pr[f] = v.phase[f] = v.doppler[f] = 0;
+        if (uqc.edited[f]) {
+          v.pr[f] = v.phase[f] = 0;
+          v.doppler[f] = std::numeric_limits<double>::quiet_NaN();
+        }
         if (bqc.edited[f])
           v.pr_base[f] = v.phase_base[f] = 0;
       }

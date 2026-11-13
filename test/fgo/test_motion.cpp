@@ -71,7 +71,7 @@ struct EngineTestAccess {
     auto est = e.p2_->calculateEstimate();
     for (auto k : est.keys())
       require(gtsam::Symbol(k).chr() != 'b', "IMU bias in GNSS graph");
-    require(!e.zupt_anchor_, "GNSS has ZUPT anchor");
+    require(!est.exists(boreKey()), "NHC mounting pitch in the GNSS graph");
   }
   static void fail(Engine &e) {
     e.update_probe_ = [](const char *name, bool after) {
@@ -81,18 +81,6 @@ struct EngineTestAccess {
   }
   static void clear(Engine &e) { e.update_probe_ = {}; }
   static SatelliteState &state(Engine &e, SF sf) { return e.sats_.get(sf); }
-  // resetAmbiguities() removes every factor of the current keys: ISAM2 then
-  // drops the keys themselves and the smoother their timestamps.
-  static void resetAmbiguities(Engine &e) {
-    const auto keys = e.sats_.keys();
-    e.resetAmbiguities();
-    require(e.sats_.keys().empty() && e.holds_.empty(),
-            "ambiguity reset kept a key or a hold record");
-    for (auto [sf, key] : keys)
-      require(!e.p2_->getLinearizationPoint().exists(key) &&
-                  !e.p2_->timestamps().count(key),
-              "ambiguity reset left a key in the smoother");
-  }
   static void gaugeOff(Engine &e) { e.ambiguity_gauge_ = false; }
   // Smoother estimate of N_1 - N_s for every satellite s with a key.
   static std::map<int, double> differences(const Engine &e) {
@@ -114,6 +102,9 @@ struct EngineTestAccess {
   }
 };
 } // namespace gnss_fgo
+// Satellites of the synthetic runs (one band): more DD pairs than the fix
+// minimum.
+constexpr int kSats = 12;
 int main() {
   EngineTestAccess::transactions();
   const double dt = .37, q = 9.;
@@ -200,7 +191,7 @@ int main() {
     ObservationEpoch obs;
     obs.gpst = obs.base_gpst = 1400000000 + i * .2;
     Vec3 pos = base + Vec3(0, i * .4, i * .1);
-    for (int j = 0; j < 8; ++j) {
+    for (int j = 0; j < kSats; ++j) {
       SatelliteObservation s;
       s.sat = s.prn = j + 1;
       s.system = 0;
@@ -281,15 +272,15 @@ int main() {
           stale_priors += key == f->keys().front();
     }
   });
+  // Epoch kReset: every satellite slips, so every arc restarts.
   constexpr int kEpochs = 400, kReset = 300;
-  AmbMap reset_keys;
   bool reset_checked = false;
   std::vector<std::array<std::size_t, 3>> sizes;
   for (int i = 1; i <= kEpochs; ++i) {
     ObservationEpoch obs;
     obs.gpst = obs.base_gpst = 1400000000 + i * .2;
     Vec3 pos = base + Vec3(0, i * .4, i * .1);
-    for (int j = 0; j < 8; ++j) {
+    for (int j = 0; j < kSats; ++j) {
       SatelliteObservation s;
       s.sat = s.prn = j + 1;
       s.system = 0;
@@ -304,6 +295,8 @@ int main() {
       s.phase_base[0] = rb / .19;
       s.doppler[0] = (s.rover_sat - pos).normalized().dot(Vec3(0, 2, .5)) / .19;
       s.snr[0] = s.doppler_snr[0] = 45;
+      if (i == kReset)
+        s.lli[0] = 1;
       obs.sats.push_back(s);
     }
     before = run.satelliteStates().keys();
@@ -312,18 +305,13 @@ int main() {
             "long synthetic run failed");
     run_fixes += sol.fixed;
     const auto after = run.satelliteStates().keys();
-    if (!before.empty())
+    if (!before.empty() && i != kReset)
       key_changes += after != before;
     if (i == kReset) {
-      EngineTestAccess::resetAmbiguities(run);
-      reset_keys = before;
-    }
-    // The reset starts CP suppression (no keys); the first keys after it
-    // are new arcs.
-    if (i > kReset && !after.empty() && !reset_checked) {
+      require(after.size() == before.size(), "slip epoch lost an arc");
       for (auto [sf, key] : after)
-        require(reset_keys.count(sf) && key != reset_keys.at(sf),
-                "arc after the ambiguity reset reused a key");
+        require(before.count(sf) && key != before.at(sf),
+                "arc after the slip reused a key");
       reset_checked = true;
     }
     sizes.push_back(EngineTestAccess::size(run));
@@ -332,9 +320,14 @@ int main() {
           "phase-2 epoch graph has a continuity factor or re-primes a key");
   require(key_changes == 0 && reset_checked,
           "an uninterrupted arc changed its key");
+  // The keys of the arcs the slip ended stay in the smoother until they
+  // leave through the lag: those epochs are not compared.
+  const int kSlipLag = int(cfg.fls_lag / .2) + 3;
   std::array<std::size_t, 3> early{}, late{};
   for (int i = 50; i < kEpochs; ++i)
     for (int c = 0; c < 3; ++c) {
+      if (i >= kReset - 1 && i < kReset + kSlipLag)
+        continue;
       auto &m = i < kEpochs / 2 ? early : late;
       m[c] = std::max(m[c], sizes[i][c]);
     }
@@ -345,10 +338,11 @@ int main() {
   require(run_fixes > kEpochs / 2, "long run rarely fixed");
   for (int c = 0; c < 3; ++c)
     require(late[c] <= early[c], "phase-2 smoother keeps growing");
-  // Window: ~lag/dt + 2 poses and velocities plus 8 ambiguity keys.
-  require(late[1] <= std::size_t(2 * (int(cfg.fls_lag / .2) + 3) + 8),
+  // Window: ~lag/dt + 2 poses and velocities plus kSats ambiguity keys.
+  require(late[1] <= std::size_t(2 * (int(cfg.fls_lag / .2) + 3) + kSats),
           "phase-2 smoother holds more variables than its window");
-  require(late[2] <= 7, "more hold records than satellite pairs");
+  require(late[2] <= std::size_t(kSats - 1),
+          "more hold records than satellite pairs");
 
   // The ambiguity gauge prior fixes only the common mode of the group, which
   // the DD factors and holds do not see: the same run without it gives the
@@ -363,7 +357,7 @@ int main() {
       ObservationEpoch obs;
       obs.gpst = obs.base_gpst = 1400000000 + i * .2;
       Vec3 pos = base + Vec3(0, i * .4, i * .1);
-      for (int j = 0; j < 8; ++j) {
+      for (int j = 0; j < kSats; ++j) {
         SatelliteObservation s;
         s.sat = s.prn = j + 1;
         s.system = 0;
@@ -378,6 +372,8 @@ int main() {
         s.phase_base[0] = rb / .19;
         s.doppler[0] = (s.rover_sat - pos).normalized().dot(Vec3(0, 2, .5)) / .19;
         s.snr[0] = s.doppler_snr[0] = 45;
+        if (i == kReset)
+          s.lli[0] = 1;
         obs.sats.push_back(s);
       }
       const auto a = gauged.process(obs), b = ungauged.process(obs);
@@ -392,10 +388,6 @@ int main() {
         require(db.count(sat), "gauge changed the ambiguity keys");
         ddiff = std::max(ddiff, std::abs(d - db.at(sat)));
         ++compared;
-      }
-      if (i == kReset) {
-        EngineTestAccess::resetAmbiguities(gauged);
-        EngineTestAccess::resetAmbiguities(ungauged);
       }
     }
     std::cout << "gauge on/off: max |position difference| " << dpos
