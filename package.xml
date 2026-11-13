@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>gnss_ros_standardization</name>
-  <version>1.1.0</version>
+  <version>1.2.0</version>
   <description>
     GNSS raw observations and navigation data as ROS 2 topics, using RTKLIB.
     Includes u-blox, Septentrio and NovAtel drivers and decoders, RTCM decoding,
