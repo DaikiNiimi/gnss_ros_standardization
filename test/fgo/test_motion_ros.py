@@ -9,10 +9,13 @@ import subprocess
 import tempfile
 import time
 
-import rclpy
-from rclpy.node import Node
-from gnss_ros_standardization.msg import GnssObservations, GnssSolution
-from std_msgs.msg import String
+# The probe node and the child node must share one discovery setting.
+os.environ['ROS_LOCALHOST_ONLY'] = '1'
+
+import rclpy  # noqa: E402
+from rclpy.node import Node  # noqa: E402
+from gnss_ros_standardization.msg import GnssObservations, GnssSolution  # noqa: E402
+from std_msgs.msg import String  # noqa: E402
 
 
 def wait(node, predicate, reason, timeout=10):
@@ -28,7 +31,7 @@ def main():
     parser.add_argument('--executable', required=True)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='gnss-motion-contract-') as temp:
-        env = dict(os.environ, ROS_LOG_DIR=temp, ROS_LOCALHOST_ONLY='1')
+        env = dict(os.environ, ROS_LOG_DIR=temp)
         common = [args.executable, '--ros-args', '-p', 'base_position.pos:=[6378137.0,0.0,0.0]']
         for parameter, message in [
             ('algorithm_profile:=unknown', 'unsupported parameter'),
