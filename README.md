@@ -1,7 +1,7 @@
 # gnss_ros_standardization
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![ROS 2](https://img.shields.io/badge/ROS%202-Jazzy-brightgreen)](https://docs.ros.org/en/jazzy/)
+[![ROS 2](https://img.shields.io/badge/ROS%202-Humble%20%7C%20Jazzy-brightgreen)](https://docs.ros.org/)
 
 <p align="center">
   <img src="fig/overview.svg" alt="Repository overview" width="850">
@@ -155,6 +155,7 @@ ros2 bag play /path/to/PPC-Dataset-ROS2/bags/tokyo_run1
 
 ## License
 
-MIT, see [LICENSE](LICENSE) (includes the RTKLIB notice, and a BSD-3-Clause notice
-for the parts of `src/positioning/fgo` developed based on inuex35/tightly-coupled-gnss-imu-fgo).
+MIT, see [LICENSE](LICENSE). [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) holds the
+RTKLIB notice (BSD-2-Clause) and the BSD-3-Clause notice for the parts of
+`src/positioning/fgo` developed based on inuex35/tightly-coupled-gnss-imu-fgo.
 GTSAM, when used, has its own license. Maintainer: Daiki Niimi (`daiki.niimi@ruri.waseda.jp`).

@@ -28,7 +28,8 @@ def main():
     # E1: binary installations must carry the statically linked backend's notice.
     share = prefix / "share/gnss_ros_standardization"
     assert (share / "LICENSE").is_file()
-    notices = (share / "LICENSE").read_text()
+    assert (share / "THIRD_PARTY_NOTICES").is_file()
+    notices = (share / "THIRD_PARTY_NOTICES").read_text()
     assert "Copyright (c) 2007-2020, T. Takasu" in notices
     assert "Redistributions in binary form must" in notices
     assert "modified copies" in notices

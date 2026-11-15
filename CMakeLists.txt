@@ -194,7 +194,7 @@ install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(FILES LICENSE DESTINATION share/${PROJECT_NAME})
+install(FILES LICENSE THIRD_PARTY_NOTICES DESTINATION share/${PROJECT_NAME})
 
 # Pipeline launch files (see launch/README.md). gnss_pipeline_common.py rides
 # along as a plain module: the launch files put this directory on sys.path, so

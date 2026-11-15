@@ -97,4 +97,4 @@ By contributing, you agree that your contribution is licensed under the
 [MIT License](LICENSE) of this repository. Code derived from third parties keeps
 its own license: the RTKLIB sources (BSD-2-Clause) and the parts of
 `src/positioning/fgo` derived from inuex35/tightly-coupled-gnss-imu-fgo
-(BSD-3-Clause), as stated in [LICENSE](LICENSE).
+(BSD-3-Clause), as stated in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

@@ -40,11 +40,16 @@ def flatten(values, prefix=''):
 
 class ReleasePublication(unittest.TestCase):
     def test_E1_license_text_and_install_rule(self):
-        notice = (ROOT / 'LICENSE').read_text()
+        # LICENSE holds the MIT text alone, so that license detection reports MIT.
+        mit = (ROOT / 'LICENSE').read_text()
+        self.assertTrue(mit.startswith('MIT License\n'))
+        self.assertTrue(mit.rstrip().endswith('SOFTWARE.'))
+        self.assertNotIn('Redistribution', mit)
+        notice = (ROOT / 'THIRD_PARTY_NOTICES').read_text()
         self.assertIn((ROOT / 'third_party/RTKLIB/license.txt').read_text(), notice)
         self.assertIn('modified copies', notice)
         cmake = (ROOT / 'CMakeLists.txt').read_text()
-        self.assertRegex(cmake, r'install\(FILES LICENSE\s+DESTINATION share/\$\{PROJECT_NAME\}\)')
+        self.assertRegex(cmake, r'install\(FILES LICENSE THIRD_PARTY_NOTICES\s+DESTINATION share/\$\{PROJECT_NAME\}\)')
         licenses = [x.text for x in ET.parse(ROOT / 'package.xml').getroot().findall('license')]
         self.assertEqual(set(licenses), {'MIT', 'BSD-2-Clause', 'BSD-3-Clause'})
 
@@ -65,7 +70,10 @@ class ReleasePublication(unittest.TestCase):
             self.assertEqual(value['name'], '/obs')
             self.assertEqual(len(calls), 1 if supports_id else 2)
             self.assertEqual('id' in value, supports_id)
-        self.assertNotIn('Humble%20%7C', (ROOT / 'README.md').read_text())
+        # The README badge names the distributions that the build and FGO jobs cover.
+        ci = (ROOT / '.github/workflows/ci.yml').read_text()
+        self.assertEqual(ci.count('ros_distro: [humble, jazzy]'), 2)
+        self.assertIn('ROS%202-Humble%20%7C%20Jazzy-', (ROOT / 'README.md').read_text())
 
     def test_E3_E4_contact_and_pinned_dependency(self):
         package = ET.parse(ROOT / 'package.xml').getroot()
