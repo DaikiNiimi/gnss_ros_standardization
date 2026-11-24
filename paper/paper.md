@@ -32,7 +32,7 @@ affiliations:
   - name: Department of Mechatronics Engineering, Meijo University, Japan
     index: 3
     ror: 04h42fc75
-date: 15 November 2026
+date: 24 November 2026
 bibliography: paper.bib
 ---
 
