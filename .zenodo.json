@@ -1,0 +1,37 @@
+{
+  "title": "gnss_ros_standardization: A ROS 2 framework for receiver-independent handling of raw GNSS observations",
+  "upload_type": "software",
+  "description": "ROS 2 package that publishes GNSS raw observations and navigation data from u-blox, Septentrio, NovAtel and RTCM3 receivers as one common set of messages, with drivers, bag/RINEX converters and positioning nodes (SPP, RTK, EKF, FGO).",
+  "creators": [
+    {
+      "name": "Niimi, Daiki",
+      "orcid": "0009-0007-0185-9430",
+      "affiliation": "Department of Applied Mechanics and Aerospace Engineering, Waseda University, Japan"
+    },
+    {
+      "name": "Suzuki, Taro",
+      "orcid": "0000-0001-9722-9415",
+      "affiliation": "Department of Advanced Robotics, Chiba Institute of Technology, Japan"
+    },
+    {
+      "name": "Meguro, Junichi",
+      "orcid": "0009-0008-5992-6453",
+      "affiliation": "Department of Mechatronics Engineering, Meijo University, Japan"
+    },
+    {
+      "name": "Amano, Yoshiharu",
+      "orcid": "0000-0003-3480-6777",
+      "affiliation": "Department of Applied Mechanics and Aerospace Engineering, Waseda University, Japan"
+    }
+  ],
+  "license": "mit",
+  "keywords": [
+    "C++",
+    "ROS 2",
+    "GNSS",
+    "RTKLIB",
+    "robotics",
+    "sensor fusion",
+    "factor graph optimization"
+  ]
+}
